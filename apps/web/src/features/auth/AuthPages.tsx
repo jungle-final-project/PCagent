@@ -1,7 +1,8 @@
 import { FormEvent, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Screen, StateMessage } from '../../components/ui';
-import { api, saveToken } from '../../lib/api';
+import { saveToken } from '../../lib/api';
+import { login } from './authApi';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -10,10 +11,7 @@ export function LoginPage() {
     event.preventDefault();
     setError('');
     try {
-      const response = await api<{ token: string }>('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ email: 'user@example.com', password: 'password' })
-      });
+      const response = await login('user@example.com', 'password');
       saveToken(response.token);
       navigate('/my/quotes');
     } catch {

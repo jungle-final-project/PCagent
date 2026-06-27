@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { LoginPage, SignupPage } from './features/auth/AuthPages';
-import { BuildResultPage, ChangePartPage, HomePage, MyQuotesPage, RequirementPage, SelfQuotePage } from './features/quote/QuotePages';
+import { SelfQuotePage } from './features/parts/PartsPages';
+import { BuildResultPage, ChangePartPage, HomePage, MyQuotesPage, RequirementPage } from './features/quote/QuotePages';
 import { SupportNewPage, SupportTicketPage } from './features/support/SupportPages';
 import { AdminDashboardPage, AdminPartsPage, AdminTicketDetailPage, AdminTicketsPage, AgentSessionAdminPage, RagEvidenceAdminPage, ToolInvocationAdminPage } from './features/admin/AdminPages';
 

@@ -1,6 +1,6 @@
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { DataTable, Panel, Screen, StateMessage, StatusBadge } from '../../components/ui';
-import { tickets } from '../../data/prototypeData';
+import { tickets } from './mocks/supportMock';
 
 export function SupportNewPage() {
   const navigate = useNavigate();
@@ -50,11 +50,3 @@ export function SupportTicketPage() {
     </Screen>
   );
 }
-
-export const supportRows = tickets.map((ticket) => ({
-  id: ticket.id,
-  user: ticket.user,
-  symptom: ticket.symptom,
-  status: <StatusBadge status={ticket.status} />,
-  cause: ticket.cause
-}));

@@ -34,9 +34,23 @@ Seed/mock data follows the same module boundary as the final plan. `common/MockD
 | user | `apps/api/src/main/java/com/buildgraph/prototype/user/UserSeed.java` | 5 |
 | admin | `apps/api/src/main/java/com/buildgraph/prototype/admin/AdminSeed.java` | 5 |
 
+## Frontend Ownership
+
+Frontend files are split by implementation owner so feature work does not pile into one large page file.
+
+| Owner | Frontend area | Notes |
+| --- | --- | --- |
+| 1 | `apps/web/src/features/quote/pages`, `apps/web/src/features/quote/components`, `apps/web/src/features/quote/quoteApi.ts`, `apps/web/src/features/auth` | Requirement input, build result, part-change flow, quote history, auth UI |
+| 2 | `apps/web/src/features/parts/pages`, `apps/web/src/features/parts/mocks`, `apps/web/src/features/parts/partsApi.ts` | Self quote, parts table, tool checks, price-alert API boundary |
+| 3 | `apps/web/src/features/admin/pages/AgentSessionAdminPage.tsx`, `ToolInvocationAdminPage.tsx`, `RagEvidenceAdminPage.tsx`, `apps/web/src/features/admin/mocks/adminMock.ts` | Agent/RAG/Tool evidence review screens |
+| 4 | `apps/web/src/features/support`, `apps/web/src/features/support/supportApi.ts` | AS request, ticket detail, log upload policy |
+| 5 | `apps/web/src/components/layout`, `apps/web/src/components/display`, `apps/web/src/components/feedback`, `apps/web/src/features/admin/pages/AdminDashboardPage.tsx` | Shared shell, common UI, admin dashboard |
+
 ## Shared Contract Rules
 
 - Do not change an existing API response shape without updating `docs/openapi.yaml` in the same PR.
 - If a feature needs seed data, add it inside the owning module seed file; do not add domain data to `common/MockData.java`.
+- If a frontend feature needs mock data, place it under the owning feature `mocks` directory; keep `src/data/prototypeData.ts` as a compatibility barrel only.
+- Add feature API calls in the owning `*Api.ts` file instead of calling `api()` directly from page components.
 - Admin detail screens are implementation targets, not final UX. Keep them explicit about state, owner, API, and evidence fields.
 - Keep MVP exclusions intact: no payment, shipping, custom remote control, exact FPS guarantee, or lowest-price guarantee.

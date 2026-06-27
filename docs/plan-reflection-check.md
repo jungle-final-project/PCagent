@@ -7,6 +7,7 @@ This document checks whether the current prototype reflects `PLAN (3).md` as a t
 | Domain modules | Backend packages exist for `user`, `build`, `part`, `agent`, `rag`, `log`, `ticket`, `price`, `admin` | Reflected |
 | Module ownership | Role workspace document maps each owner to folders, APIs, and first PR targets | Reflected |
 | Seed ownership | Seed/mock data is split by domain seed classes instead of one shared data file | Reflected |
+| Frontend module ownership | Large quote/admin/common UI files are split into owner-oriented `pages`, `components`, `mocks`, and `*Api.ts` files | Reflected |
 | 14+ user/admin screens | 17 route smoke tests cover consumer and admin implementation-start screens | Reflected |
 | AI/Agent 9-step flow | Agent state timeline, RAG search, Tool invocation, fallback, and admin evidence screens exist as starting points | Reflected |
 | Tool Calling policy | Tool result schema uses `PASS/WARN/FAIL`, confidence, warnings, and evidence | Reflected |
@@ -21,4 +22,4 @@ These are not blockers for five-person implementation start:
 
 - OpenAPI schemas can become stricter as each owner finalizes request/response DTOs.
 - Controllers still return seed-backed responses until each owner introduces service/repository logic.
-- Frontend page files can be split further during feature implementation PRs.
+- Support pages can be split further if Owner 4 grows the AS flow beyond the current two screens.

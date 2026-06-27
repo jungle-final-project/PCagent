@@ -1,1 +1,1 @@
-export { SelfQuotePage } from '../quote/QuotePages';
+export { SelfQuotePage } from './pages/SelfQuotePage';
