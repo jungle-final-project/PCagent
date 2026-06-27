@@ -67,6 +67,7 @@
 | `python tools/validate_openapi.py` | 5번이 유지보수하고 API 담당자가 통과 상태를 유지 | OpenAPI YAML 파싱 및 핵심 POST requestBody 누락 탐지 |
 | Java 21 환경의 `apps/api`에서 `./gradlew bootJar --no-daemon` | 5번이 유지보수하고 백엔드 담당자가 통과 상태를 유지 | 백엔드 컴파일 및 패키징 실패 탐지 |
 | `docker compose config` | 5 | 병합 전 잘못된 compose 변경 탐지 |
+| `/api/health` runtime smoke | 5번이 유지보수하고 백엔드 담당자가 통과 상태를 유지 | API jar 실행, DB 연결, custom health endpoint 응답 확인 |
 
 CI는 의도적으로 배포, 브랜치 보호 설정, 전체 부하 테스트를 수행하지 않습니다. 이 항목은 이후 5번 담당자의 인프라 결정 범위로 남깁니다.
 

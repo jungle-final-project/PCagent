@@ -63,3 +63,56 @@ jobs:
 
       - name: Validate Docker Compose
         run: docker compose config
+
+      - name: Run API runtime smoke test
+        shell: bash
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/buildgraph
+          SPRING_DATASOURCE_USERNAME: buildgraph
+          SPRING_DATASOURCE_PASSWORD: buildgraph
+          SPRING_DATA_REDIS_HOST: localhost
+          SPRING_RABBITMQ_HOST: localhost
+          SPRING_RABBITMQ_USERNAME: buildgraph
+          SPRING_RABBITMQ_PASSWORD: buildgraph
+          SPRING_MAIL_HOST: localhost
+          SPRING_MAIL_PORT: 1025
+        run: |
+          set -euo pipefail
+          docker compose up -d postgres redis rabbitmq mailpit
+
+          POSTGRES_READY=0
+          for attempt in {1..60}; do
+            if docker compose exec -T postgres pg_isready -U buildgraph -d buildgraph; then
+              POSTGRES_READY=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$POSTGRES_READY" -ne 1 ]; then
+            docker compose logs postgres
+            exit 1
+          fi
+
+          API_JAR="$(ls apps/api/build/libs/*.jar | head -n 1)"
+          java -jar "$API_JAR" > api-smoke.log 2>&1 &
+          API_PID=$!
+
+          cleanup() {
+            kill "$API_PID" 2>/dev/null || true
+            docker compose down -v
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..60}; do
+            if curl -fsS http://localhost:8080/api/health; then
+              exit 0
+            fi
+            if ! kill -0 "$API_PID" 2>/dev/null; then
+              cat api-smoke.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+          cat api-smoke.log
+          exit 1

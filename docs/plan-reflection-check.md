@@ -42,3 +42,4 @@
 - 기획안의 Tool API는 개별 endpoint로 표현되어 있지만, 현재 MVP 스캐폴드에서는 `compatibility`, `power`, `size`, `performance`, `price`를 `/api/tools/{tool}/check` 하나의 path parameter 방식으로 축약합니다. 프론트, 백엔드, OpenAPI가 같은 축약 계약을 사용하므로 착수 기준에서는 이 방식을 유지합니다.
 - POST 요청의 성공 계약은 프론트 API wrapper가 보내는 body를 기준으로 OpenAPI requestBody와 백엔드 controller skeleton에 반영합니다. 운영급 오류 응답 전체 목록은 각 담당자가 실제 DTO/service를 확정할 때 확장합니다.
 - OpenAPI는 성공 요청 계약 기준으로 주요 POST requestBody를 `required: true`로 둡니다. 백엔드 skeleton의 `@RequestBody(required = false)`는 seed demo가 body 없이도 깨지지 않도록 둔 임시 허용이며, 실제 DTO/service 전환 시 담당자가 validation을 적용합니다.
+- CI runtime smoke는 `/api/health`를 기준으로 합니다. 이 경로는 Spring Boot Actuator 기본 경로가 아니라 `HealthController`가 제공하는 프로젝트용 health endpoint이며, DB 연결까지 확인합니다.
