@@ -19,7 +19,7 @@
 - 웹: React, TypeScript, Vite, Tailwind, React Router, TanStack Query
 - API: Spring Boot, Gradle, Java 21
 - 인프라: PostgreSQL + pgvector, Redis, RabbitMQ, Mailpit, Docker Compose
-- PC 에이전트: Python 3.11 CLI 골격
+- PC 에이전트: Python CLI 골격. 로컬은 3.11 이상을 권장하고, Dev Container와 CI는 3.12를 사용합니다.
 
 ## 빠른 실행
 
@@ -101,6 +101,8 @@ OpenAPI 검증:
 python tools/validate_openapi.py
 ```
 
+macOS/Linux에서 `python` 명령이 없다면 `python3 tools/validate_openapi.py`를 사용합니다.
+
 PC Agent 샘플 로그:
 
 ```powershell
@@ -109,6 +111,8 @@ pip install -r requirements.txt
 python buildgraph_agent.py sample --out ../../seed/sample-agent-log.jsonl
 python buildgraph_agent.py export --source ../../seed/sample-agent-log.jsonl --out recent-30m.jsonl --minutes 30
 ```
+
+macOS/Linux에서 `pip` 또는 `python` 명령이 없다면 `pip3`, `python3`를 사용합니다.
 
 ## PR 전 확인
 

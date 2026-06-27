@@ -4,12 +4,16 @@
 
 ## 실행
 
+로컬 Python은 3.11 이상을 권장합니다. Dev Container와 CI는 Python 3.12를 사용합니다.
+
 ```powershell
 cd apps/pc-agent
 pip install -r requirements.txt
 python buildgraph_agent.py sample --out ../../seed/sample-agent-log.jsonl
 python buildgraph_agent.py export --source ../../seed/sample-agent-log.jsonl --out recent-30m.jsonl --minutes 30
 ```
+
+macOS/Linux에서 `pip` 또는 `python` 명령이 없다면 `pip3`, `python3`를 사용합니다.
 
 ## 현재 역할
 
