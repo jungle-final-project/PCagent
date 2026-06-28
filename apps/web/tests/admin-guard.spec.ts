@@ -36,6 +36,14 @@ for (const route of adminRoutes) {
   });
 }
 
+test('does not expose protected admin page content without admin permission', async ({ page }) => {
+  await page.goto('/admin/parts');
+
+  await expect(page.getByRole('heading', { name: '관리자 권한이 필요합니다' })).toBeVisible();
+  await expect(page.locator('main')).not.toContainText('부품 DB');
+  await expect(page.locator('main')).not.toContainText('가격 Job 상태');
+});
+
 test('shows permission screen when auth/me returns USER role', async ({ page }) => {
   let authMeCalls = 0;
   await page.addInitScript(() => {
