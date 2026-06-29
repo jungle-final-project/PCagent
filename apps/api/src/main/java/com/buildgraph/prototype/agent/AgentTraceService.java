@@ -4,6 +4,7 @@ import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -134,6 +135,34 @@ public class AgentTraceService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent session을 찾을 수 없습니다."));
     }
 
+    public void advanceStatus(String sessionId, AgentStatus to, String actor, String reason) {
+        validateSessionId(sessionId);
+        if (to == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "변경할 Agent status가 필요합니다.");
+        }
+        requireText(actor, "Agent status 변경 actor가 필요합니다.");
+        Map<String, Object> row = sessionTraceRow(sessionId);
+        AgentStatus from = parseStatus(DbValueMapper.string(row, "status"));
+        if (!canTransition(from, to)) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "허용되지 않는 Agent status 전이입니다: " + from + " -> " + to
+            );
+        }
+        List<Object> timeline = appendTimeline(row, from.name(), to.name(), actor.trim(), reason);
+        int updated = jdbcTemplate.update("""
+                UPDATE agent_sessions
+                SET status = ?,
+                    state_timeline = ?::jsonb,
+                    updated_at = now()
+                WHERE public_id = ?::uuid
+                  AND status = ?
+                """, to.name(), json(timeline), sessionId, from.name());
+        if (updated != 1) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Agent session 상태가 변경되어 다시 시도해야 합니다.");
+        }
+    }
+
     static Map<String, Object> timelineItem(String from, String to, String actor, String reason) {
         return MockData.map("from", from, "to", to, "at", MockData.now(), "actor", actor, "reason", reason);
     }
@@ -144,6 +173,50 @@ public class AgentTraceService {
         } catch (Exception e) {
             throw new IllegalArgumentException("JSON 변환에 실패했습니다.", e);
         }
+    }
+
+    private Map<String, Object> sessionTraceRow(String sessionId) {
+        return jdbcTemplate.queryForList("""
+                        SELECT public_id::text AS id,
+                               status,
+                               state_timeline
+                        FROM agent_sessions
+                        WHERE public_id = ?::uuid
+                        """, sessionId)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent session을 찾을 수 없습니다."));
+    }
+
+    private static List<Object> appendTimeline(Map<String, Object> row, String from, String to, String actor, String reason) {
+        List<Object> timeline = new ArrayList<>();
+        Object currentTimeline = DbValueMapper.json(row, "state_timeline", List.of());
+        if (currentTimeline instanceof List<?> currentItems) {
+            timeline.addAll(currentItems);
+        }
+        timeline.add(timelineItem(from, to, actor, reason));
+        return timeline;
+    }
+
+    private static AgentStatus parseStatus(String value) {
+        try {
+            return AgentStatus.valueOf(value);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent session status를 해석할 수 없습니다.", e);
+        }
+    }
+
+    private static boolean canTransition(AgentStatus from, AgentStatus to) {
+        return switch (from) {
+            case QUEUED -> to == AgentStatus.RUNNING || to == AgentStatus.FAILED || to == AgentStatus.CANCELLED;
+            case RUNNING -> to == AgentStatus.RAG_SEARCHED || to == AgentStatus.FALLBACK_READY
+                    || to == AgentStatus.FAILED || to == AgentStatus.CANCELLED;
+            case RAG_SEARCHED -> to == AgentStatus.TOOLS_CALLED || to == AgentStatus.FALLBACK_READY || to == AgentStatus.FAILED;
+            case TOOLS_CALLED -> to == AgentStatus.SUMMARY_READY || to == AgentStatus.FALLBACK_READY || to == AgentStatus.FAILED;
+            case SUMMARY_READY -> to == AgentStatus.SUCCEEDED || to == AgentStatus.FALLBACK_READY || to == AgentStatus.FAILED;
+            case FALLBACK_READY -> to == AgentStatus.SUCCEEDED || to == AgentStatus.FAILED;
+            case SUCCEEDED, FAILED, CANCELLED -> false;
+        };
     }
 
     private static void validateSessionId(String sessionId) {

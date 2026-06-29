@@ -3,7 +3,6 @@ package com.buildgraph.prototype.agent;
 import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
 import com.buildgraph.prototype.rag.RagQueryService;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -35,19 +34,8 @@ public class AgentQueryService {
 
     public Map<String, Object> runSession(String id) {
         Map<String, Object> row = agentSessionRow(id);
-        String currentStatus = DbValueMapper.string(row, "status");
-        if (!"QUEUED".equals(currentStatus)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "QUEUED 상태의 Agent session만 실행할 수 있습니다.");
-        }
         AgentRunProfile profile = AgentRunProfiles.forRoot(rootFromRow(row));
-        List<Object> timeline = appendTimeline(row, currentStatus, "RUNNING", "SYSTEM", "agent run requested for " + profile.purpose());
-        jdbcTemplate.update("""
-                UPDATE agent_sessions
-                SET status = 'RUNNING',
-                    state_timeline = ?::jsonb,
-                    updated_at = now()
-                WHERE public_id = ?::uuid
-                """, AgentTraceService.json(timeline), id);
+        agentTraceService.advanceStatus(id, AgentStatus.RUNNING, "SYSTEM", "agent run requested for " + profile.purpose());
         return session(id);
     }
 
@@ -182,10 +170,6 @@ public class AgentQueryService {
         );
     }
 
-    private static Map<String, Object> timelineItem(String from, String to, String actor, String reason) {
-        return AgentTraceService.timelineItem(from, to, actor, reason);
-    }
-
     private static AgentSessionRoot rootFromRow(Map<String, Object> row) {
         String requirementId = DbValueMapper.string(row, "requirement_id");
         if (requirementId != null) {
@@ -200,16 +184,6 @@ public class AgentQueryService {
             return new AgentSessionRoot(AgentSessionRootType.AS_TICKET, asTicketId);
         }
         throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent session root를 확인할 수 없습니다.");
-    }
-
-    private static List<Object> appendTimeline(Map<String, Object> row, String from, String to, String actor, String reason) {
-        List<Object> timeline = new ArrayList<>();
-        Object currentTimeline = DbValueMapper.json(row, "state_timeline", List.of());
-        if (currentTimeline instanceof List<?> currentItems) {
-            timeline.addAll(currentItems);
-        }
-        timeline.add(timelineItem(from, to, actor, reason));
-        return timeline;
     }
 
     private static AgentSessionRoot parseRoot(AgentSessionCreateRequest request) {
