@@ -15,15 +15,18 @@ public class AgentQueryService {
     private final JdbcTemplate jdbcTemplate;
     private final RagQueryService ragQueryService;
     private final AgentTraceService agentTraceService;
+    private final AgentMockRunService agentMockRunService;
 
     public AgentQueryService(
             JdbcTemplate jdbcTemplate,
             RagQueryService ragQueryService,
-            AgentTraceService agentTraceService
+            AgentTraceService agentTraceService,
+            AgentMockRunService agentMockRunService
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.ragQueryService = ragQueryService;
         this.agentTraceService = agentTraceService;
+        this.agentMockRunService = agentMockRunService;
     }
 
     public Map<String, Object> createSession(AgentSessionCreateRequest request) {
@@ -34,9 +37,12 @@ public class AgentQueryService {
 
     public Map<String, Object> runSession(String id) {
         Map<String, Object> row = agentSessionRow(id);
-        AgentRunProfile profile = AgentRunProfiles.forRoot(rootFromRow(row));
+        AgentSessionRoot root = rootFromRow(row);
+        AgentRunProfile profile = AgentRunProfiles.forRoot(root);
         agentTraceService.advanceStatus(id, AgentStatus.RUNNING, "SYSTEM", "agent run requested for " + profile.purpose());
-        return session(id);
+        Map<String, Object> startedSession = session(id);
+        agentMockRunService.completeDeterministicRun(id, root, profile);
+        return startedSession;
     }
 
     public Map<String, Object> session(String id) {

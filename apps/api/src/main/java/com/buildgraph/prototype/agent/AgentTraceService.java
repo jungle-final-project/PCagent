@@ -163,6 +163,20 @@ public class AgentTraceService {
         }
     }
 
+    public void updateSummary(String sessionId, String summary) {
+        validateSessionId(sessionId);
+        requireText(summary, "Agent summary가 필요합니다.");
+        int updated = jdbcTemplate.update("""
+                UPDATE agent_sessions
+                SET summary = ?,
+                    updated_at = now()
+                WHERE public_id = ?::uuid
+                """, summary.trim(), sessionId);
+        if (updated != 1) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent session을 찾을 수 없습니다.");
+        }
+    }
+
     static Map<String, Object> timelineItem(String from, String to, String actor, String reason) {
         return MockData.map("from", from, "to", to, "at", MockData.now(), "actor", actor, "reason", reason);
     }
