@@ -172,6 +172,7 @@ users
 parts
   ├─ price_snapshots
   ├─ part_external_offers
+  ├─ part_catalog_candidates
   ├─ build_items
   ├─ price_alerts
   ├─ compatibility_rules
@@ -405,6 +406,81 @@ Index:
 - index: `part_external_offers.source`
 - index: `part_external_offers.refreshed_at`
 - index: `part_external_offers.deleted_at`
+
+### part_catalog_refresh_jobs
+
+목적: 외부 검색 API로 내부 자산 후보를 수집한 작업 이력을 저장한다. 사용자 화면 조회 중에는 이 작업을 실행하지 않는다.
+
+주 owner: 2번
+
+협업자: 5번
+
+| 컬럼명 | 타입 | nullable | FK | 설명 |
+|---|---|---:|---|---|
+| `id` | `BIGINT` | no | - | 내부 PK |
+| `public_id` | `UUID` | no | - | 외부 ID |
+| `source` | `VARCHAR(100)` | no | - | `NAVER_SHOPPING_SEARCH` 등 |
+| `category` | `VARCHAR(50)` | no | - | 수집 category |
+| `search_query` | `VARCHAR(255)` | no | - | query pack 요약 또는 단일 검색어 |
+| `status` | `VARCHAR(30)` | no | - | `RUNNING`, `SUCCEEDED`, `FAILED` |
+| `attempted_count` | `INTEGER` | no | - | 외부 검색 결과 처리 시도 수 |
+| `discovered_count` | `INTEGER` | no | - | 후보 저장 수 |
+| `published_count` | `INTEGER` | no | - | `parts` 게시 수 |
+| `error_summary` | `TEXT` | yes | - | 실패 요약 |
+| `started_at` | `TIMESTAMPTZ` | no | - | 시작 시각 |
+| `finished_at` | `TIMESTAMPTZ` | yes | - | 종료 시각 |
+| `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
+| `deleted_at` | `TIMESTAMPTZ` | yes | - | soft delete |
+
+Index:
+
+- unique: `part_catalog_refresh_jobs.public_id`
+- index: `part_catalog_refresh_jobs.category`
+- index: `part_catalog_refresh_jobs.status`
+- index: `part_catalog_refresh_jobs.started_at`
+- index: `part_catalog_refresh_jobs.deleted_at`
+
+### part_catalog_candidates
+
+목적: 외부 검색 API로 발견한 내부 자산 후보를 저장한다. 후보는 검증 전 `DISCOVERED` 상태로 남고, `publish=true` 갱신 또는 관리자 검수 후 `parts`에 게시된다.
+
+주 owner: 2번
+
+협업자: 5번
+
+| 컬럼명 | 타입 | nullable | FK | 설명 |
+|---|---|---:|---|---|
+| `id` | `BIGINT` | no | - | 내부 PK |
+| `public_id` | `UUID` | no | - | 외부 ID |
+| `refresh_job_id` | `BIGINT` | yes | `part_catalog_refresh_jobs.id` | 발견 작업 |
+| `published_part_id` | `BIGINT` | yes | `parts.id` | 게시된 내부 자산 |
+| `source` | `VARCHAR(100)` | no | - | 외부 출처 |
+| `category` | `VARCHAR(50)` | no | - | 후보 category |
+| `source_product_key` | `VARCHAR(500)` | no | - | 외부 검색 결과 중복 제거 키 |
+| `search_query` | `VARCHAR(255)` | no | - | 후보를 발견한 검색어 |
+| `title` | `VARCHAR(500)` | no | - | 외부 상품명 |
+| `manufacturer_guess` | `VARCHAR(100)` | yes | - | 외부 결과 기반 제조사 후보 |
+| `image_url` | `TEXT` | yes | - | 상품 이미지 URL |
+| `supplier_name` | `VARCHAR(255)` | yes | - | 공급업체 또는 mall name |
+| `offer_url` | `TEXT` | yes | - | 외부 상품 URL |
+| `low_price` | `INTEGER` | yes | - | 외부 검색 결과 가격 후보 |
+| `candidate_status` | `VARCHAR(30)` | no | - | `DISCOVERED`, `PUBLISHED`, `REJECTED` |
+| `raw_payload` | `JSONB` | yes | - | 외부 검색 결과 원문 요약 |
+| `discovered_at` | `TIMESTAMPTZ` | no | - | 최초 발견 시각 |
+| `last_seen_at` | `TIMESTAMPTZ` | no | - | 마지막 발견 시각 |
+| `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
+| `updated_at` | `TIMESTAMPTZ` | yes | - | 수정 시각 |
+| `deleted_at` | `TIMESTAMPTZ` | yes | - | soft delete |
+
+Index:
+
+- unique: active 상태에서는 `(source, category, source_product_key)` 중복을 허용하지 않는다.
+- index: `part_catalog_candidates.category`
+- index: `part_catalog_candidates.candidate_status`
+- index: `part_catalog_candidates.refresh_job_id`
+- index: `part_catalog_candidates.published_part_id`
+- index: `part_catalog_candidates.last_seen_at`
+- index: `part_catalog_candidates.deleted_at`
 
 ### price_alerts
 
@@ -704,6 +780,7 @@ JSONB 허용 대상:
 - `parts.attributes`
 - `price_snapshots.raw_payload`
 - `part_external_offers.raw_payload`
+- `part_catalog_candidates.raw_payload`
 - `compatibility_rules.condition`
 - `benchmark_summaries.metadata`
 - `agent_sessions.state_timeline`
@@ -811,7 +888,9 @@ JSONB 금지 대상:
 
 외부 가격 백업은 별도 `products` 테이블을 만들지 않고 `parts` 도메인 안에 보관한다. 수집된 가격 이력은 `price_snapshots.source`, `price_snapshots.raw_payload`에 저장하며, 쇼핑몰 목록에 노출할 외부 상품 사진/공급업체/URL 후보는 `part_external_offers`에 캐시한다. 내부 쇼핑몰 노출 기준 상품명/카테고리/기준 가격은 항상 `parts`를 기준으로 한다.
 
-`/api/parts`와 `/api/parts/{id}`는 외부 검색 API를 직접 호출하지 않는다. 외부 검색 API 호출은 관리자 갱신 작업에서만 수행하고, 사용자 화면은 마지막으로 저장된 `part_external_offers` row를 읽는다.
+`/api/parts`와 `/api/parts/{id}`는 외부 검색 API를 직접 호출하지 않는다. 내부 자산 최신화는 `part_catalog_refresh_jobs` 작업이 외부 API를 호출해 `part_catalog_candidates`를 채운 뒤, 게시된 후보를 `parts`에 반영하는 방식으로 수행한다. 사용자 화면은 마지막으로 저장된 `parts`와 `part_external_offers` row만 읽는다.
+
+카테고리별 대량 갱신은 query pack을 사용한다. GPU, MOTHERBOARD, PSU처럼 제조사와 라인업이 많은 category는 한 검색어에 의존하지 않고 여러 모델/제조사 검색어를 나눠 후보를 수십 개 이상 확보한다.
 
 쇼핑몰 기본 목록은 `parts.status = 'ACTIVE'`인 row만 노출한다. 구형 seed나 기준에서 제외된 자산은 `INACTIVE`로 보관하고, 관리자나 점검 목적에서만 명시적으로 조회한다.
 
@@ -1016,6 +1095,7 @@ V7__admin_audit_seed.sql
 V8__parts_catalog_seed.sql
 V9__current_lineup_parts_seed.sql
 V10__part_external_offers_cache.sql
+V11__part_catalog_refresh_pipeline.sql
 ```
 
 현재 저장소에는 위 순서의 Flyway migration이 반영되어 있다. 기존 PostgreSQL volume이 남아 있으면 새 migration과 seed가 다시 실행되지 않으므로, 공통 DB를 처음부터 검증할 때는 `docker compose down -v` 후 `docker compose up --build`를 사용한다.

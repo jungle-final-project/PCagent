@@ -340,6 +340,40 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExternalOfferRefreshResponse"
+  /api/admin/parts/catalog/refresh:
+    post:
+      summary: 내부 자산 카탈로그 후보 갱신
+      description: 카테고리별 query pack으로 외부 검색 API를 호출해 part_catalog_candidates를 채우고, publish=true일 때 parts에 게시한다. 사용자 부품 조회 API는 외부 API를 직접 호출하지 않는다.
+      parameters:
+        - in: query
+          name: category
+          required: true
+          schema:
+            $ref: "#/components/schemas/PartCategory"
+        - in: query
+          name: limitPerQuery
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 3
+        - in: query
+          name: publish
+          schema:
+            type: boolean
+            default: false
+        - in: query
+          name: q
+          schema:
+            type: string
+          description: 단일 검색어 테스트용. 생략하면 category별 query pack을 사용한다.
+      responses:
+        "200":
+          description: 내부 자산 갱신 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartCatalogRefreshResponse"
   /api/tools/compatibility/check:
     post:
       summary: 호환성 Tool check
@@ -1089,6 +1123,36 @@ components:
           type: integer
         failed:
           type: integer
+        message:
+          type: string
+    PartCatalogRefreshResponse:
+      type: object
+      required: [configured, category, queryCount, limitPerQuery, attempted, discovered, published, failed]
+      properties:
+        configured:
+          type: boolean
+        jobId:
+          type: string
+          format: uuid
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        queryCount:
+          type: integer
+        limitPerQuery:
+          type: integer
+        publish:
+          type: boolean
+        attempted:
+          type: integer
+        discovered:
+          type: integer
+        published:
+          type: integer
+        failed:
+          type: integer
+        errorSummary:
+          type: string
+          nullable: true
         message:
           type: string
     ToolCheckRequest:

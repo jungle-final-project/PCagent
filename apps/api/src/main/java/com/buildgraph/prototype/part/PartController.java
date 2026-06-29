@@ -49,6 +49,16 @@ public class PartController {
         return naverShoppingOfferService.refreshOffers(category, limit, force);
     }
 
+    @PostMapping("/admin/parts/catalog/refresh")
+    Map<String, Object> refreshCatalog(
+            @RequestParam(value = "category") String category,
+            @RequestParam(value = "limitPerQuery", required = false) Integer limitPerQuery,
+            @RequestParam(value = "publish", required = false) Boolean publish,
+            @RequestParam(value = "q", required = false) String query
+    ) {
+        return naverShoppingOfferService.refreshCatalog(category, limitPerQuery, publish, query);
+    }
+
     @PostMapping("/tools/compatibility/check")
     Map<String, Object> compatibility(@RequestBody(required = false) Map<String, Object> request) {
         return tool("compatibility", request);

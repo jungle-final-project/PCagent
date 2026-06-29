@@ -180,6 +180,7 @@ Google OAuth 정책:
 | `POST` | `/api/price-alerts` | USER | 2번 | `{ "partId": "0e9f3b8b-8c83-4d9a-9f7d-1f2b4dfb8a11", "targetPrice": 700000 }` | `{ "partId": "0e9f3b8b-8c83-4d9a-9f7d-1f2b4dfb8a11", "partName": "RTX 4070", "targetPrice": 700000, "currentPrice": 850000, "status": "ACTIVE", "createdAt": "2026-06-29T10:25:00Z" }` | `price_alerts`, `parts`, `users` |
 | `GET` | `/api/admin/price-jobs` | ADMIN | 2번 | `?page=0&size=20` | `{ "items": [{ "id": "8d4b2d5b-7d39-4f8a-8195-bf32b9c5f61e", "status": "SUCCEEDED", "requestedBy": "c6d75f0c-0f57-4d1c-a8b2-a4079dcd40fd", "startedAt": "2026-06-29T10:00:00Z", "finishedAt": "2026-06-29T10:01:00Z", "errorSummary": null }], "page": 0, "size": 20, "total": 1 }` | `price_jobs` |
 | `POST` | `/api/admin/price-jobs/run` | ADMIN | 2번 | `{ "source": "manual" }` | `{ "id": "8d4b2d5b-7d39-4f8a-8195-bf32b9c5f61e", "status": "QUEUED", "requestedBy": "c6d75f0c-0f57-4d1c-a8b2-a4079dcd40fd", "createdAt": "2026-06-29T10:30:00Z" }` | `price_jobs`, `price_snapshots` |
+| `POST` | `/api/admin/parts/catalog/refresh` | ADMIN | 2번 | `?category=GPU&limitPerQuery=3&publish=true` | `{ "configured": true, "jobId": "8d4b2d5b-7d39-4f8a-8195-bf32b9c5f61e", "category": "GPU", "queryCount": 24, "limitPerQuery": 3, "publish": true, "attempted": 72, "discovered": 70, "published": 45, "failed": 2 }` | `part_catalog_refresh_jobs`, `part_catalog_candidates`, `parts`, `part_external_offers` |
 | `POST` | `/api/admin/parts/external-offers/refresh` | ADMIN | 2번 | `?category=GPU&limit=20&force=false` | `{ "configured": true, "category": "GPU", "limit": 20, "force": false, "attempted": 7, "updated": 7, "skipped": 0, "failed": 0 }` | `parts`, `part_external_offers` |
 
 `POST /api/price-snapshots/collect`는 공개 API가 아니다. 가격 스냅샷 생성은 `/api/admin/price-jobs/run` 뒤의 내부 service 처리다.
@@ -194,7 +195,11 @@ Google OAuth 정책:
 
 외부 가격 수집 백업은 별도 public API를 만들지 않는다. 현재 단계에서는 `price_snapshots.source = "DANAWA_BACKUP"` 또는 최신 라인업 수동 seed용 `MANUAL_CURRENT_LINEUP`, `price_snapshots.raw_payload`, `parts.attributes.externalSources`에 키워드와 source metadata를 저장한다. 실제 크롤러/수집기는 관리자 가격 Job 내부 처리로만 붙인다.
 
-네이버 쇼핑 검색 API 키가 설정된 환경에서도 `/api/parts`와 `/api/parts/{id}`는 외부 API를 직접 호출하지 않는다. `POST /api/admin/parts/external-offers/refresh`가 네이버 쇼핑 검색 결과를 `part_external_offers`에 저장하고, 사용자 화면은 저장된 캐시만 읽는다. 캐시가 없거나 갱신 실패 시 `externalOffer`는 `null`이다. 네이버 API 키는 프론트로 전달하지 않고 API 서버 환경변수로만 관리한다.
+네이버 쇼핑 검색 API 키가 설정된 환경에서도 `/api/parts`와 `/api/parts/{id}`는 외부 API를 직접 호출하지 않는다. 내부 자산 최신화는 `POST /api/admin/parts/catalog/refresh`가 담당한다. 이 API는 카테고리별 query pack을 돌려 `part_catalog_candidates`에 후보를 저장하고, `publish=true`일 때 검증 가능한 후보를 `parts`에 게시한다. 사용자 화면은 저장된 `parts`만 읽는다.
+
+상품 사진/공급업체 보강은 `POST /api/admin/parts/external-offers/refresh`가 `part_external_offers`에 저장한다. 캐시가 없거나 갱신 실패 시 `externalOffer`는 `null`이다. 네이버 API 키는 프론트로 전달하지 않고 API 서버 환경변수로만 관리한다.
+
+`POST /api/admin/parts/catalog/refresh`의 기본 query pack은 카테고리별로 수십 개 후보를 확보하도록 설계한다. GPU는 RTX 5090/5080/5070 Ti/5070/5060 Ti/5060을 ASUS, MSI, GIGABYTE, ZOTAC, PNY 등 제조사 검색어로 나누고, MOTHERBOARD와 PSU도 최신 소켓/칩셋/ATX 3.1 기준 제조사별 검색어를 사용한다.
 
 ### Tool
 
