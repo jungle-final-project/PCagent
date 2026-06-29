@@ -133,14 +133,20 @@ test('renders admin dashboard with ADMIN role and dashboard API response', async
   await page.addInitScript(() => {
     localStorage.setItem('buildgraph.token', 'demo-jwt-admin');
   });
+  let authMeAuthorization: string | undefined;
   await page.route('**/api/auth/me', async (route) => {
+    authMeAuthorization = route.request().headers().authorization;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ id: 'admin-001', email: 'admin@example.com', role: 'ADMIN' })
     });
   });
+  let dashboardCalls = 0;
+  let dashboardAuthorization: string | undefined;
   await page.route('**/api/admin/dashboard', async (route) => {
+    dashboardCalls += 1;
+    dashboardAuthorization = route.request().headers().authorization;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -160,4 +166,71 @@ test('renders admin dashboard with ADMIN role and dashboard API response', async
   await expect(page.locator('main')).toContainText('210ms');
   await expect(page.locator('main')).toContainText('3건');
   await expect(page.locator('main')).toContainText('98%');
+  expect(authMeAuthorization).toBe('Bearer demo-jwt-admin');
+  expect(dashboardCalls).toBe(1);
+  expect(dashboardAuthorization).toBe('Bearer demo-jwt-admin');
+});
+
+test('shows admin dashboard loading state while dashboard API is pending', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'demo-jwt-admin');
+  });
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'admin-001', email: 'admin@example.com', role: 'ADMIN' })
+    });
+  });
+
+  let releaseDashboard: (() => void) | undefined;
+  const dashboardReady = new Promise<void>((resolve) => {
+    releaseDashboard = resolve;
+  });
+  await page.route('**/api/admin/dashboard', async (route) => {
+    await dashboardReady;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        llmQueueP95: '12초',
+        apiP95: '210ms',
+        asOpen: 3,
+        recommendationSuccess: '98%'
+      })
+    });
+  });
+
+  await page.goto('/admin');
+
+  await expect(page.getByText('대시보드 로딩 중')).toBeVisible();
+  await expect(page.getByText('운영 지표를 불러오고 있습니다.')).toBeVisible();
+
+  releaseDashboard?.();
+  await expect(page.locator('main')).toContainText('12초');
+});
+
+test('shows admin dashboard error state when dashboard API fails', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'demo-jwt-admin');
+  });
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'admin-001', email: 'admin@example.com', role: 'ADMIN' })
+    });
+  });
+  await page.route('**/api/admin/dashboard', async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 'INTERNAL_ERROR', message: '대시보드 조회 실패' })
+    });
+  });
+
+  await page.goto('/admin');
+
+  await expect(page.getByText('대시보드 조회 실패')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('관리자 대시보드 API 응답을 불러오지 못했습니다.')).toBeVisible();
 });
