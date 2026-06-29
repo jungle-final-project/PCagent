@@ -19,6 +19,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: DB 연결 실패
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
   /api/users:
     post:
       summary: 회원가입
@@ -644,9 +650,11 @@ components:
       properties:
         status:
           type: string
+          enum: [UP, DOWN]
           example: UP
         database:
           type: string
+          enum: [UP, UNKNOWN]
           example: UP
     Role:
       type: string
