@@ -90,8 +90,8 @@ Auth 화면 주 owner는 1번이다. Auth API, `users`, OAuth, refresh token, ro
 
 | 항목 | 내용 |
 |---|---|
-| 담당 화면 route | `/self-quote`, `/admin/parts`, `/my/quotes`의 가격 알림 영역 |
-| frontend files | `features/parts/**`, `features/admin/parts/**` |
+| 담당 화면 route | `/self-quote`, `/admin/parts`, `/admin/price-jobs`, `/my/quotes`의 가격 알림 영역 |
+| frontend files | `features/parts/**`, `features/admin/pages/AdminPartsPage.tsx`, `features/admin/pages/AdminPriceJobsPage.tsx` |
 | backend packages | `part`, `price`, `tool` |
 | DB tables | `parts`, `price_snapshots`, `price_alerts`, `price_jobs`, `compatibility_rules`, `benchmark_summaries` |
 | API endpoints | `GET /api/parts`, `GET /api/parts/{id}`, `GET /api/price-alerts`, `POST /api/price-alerts`, `GET /api/admin/price-jobs`, `POST /api/admin/price-jobs/run`, 5개 Tool API |
@@ -125,8 +125,8 @@ Auth 화면 주 owner는 1번이다. Auth API, `users`, OAuth, refresh token, ro
 
 | 항목 | 내용 |
 |---|---|
-| 담당 화면 route | `/admin` shell/guard/dashboard |
-| frontend files | `features/admin/shell/**`, `components/**`, auth API client/guard |
+| 담당 화면 route | `/admin` shell/guard/dashboard, `/admin/load-tests` |
+| frontend files | `features/admin/shell/**`, `components/**`, auth API client/guard, `features/admin/pages/AdminLoadTestsPage.tsx` |
 | backend packages | `user`, `auth`, `admin`, `common`, config/security |
 | DB tables | `users`, `user_auth_providers`, `refresh_tokens`, `admin_audit_logs` |
 | API endpoints | `POST /api/users`, `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/auth/google/start`, `GET /api/auth/google/callback`, `POST /api/auth/exchange`, `GET /api/admin/dashboard`, `GET /api/admin/audit-logs/recent`, `GET /api/health` |
@@ -148,7 +148,9 @@ Auth 화면 주 owner는 1번이다. Auth API, `users`, OAuth, refresh token, ro
 | `/support/new` | 4번 | 5번 | `POST /api/agent-logs/upload`, `POST /api/as-tickets` |
 | `/support/:ticketId` | 4번 | - | `GET /api/as-tickets/{id}` |
 | `/admin` | 5번 | 2번, 3번, 4번 | `GET /api/admin/dashboard`, `GET /api/admin/audit-logs/recent` |
-| `/admin/parts` | 2번 | 5번 | `GET /api/parts`, `GET /api/admin/price-jobs`, `POST /api/admin/price-jobs/run` |
+| `/admin/parts` | 2번 | 5번 | `GET /api/parts` |
+| `/admin/price-jobs` | 2번 | 5번 | `GET /api/admin/price-jobs`, `POST /api/admin/price-jobs/run` |
+| `/admin/load-tests` | 5번 | 2번, 3번, 4번 | k6 smoke/load report, `GET /api/health` smoke |
 | `/admin/agent-sessions/:id` | 3번 | 5번 | `GET /api/admin/agent-sessions/{id}` |
 | `/admin/tool-invocations/:id` | 3번 | 5번 | `GET /api/admin/tool-invocations/{id}` |
 | `/admin/rag-evidence/:id` | 3번 | 5번 | `GET /api/admin/rag-evidence/{id}` |

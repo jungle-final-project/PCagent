@@ -18,19 +18,19 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 | JWT/Token 연동 | 진행중 | 프론트 header 전달은 완료. 1번의 실제 JWT 구현 이후 admin guard/security 전환 검토 필요 |
 | Auth Error 연동 | 진행중 | admin 401/403 분기는 완료. 1번 Auth 오류 응답이 공통 `ErrorResponse`와 충돌 없는지 검토 필요 |
 | RequireAdmin | 완료 | `/admin/*` guard, `auth/me` role 확인, 401/403 화면 분기와 테스트 완료 |
-| AdminShell | 진행중 | 기본 shell 완료. nav 세분화, topbar search/export/action 정책 미완료 |
+| AdminShell | 진행중 | 8개 nav 메뉴와 route 연결 완료. topbar search 제외와 disabled action frame 완료. nav label/order owner 공유 미완료 |
 | AdminDashboard | 완료 | DTO 정합성, metric, loading/error/success, degraded alert, 운영 작업, 관리자 할 일 link frame 완료 |
-| Admin Audit Logs | 진행중 | 백엔드 endpoint와 권한 테스트 완료. 프론트 표시 연결과 seed 표시 정책 미완료 |
+| Admin Audit Logs | 완료 | 백엔드 endpoint, 권한 테스트, seed 조회, 프론트 `최근 관리자 작업` 표시 연결 완료 |
 | Common API Client | 진행중 | token header 첨부 완료. refresh retry, token 만료 시 clear 정책, error normalization 미완료 |
 | Common UI | 완료 | 공통 UI barrel/layout/display/feedback 구조 유지 완료 |
-| Health | 진행중 | `/api/health` DB probe, 503 DOWN, 테스트/OpenAPI 완료. Docker runtime smoke 미완료 |
-| Docker Compose | 진행중 | `docker compose config` 완료. `docker compose up --build` 전체 실행 검증 미완료 |
+| Health | 완료 | `/api/health` DB probe, 503 DOWN, 테스트/OpenAPI 완료. 2026-06-29 runtime 응답 `{"status":"UP","database":"UP"}` 확인 완료 |
+| Docker Compose | 완료 | `docker compose config` 완료. Postgres init SQL 주입 제거 완료. `docker compose up --build` 기준 web/api/postgres/redis/rabbitmq/mailpit 기동과 health 응답 확인 완료 |
 | Redis | 시작안함 | 1번 OAuth one-time code 또는 공통 cache/job state 사용 범위 미확정 |
 | RabbitMQ | 시작안함 | Agent/price/mail job 중 5번 검증 범위 미확정 |
 | Mailpit | 시작안함 | 메일 발송 smoke 또는 실제 연동 범위 미확정 |
 | CI/GitHub Actions | 완료 | frontend build/test, OpenAPI, backend bootJar, compose config, health smoke 구성 완료 |
-| k6/부하 테스트 | 진행중 | `infra/k6/smoke.js` skeleton 있음. smoke와 300명/1000명 부하 시나리오 분리 미완료 |
-| 테스트/검증 | 완료 | `npm build/test`, `gradlew test/bootJar`, OpenAPI validation, compose config 검증 완료 |
+| k6/부하 테스트 | 진행중 | `infra/k6/smoke.js` skeleton과 `docs/reports/k6-smoke-report-template.md` 있음. 300명/1000명 부하 시나리오 확장은 별도 작업 |
+| 테스트/검증 | 완료 | `npm build/test`, `gradlew test/bootJar`, OpenAPI validation, compose config, Docker Compose runtime health 검증 완료 |
 
 5번이 하면 안 되는 것도 명확합니다.
 
@@ -51,6 +51,7 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 | --- | --- | --- |
 | 관리자 첫 화면 | `/admin` 운영 대시보드, dashboard frame, 운영 요약 | `apps/web/src/features/admin/pages/AdminDashboardPage.tsx`, `GET /api/admin/dashboard`, `GET /api/admin/audit-logs/recent` |
 | 관리자 공통 shell | sidebar, topbar, route title, navigation, layout slot | `apps/web/src/components/layout/AdminShell.tsx`, `features/admin/shell/**` |
+| 부하 테스트 화면 | k6 smoke/load report frame, 성능 검증 계획 표시 | `apps/web/src/features/admin/pages/AdminLoadTestsPage.tsx`, `infra/k6/smoke.js` |
 | 관리자 권한 | `/admin/*` guard, `ADMIN` role 확인, 401/403 분기 | `apps/web/src/features/auth/RequireAdmin.tsx`, `GET /api/auth/me` 연동 |
 | Auth 공통 연동 | token 저장/전달, Authorization header, token 만료 시 공통 처리 정책 협업 | `apps/web/src/lib/api.ts`, `RequireAdmin`, Auth API 계약 리뷰 |
 | 공통 UI | layout/display/feedback component contract 유지 | `apps/web/src/components/**`, `components/ui.tsx` barrel |
@@ -62,6 +63,7 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 | 화면 | 주 owner | 5번이 맡는 부분 |
 | --- | --- | --- |
 | `/admin/parts` | 2번 | AdminShell, guard, 공통 component contract |
+| `/admin/price-jobs` | 2번 | AdminShell, guard, 가격 Job frame |
 | `/admin/agent-sessions/:id` | 3번 | AdminShell, guard, route slot |
 | `/admin/tool-invocations/:id` | 3번 | AdminShell, guard, route slot |
 | `/admin/rag-evidence/:id` | 3번 | AdminShell, guard, route slot |
@@ -90,6 +92,8 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 - [x] `/admin/tool-invocations/:id` route가 `RequireAdmin`으로 감싸져 있음을 확인했다.
 - [x] `/admin/rag-evidence/:id` route가 `RequireAdmin`으로 감싸져 있음을 확인했다.
 - [x] `/admin/parts` route가 `RequireAdmin`으로 감싸져 있음을 확인했다.
+- [x] `/admin/price-jobs` route가 `RequireAdmin`으로 감싸져 있음을 확인했다.
+- [x] `/admin/load-tests` route가 `RequireAdmin`으로 감싸져 있음을 확인했다.
 - [x] `/admin/as-tickets` route가 `RequireAdmin`으로 감싸져 있음을 확인했다.
 - [x] `/admin/as-tickets/:ticketId` route가 `RequireAdmin`으로 감싸져 있음을 확인했다.
 - [x] `RequireAdmin`이 localStorage의 `buildgraph.token` 존재 여부를 먼저 확인한다.
@@ -105,6 +109,10 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 - [x] `AdminShell`에 auth/permission 판단 코드가 들어가 있지 않다.
 - [x] 도메인별 관리자 page 데이터를 `AdminShell`로 끌어올리지 않았다.
 - [x] 현재 shell 공통 버튼은 frame 수준이며, 도메인 동작을 직접 실행하지 않는다.
+- [x] AdminShell sidebar를 8개 메뉴로 세분화했다.
+- [x] `Agent/RAG` 단일 메뉴를 `Agent 세션`, `Tool 이력`, `RAG 근거`로 분리했다.
+- [x] `가격 Job` 메뉴와 `/admin/price-jobs` route를 추가했다.
+- [x] `부하 테스트` 메뉴와 `/admin/load-tests` route를 추가했다.
 
 ### AdminDashboard/API
 
@@ -125,6 +133,9 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 - [x] 최근 Agent 세션은 3번 owner 상세 로직을 만들지 않고 summary/link frame으로만 표시했다.
 - [x] 운영 작업 영역은 가격 Job, Mailpit, Mock Worker, k6 Smoke 요약으로 정리했다.
 - [x] 관리자 할 일 table은 2번/3번/4번/5번 owner별 이동 link frame으로 정리했다.
+- [x] `adminApi.ts`에 `getRecentAdminAuditLogs()` wrapper를 추가했다.
+- [x] `/admin`에서 `GET /api/admin/audit-logs/recent`를 호출해 `최근 관리자 작업` 패널에 `action`, `targetType`, `targetId`, `createdAt`를 표시한다.
+- [x] audit logs 조회 실패 시 전체 대시보드는 유지하고 해당 패널만 warning 상태를 표시하도록 테스트와 구현을 추가했다.
 
 ### Auth/API 공통
 
@@ -160,6 +171,16 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 - [x] `docker compose config`가 기존 확인에서 정상 출력되었음을 문서화했다.
 - [x] OpenAPI 검증은 `PYTHONPATH=.venv/lib/python3.11/site-packages python3 tools/validate_openapi.py` 방식이 필요할 수 있음을 문서화했다.
 - [x] k6 smoke skeleton이 `/api/health`, `/api/builds/recommend`, `/api/parts`를 확인하는 수준임을 정리했다.
+- [x] Postgres Docker init SQL과 Flyway `V1__extensions.sql`이 모두 `vector`, `pgcrypto` extension을 생성하던 중복 원인을 확인했다.
+- [x] `infra/docker/postgres/01-init.sql`을 제거하고 extension 생성 책임을 Flyway `V1__extensions.sql`로 단일화했다.
+- [x] `docker compose config`로 Postgres Dockerfile 변경 후 compose 설정이 유효함을 다시 확인했다.
+- [x] `docker compose up --build` 실행 후 `web`, `api`, `postgres`, `redis`, `rabbitmq`, `mailpit` 컨테이너가 모두 `Up` 상태임을 확인했다.
+- [x] `buildgraph-web`에서 Vite dev server가 `0.0.0.0:5173`으로 기동되는 것을 확인했다.
+- [x] `buildgraph-api`에서 Spring Boot, DB 연결, Flyway migration validation이 정상 완료되는 것을 확인했다.
+- [x] `http://localhost:8080/api/health`와 `http://localhost:5173/api/health`가 모두 `{"status":"UP","database":"UP"}`를 반환함을 확인했다.
+- [x] 관리자 화면의 브라우저 로딩 원인이 Docker/API hang이 아니라 브라우저 localStorage의 오래된 demo token 불일치일 수 있음을 확인했다.
+- [x] 백엔드 demo admin token 기준이 `demo-access-admin`이고, 이전 테스트용 `demo-jwt-admin`은 401을 반환함을 확인했다.
+- [x] 관리자 화면 수동 확인 시 `localStorage.setItem('buildgraph.token', 'demo-access-admin')` 후 reload가 필요할 수 있음을 정리했다.
 
 ## 해야 할 일
 
@@ -220,25 +241,41 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 
 ### 4. AdminShell navigation 정리
 
-- [ ] 현재 4개 nav 항목을 Figma 기준 8개 항목으로 나눌지 팀에 확인한다.
-- [ ] `대시보드`는 `/admin`으로 연결한다.
-- [ ] `Agent 세션`은 3번 owner route로 연결한다.
-- [ ] `Tool 이력`은 3번 owner route로 연결한다.
-- [ ] `RAG 근거`는 3번 owner route로 연결한다.
-- [ ] `부품/가격`은 2번 owner route로 연결한다.
-- [ ] `AS 티켓`은 4번 owner route로 연결한다.
-- [ ] `가격 Job`을 `/admin/parts` 안에 둘지 별도 route로 둘지 2번과 합의한다.
-- [ ] `부하 테스트` route가 MVP에 필요한지 확인한다.
+- [x] 현재 4개 nav 항목을 owner 1/2/3/4 작업 목록과 실제 `/admin/*` route 기준으로 분석했다.
+- [x] 최초 분석 결론은 6개 active nav + 2개 보류였으나, 사용자 요청에 따라 8개 항목을 모두 active nav로 만들기로 변경했다.
+- [x] `대시보드`는 `/admin`으로 연결한다.
+- [x] `Agent 세션`은 3번 owner route인 `/admin/agent-sessions/:id`로 연결한다.
+- [x] `Tool 이력`은 3번 owner route인 `/admin/tool-invocations/:id`로 연결한다.
+- [x] `RAG 근거`는 3번 owner route인 `/admin/rag-evidence/:id`로 연결한다.
+- [x] `부품/가격`은 2번 owner route인 `/admin/parts`로 연결한다.
+- [x] `AS 티켓`은 4번 owner route인 `/admin/as-tickets`로 연결한다.
+- [x] `가격 Job`은 2번 owner의 별도 route `/admin/price-jobs`로 연결한다.
+- [x] `부하 테스트`는 5번 인프라 route `/admin/load-tests`로 연결한다.
 - [ ] nav label/order 변경은 각 owner와 공유한다.
+
+AdminShell nav 분석 결과:
+
+| 메뉴 후보 | route | 주 owner | 판단 |
+| --- | --- | --- | --- |
+| 대시보드 | `/admin` | 5번 | active nav |
+| Agent 세션 | `/admin/agent-sessions/:id` | 3번 | active nav |
+| Tool 이력 | `/admin/tool-invocations/:id` | 3번 | active nav |
+| RAG 근거 | `/admin/rag-evidence/:id` | 3번 | active nav |
+| 부품/가격 | `/admin/parts` | 2번 | active nav |
+| AS 티켓 | `/admin/as-tickets` | 4번 | active nav |
+| 가격 Job | `/admin/price-jobs` | 2번 | active nav |
+| 부하 테스트 | `/admin/load-tests` | 5번/팀 공통 | active nav |
+
+1번 작업인 로그인/회원가입/견적 흐름은 관리자 내부 메뉴로 넣지 않는다. 1번 Auth 구현은 `RequireAdmin`과 token 정책에만 영향을 준다.
 
 ### 5. AdminShell topbar 정리
 
-- [ ] Figma처럼 admin search input을 둘지 결정한다.
-- [ ] 검색 범위가 세션/티켓/부품 전체라면 각 owner API와 충돌하는지 확인한다.
-- [ ] 검색 동작이 미확정이면 placeholder UI만 둔다.
-- [ ] `내보내기` 버튼의 실제 export 범위를 결정한다.
-- [ ] `작업 실행` 버튼이 어떤 job을 실행하는지 결정한다.
-- [ ] 동작이 미확정이면 버튼을 disabled 또는 no-op frame으로 둔다.
+- [x] Figma처럼 admin search input을 둘지 결정한다. 결정: Sprint 1에서는 검색 input을 두지 않는다.
+- [x] 검색 범위가 세션/티켓/부품 전체라면 각 owner API와 충돌하는지 확인한다. 판단: Agent/RAG는 3번, 티켓은 4번, 부품/가격은 2번 owner API가 필요하므로 5번이 전역 검색을 임의 구현하지 않는다.
+- [x] 검색 동작이 미확정이면 placeholder UI만 둔다. 결정: placeholder input도 두지 않고 topbar action frame만 유지한다.
+- [x] `내보내기` 버튼의 실제 export 범위를 결정한다. 결정: Sprint 1에서는 export 범위 미확정이므로 실제 동작을 연결하지 않는다.
+- [x] `작업 실행` 버튼이 어떤 job을 실행하는지 결정한다. 결정: Sprint 1에서는 실행 job 미확정이므로 실제 동작을 연결하지 않는다.
+- [x] 동작이 미확정이면 버튼을 disabled 또는 no-op frame으로 둔다. 구현: `AdminShell`의 `내보내기`, `작업 실행` 버튼을 disabled placeholder로 둔다.
 
 ### 6. Auth 협업/관리자 권한 고도화
 
@@ -248,41 +285,42 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 - [ ] 1번 Auth API 구현 후 `RequireAdmin`이 실제 JWT/role 기반 `/api/auth/me` 응답과 맞는지 확인한다.
 - [ ] 1번 Auth API 구현 후 admin API 권한 분기를 demo token에서 실제 JWT/security 정책으로 전환할지 결정한다.
 - [ ] Auth API 계약 변경 시 `docs/API_CONTRACT.md`와 `docs/openapi.yaml`의 오류 응답/예시를 1번 변경과 같이 검토한다.
-- [ ] 401과 403 메시지를 더 명확히 분리한다.
+- [x] 401과 403 메시지를 더 명확히 분리한다. 프론트는 로그인 필요/관리자 권한 없음 메시지를 분리하고, 백엔드는 `UNAUTHORIZED`/`FORBIDDEN` 응답을 분리한다.
 - [ ] token이 만료되었을 때 `clearToken()`을 호출할지 결정한다.
 - [ ] refresh retry를 `api.ts` 공통에 둘지, 1번 Auth flow 내부에 둘지 결정한다.
 - [ ] `/api/auth/logout` 호출 후 프론트 token 정리 흐름을 1번과 합의한다.
-- [ ] OAuth callback/exchange는 1번 구현 범위이며, 5번은 token 저장/전달 연동만 검토한다.
-- [ ] AdminController demo token 검사 방식에서 실제 JWT 검증으로 넘어갈 위치를 문서화한다.
+- [x] OAuth callback/exchange는 1번 구현 범위이며, 5번은 token 저장/전달 연동만 검토한다.
+- [x] AdminController demo token 검사 방식에서 실제 JWT 검증으로 넘어갈 위치를 문서화한다. 전환 위치는 `config/security`/JWT filter, `GET /api/auth/me`, `RequireAdmin`, `apps/web/src/lib/api.ts` 연동 지점이다.
 
 ### 7. Backend/Admin/Health
 
-- [ ] `GET /api/admin/dashboard` 응답을 OpenAPI와 정확히 맞춘다.
-- [ ] `GET /api/admin/audit-logs/recent` 응답 shape를 화면에서 쓸 수 있게 정리한다.
-- [ ] `GET /api/health`가 DB 연결까지 확인하는지 runtime smoke로 검증한다.
-- [ ] `admin_audit_logs` seed와 화면 표시 항목을 연결할지 결정한다.
+- [x] `GET /api/admin/dashboard` 응답을 OpenAPI와 정확히 맞춘다.
+- [x] `GET /api/admin/audit-logs/recent` 응답 shape를 화면에서 쓸 수 있게 정리한다. 백엔드 응답 shape, 권한 테스트, 프론트 `최근 관리자 작업` 표시 연결을 완료했다.
+- [x] `GET /api/health`가 DB 연결까지 확인하는지 runtime smoke로 검증한다. 확인: 2026-06-29 로컬 `/api/health` 요청에서 `{"status":"UP","database":"UP"}` 응답을 확인했다.
+- [x] `admin_audit_logs` seed와 화면 표시 항목을 연결할지 결정한다. 결정: 백엔드 `GET /api/admin/audit-logs/recent` shape와 seed 연결은 완료, 프론트 표시 연결은 P1로 분리한다.
 - [x] admin endpoint 401/403 response가 공통 `ErrorResponse`와 일치하는지 확인한다.
 
 ### 8. Infra/CI/k6
 
+- [x] Postgres Docker init SQL 주입을 제거해 Flyway schema history 충돌 원인을 없앤다.
 - [ ] Redis를 Sprint 1에서 연결 확인만 할지 실제 기능에 쓸지 결정한다.
 - [ ] RabbitMQ를 Agent job, price job, mail job 중 어디까지 검증할지 결정한다.
 - [ ] Mailpit은 실행 확인만 할지 실제 메일 발송까지 할지 결정한다.
-- [ ] `docker compose up --build`로 전체 실행을 확인한다.
-- [ ] k6 smoke와 실제 부하 테스트 시나리오를 분리한다.
-- [ ] 300명/1000명 목표가 이번 Sprint인지 이후 Sprint인지 확정한다.
-- [ ] 성능 리포트 템플릿을 만든다.
+- [x] `docker compose up --build`로 전체 실행을 확인한다. 확인 범위: 컨테이너 기동, web/API 포트 응답, `/api/health`, Vite proxy health, 관리자 demo token 응답
+- [x] k6 smoke와 실제 부하 테스트 시나리오를 분리한다. 결정: Sprint 1 k6는 `infra/k6/smoke.js`와 `docs/reports/k6-smoke-report-template.md` 기준의 smoke 결과 기록으로 두고, 300명/1000명 부하는 별도 확장 작업으로 분리한다.
+- [x] 300명/1000명 목표가 이번 Sprint인지 이후 Sprint인지 확정한다. 결정: 300명은 2주차, 1,000명은 4주차 목표로 둔다.
+- [x] 성능 리포트 템플릿을 만든다. 파일: `docs/reports/k6-smoke-report-template.md`
 
 ### 9. PR 전 검증
 
-- [x] `npm --prefix apps/web run build`
-- [x] `npm --prefix apps/web run test`
-- [ ] `python tools/validate_openapi.py`
-- [x] 필요 시 `PYTHONPATH=.venv/lib/python3.11/site-packages python3 tools/validate_openapi.py`
-- [x] `docker compose config`
-- [x] 백엔드 테스트 변경 검증으로 `cd apps/api && ./gradlew test --no-daemon`을 실행한다.
-- [x] 백엔드 운영 빌드 변경 시 `cd apps/api && ./gradlew bootJar --no-daemon`
-- [ ] 인프라 변경 시 `docker compose up --build`
+- [x] `npm --prefix apps/web run build` 통과. 2026-06-29 재검증 완료.
+- [x] `npm --prefix apps/web run test` 통과. 2026-06-29 재검증: Playwright 41개 통과.
+- [ ] `python tools/validate_openapi.py`. 현재 로컬 시스템 Python은 PyYAML 미설치로 실패하므로 `.venv` 방식 또는 CI 의존성 설치 후 실행 필요.
+- [x] 필요 시 `PYTHONPATH=.venv/lib/python3.11/site-packages python3 tools/validate_openapi.py` 통과. 2026-06-29 재검증: 42 paths.
+- [x] `docker compose config` 통과. 2026-06-29 재검증 완료.
+- [x] 백엔드 테스트 변경 검증으로 `cd apps/api && ./gradlew test --no-daemon`을 실행한다. 2026-06-29 재검증: `BUILD SUCCESSFUL`.
+- [x] 백엔드 운영 빌드 변경 시 `cd apps/api && ./gradlew bootJar --no-daemon`. 2026-06-29 재검증: `BUILD SUCCESSFUL`.
+- [x] 인프라 변경 시 `docker compose up --build`. 2026-06-29 확인: compose 서비스 전체 `Up`, API health 200, Vite proxy health 200
 - [ ] 검증 결과를 PR 설명에 붙인다.
 
 ## 우선순위
@@ -300,10 +338,10 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 
 ### P1
 
-- [ ] AdminShell nav를 Figma 기준으로 세분화
-- [ ] AdminShell topbar search/action frame 정리
-- [ ] audit logs recent 표시 연결
-- [ ] k6 smoke 리포트 템플릿 작성
+- [x] AdminShell nav를 Figma 기준 8개 메뉴로 세분화
+- [x] AdminShell topbar search/action frame 정리
+- [x] audit logs recent 표시 연결
+- [x] k6 smoke 리포트 템플릿 작성
 
 ### P2
 
@@ -315,7 +353,7 @@ Figma 기준으로 5번이 직접 맡아야 할 화면은 `153:1880 STATE-15 ADM
 
 - [x] AdminDashboard DTO는 OpenAPI 기준으로 프론트를 맞출지, Figma 운영 지표 기준으로 OpenAPI를 확장할지 결정해야 한다. 결정: OpenAPI/백엔드 기준으로 프론트를 맞춘다.
 - [x] DB 연결 실패 시 `/api/health`를 500 `INTERNAL_ERROR`, 503 `DOWN`, 또는 200 `status: "DOWN"` 중 어떤 정책으로 반환할지 결정해야 한다. 결정: `503 Service Unavailable` + `{ "status": "DOWN" }`
-- [ ] AdminShell nav의 `가격 Job`을 2번의 `/admin/parts` 안에 둘지 별도 route로 둘지 결정해야 한다.
-- [ ] `부하 테스트` 관리자 화면을 MVP route로 만들지, 문서/리포트 링크로 둘지 결정해야 한다.
-- [ ] topbar `작업 실행`이 어떤 작업을 실행하는 버튼인지 결정해야 한다.
-- [ ] admin search가 전역 검색인지, 단순 placeholder인지 결정해야 한다.
+- [x] AdminShell nav의 `가격 Job`을 2번의 `/admin/parts` 안에 둘지 별도 route로 둘지 결정해야 한다. 결정: `/admin/price-jobs` 별도 route
+- [x] `부하 테스트` 관리자 화면을 MVP route로 만들지, 문서/리포트 링크로 둘지 결정해야 한다. 결정: `/admin/load-tests` route
+- [x] topbar `작업 실행`이 어떤 작업을 실행하는 버튼인지 결정해야 한다. 결정: Sprint 1에서는 실행 job 미확정으로 disabled placeholder 처리한다.
+- [x] admin search가 전역 검색인지, 단순 placeholder인지 결정해야 한다. 결정: Sprint 1에서는 전역 검색과 placeholder input을 모두 제외한다.

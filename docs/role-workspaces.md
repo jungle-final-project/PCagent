@@ -40,12 +40,14 @@
 | 파일 | 담당 | 책임 |
 | --- | --- | --- |
 | `AdminDashboardPage.tsx` | 5번 | 관리자 첫 화면, 운영 요약 |
-| `AdminPartsPage.tsx` | 2번 | 부품, 가격, 가격 작업 상태 |
+| `AdminPartsPage.tsx` | 2번 | 부품 DB, 가격 데이터 기준 |
+| `AdminPriceJobsPage.tsx` | 2번 | 가격 수집 Job 상태, 실행 정책, 실패 이력 |
 | `AgentSessionAdminPage.tsx` | 3번 | Agent 세션 상태와 근거 |
 | `ToolInvocationAdminPage.tsx` | 3번 | Tool 호출 상세 |
 | `RagEvidenceAdminPage.tsx` | 3번 | RAG 근거 상세 |
 | `AdminTicketsPage.tsx` | 4번 | AS 티켓 목록 |
 | `AdminTicketDetailPage.tsx` | 4번 | AS 티켓 상세, 로그 정책, 원인 후보 |
+| `AdminLoadTestsPage.tsx` | 5번 | k6 smoke/부하 테스트 계획과 리포트 상태 |
 | `AdminShell` | 5번 | 관리자 layout과 navigation |
 
 ## 시드와 Mock 데이터
