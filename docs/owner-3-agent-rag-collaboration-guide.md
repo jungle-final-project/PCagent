@@ -225,6 +225,8 @@ LLM mode에서도 외부 담당자가 보는 계약은 바뀌지 않는다.
 ## 현재 구현 상태
 
 - DB 저장은 실제 PostgreSQL/Flyway 테이블에 연결되어 있다.
+- `agent_session_id IS NULL`인 `rag_evidence` row는 Agent가 검색할 재사용 지식 청크로 사용한다.
+- Agent 실행 시 선택된 지식 청크는 세션별 `rag_evidence` row로 복사되어 관리자 화면과 `evidenceIds`에서 추적된다.
 - 관리자 Agent/Tool/RAG 상세 화면은 실제 API 응답을 읽는다.
 - `deterministic` runner는 키 없이 같은 흐름을 재현한다.
 - `llm` runner는 RAG evidence와 Tool invocation을 저장한 뒤 OpenAI Responses API로 생성한 summary를 `agent_sessions.summary`에 저장한다.

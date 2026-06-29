@@ -16,10 +16,16 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api")
 public class PartController {
     private final PartQueryService partQueryService;
+    private final ToolCheckService toolCheckService;
     private final NaverShoppingOfferService naverShoppingOfferService;
 
-    public PartController(PartQueryService partQueryService, NaverShoppingOfferService naverShoppingOfferService) {
+    public PartController(
+            PartQueryService partQueryService,
+            ToolCheckService toolCheckService,
+            NaverShoppingOfferService naverShoppingOfferService
+    ) {
         this.partQueryService = partQueryService;
+        this.toolCheckService = toolCheckService;
         this.naverShoppingOfferService = naverShoppingOfferService;
     }
 
@@ -102,7 +108,7 @@ public class PartController {
     }
 
     private Map<String, Object> tool(String tool, Map<String, Object> request) {
-        return partQueryService.toolResult(tool);
+        return toolCheckService.checkTool(tool, request);
     }
 
     private static void requireAdmin(String authorization) {
