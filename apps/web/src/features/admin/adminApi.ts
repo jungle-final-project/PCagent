@@ -1,10 +1,11 @@
 import { api } from '../../lib/api';
 
 export type AdminDashboard = {
-  llmQueueP95: string;
-  apiP95: string;
-  asOpen: number;
-  recommendationSuccess: string;
+  agentRunning: number;
+  openTickets: number;
+  priceJobsRunning: number;
+  degraded: boolean;
+  generatedAt?: string;
 };
 
 export function getAdminDashboard() {

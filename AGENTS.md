@@ -26,17 +26,27 @@ BuildGraph AI는 사용자가 예산, 용도, 우선순위, 브랜드 선호를 
 
 ## 먼저 확인할 문서
 
-작업을 시작하기 전에 변경 범위에 맞춰 아래 문서를 확인한다.
+Codex는 개발 작업을 시작하기 전에 변경 범위에 맞춰 아래 문서를 먼저 읽고, 문서에 적힌 API/DB/owner 계약을 기준으로 작업한다. 공통 계약과 충돌하는 구현은 진행하지 않는다.
 
 | 문서 | 목적 |
 | --- | --- |
+| `docs/API_CONTRACT.md` | API 요청/응답, 인증, pagination, 오류, public_id 계약 확인 |
+| `docs/DB_SCHEMA.md` | 공통 DB 테이블, 컬럼, 상태 전이, JSONB, Flyway 기준 확인 |
+| `docs/ROUTE_OWNERSHIP.md` | 담당자별 route/API/DB/file owner와 공유 지점 확인 |
+| `docs/openapi.yaml` | API 요청/응답 계약의 기계 검증 기준 확인 |
 | `README.md` | 실행 방법, 기술 스택, PR 전 확인 |
 | `docs/role-workspaces.md` | 담당자별 파일 소유권과 PR 범위 |
 | `docs/sprint-1-start-checklist.md` | 첫 PR 기준과 완료 조건 |
 | `docs/architecture.md` | 런타임 흐름, 도메인 구조 |
 | `docs/scaffold-decisions.md` | 현재 스캐폴드 결정사항 |
-| `docs/openapi.yaml` | API 요청/응답 계약 |
 | `apps/pc-agent/README.md` | PC Agent/AS 로그 작업 기준 |
+
+변경 범위별 필수 확인 규칙:
+
+- API path, request, response, error code, auth, pagination을 바꾸는 작업은 `docs/API_CONTRACT.md`, `docs/openapi.yaml`, `docs/ROUTE_OWNERSHIP.md`를 먼저 확인한다.
+- DB table, column, FK, index, enum/status, 상태 전이, JSONB shape를 바꾸는 작업은 `docs/DB_SCHEMA.md`, `docs/API_CONTRACT.md`, `docs/ROUTE_OWNERSHIP.md`를 먼저 확인한다.
+- frontend route, backend package, 담당자 owner, 공통 파일을 바꾸는 작업은 `docs/ROUTE_OWNERSHIP.md`와 `docs/role-workspaces.md`를 먼저 확인한다.
+- PC Agent, 로그 업로드, AS 티켓 작업은 `apps/pc-agent/README.md`, `docs/API_CONTRACT.md`, `docs/DB_SCHEMA.md`, `docs/ROUTE_OWNERSHIP.md`를 먼저 확인한다.
 
 ## 기술 스택과 구조
 
@@ -286,4 +296,3 @@ MVP에서 구현하지 않는다.
 - FPS/Frame Time 선택 수집
 - 최저가 보장
 - 자동 모델 학습
-

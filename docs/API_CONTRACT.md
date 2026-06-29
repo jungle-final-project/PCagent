@@ -317,7 +317,9 @@ Agent 실행 방식:
 |---|---|---|---|---|---|---|
 | `GET` | `/api/admin/dashboard` | ADMIN | 5번 | - | `{ "agentRunning": 1, "openTickets": 3, "priceJobsRunning": 0, "degraded": false, "generatedAt": "2026-06-29T10:50:00Z" }` | `agent_sessions`, `as_tickets`, `price_jobs` |
 | `GET` | `/api/admin/audit-logs/recent` | ADMIN | 5번 | - | `{ "items": [{ "action": "AS_TICKET_UPDATED", "targetType": "as_tickets", "targetId": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "metadata": { "beforeStatus": "OPEN", "afterStatus": "IN_PROGRESS" }, "createdAt": "2026-06-29T10:45:00Z" }] }` | `admin_audit_logs` |
-| `GET` | `/api/health` | no | 5번 | - | `{ "status": "UP" }` | runtime |
+| `GET` | `/api/health` | no | 5번 | - | `200 { "status": "UP", "database": "UP" }`, DB 연결 실패 시 `503 { "status": "DOWN" }` | runtime |
+
+- `/api/health`는 DB probe를 포함한다. DB 연결 또는 query 실패 시 `503 Service Unavailable`과 `status: "DOWN"`을 반환한다.
 
 ## Schema Appendix
 
