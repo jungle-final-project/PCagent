@@ -24,7 +24,7 @@ public class BuildController {
 
     @PostMapping("/builds/recommend")
     Map<String, Object> recommend(@RequestBody(required = false) Map<String, Object> request) {
-        return buildQueryService.recommendations();
+        return buildQueryService.recommendations(request == null ? Map.of() : request);
     }
 
     @GetMapping("/builds/{id}")

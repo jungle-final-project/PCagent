@@ -888,6 +888,14 @@ components:
           type: array
           items:
             type: string
+        resolution:
+          type: string
+        preferredVendors:
+          type: array
+          items:
+            type: string
+        priority:
+          type: string
     RequirementDto:
       type: object
       required: [id, rawMessage]
@@ -906,6 +914,24 @@ components:
         parsedContext:
           type: object
           additionalProperties: true
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/RequirementQuestionDto"
+    RequirementQuestionDto:
+      type: object
+      required: [key, label, options, required]
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+        required:
+          type: boolean
     BuildRecommendRequest:
       type: object
       required: [requirementId]
@@ -913,6 +939,10 @@ components:
         requirementId:
           type: string
           format: uuid
+        answers:
+          type: object
+          additionalProperties:
+            type: string
     BuildRecommendResponse:
       type: object
       required: [agentSessionId, recommendations, warnings, evidenceIds]
@@ -933,6 +963,10 @@ components:
           items:
             type: string
             format: uuid
+        toolResults:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolResultDto"
     BuildDto:
       type: object
       required: [id, name, totalPrice, confidence, items, warnings, evidenceIds, changeableCategories]
@@ -941,6 +975,10 @@ components:
           type: string
           format: uuid
         name:
+          type: string
+        recommendedFor:
+          type: string
+        summary:
           type: string
         totalPrice:
           type: integer
@@ -963,6 +1001,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PartCategory"
+        agentSessionId:
+          type: string
+          format: uuid
+          nullable: true
+        agentSummary:
+          type: string
+          nullable: true
+        toolResults:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolResultDto"
         createdAt:
           type: string
           format: date-time
@@ -977,8 +1026,14 @@ components:
           format: uuid
         name:
           type: string
+        manufacturer:
+          type: string
+          nullable: true
         price:
           type: integer
+        attributes:
+          type: object
+          additionalProperties: true
     ChangePartRequest:
       type: object
       required: [category, partId]
@@ -990,7 +1045,7 @@ components:
           format: uuid
     ChangePartResponse:
       type: object
-      required: [buildId, category, selectedPartId, totalPrice, diff, warnings]
+      required: [buildId, category, selectedPartId, totalPrice, diff, beforeBuild, afterBuild, diffRows, toolResults, warnings]
       properties:
         buildId:
           type: string
@@ -1008,10 +1063,72 @@ components:
         diff:
           type: object
           additionalProperties: true
+        beforeBuild:
+          $ref: "#/components/schemas/BuildDto"
+        afterBuild:
+          type: object
+          required: [id, name, totalPrice, items]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            totalPrice:
+              type: integer
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/BuildItemDto"
+        diffRows:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChangePartDiffRowDto"
+        toolResults:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolResultDto"
+        agentSessionId:
+          type: string
+          format: uuid
+          nullable: true
+        agentSummary:
+          type: string
+          nullable: true
         warnings:
           type: array
           items:
             $ref: "#/components/schemas/WarningDto"
+    ChangePartDiffRowDto:
+      type: object
+      required: [label, before, after, diff, status]
+      properties:
+        label:
+          type: string
+        before:
+          type: string
+        after:
+          type: string
+        diff:
+          type: string
+        status:
+          type: string
+    ToolResultDto:
+      type: object
+      required: [tool, status, confidence, summary]
+      properties:
+        tool:
+          type: string
+        status:
+          type: string
+          enum: [PASS, WARN, FAIL]
+        confidence:
+          $ref: "#/components/schemas/Confidence"
+        summary:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
     WarningDto:
       type: object
       required: [code, message, severity]
