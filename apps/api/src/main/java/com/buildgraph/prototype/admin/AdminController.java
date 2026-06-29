@@ -2,6 +2,7 @@ package com.buildgraph.prototype.admin;
 
 import com.buildgraph.prototype.agent.AgentQueryService;
 import com.buildgraph.prototype.price.PriceQueryService;
+import com.buildgraph.prototype.rag.RagQueryService;
 import com.buildgraph.prototype.ticket.TicketQueryService;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -21,17 +22,20 @@ import org.springframework.web.server.ResponseStatusException;
 public class AdminController {
     private final AdminQueryService adminQueryService;
     private final AgentQueryService agentQueryService;
+    private final RagQueryService ragQueryService;
     private final TicketQueryService ticketQueryService;
     private final PriceQueryService priceQueryService;
 
     public AdminController(
             AdminQueryService adminQueryService,
             AgentQueryService agentQueryService,
+            RagQueryService ragQueryService,
             TicketQueryService ticketQueryService,
             PriceQueryService priceQueryService
     ) {
         this.adminQueryService = adminQueryService;
         this.agentQueryService = agentQueryService;
+        this.ragQueryService = ragQueryService;
         this.ticketQueryService = ticketQueryService;
         this.priceQueryService = priceQueryService;
     }
@@ -75,7 +79,7 @@ public class AdminController {
     @GetMapping("/rag-evidence/{id}")
     Map<String, Object> ragEvidence(@PathVariable String id, @RequestHeader(value = "Authorization", required = false) String authorization) {
         requireAdmin(authorization);
-        return agentQueryService.ragEvidence(id);
+        return ragQueryService.adminEvidence(id);
     }
 
     @GetMapping("/as-tickets")

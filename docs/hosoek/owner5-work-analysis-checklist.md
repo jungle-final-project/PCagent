@@ -453,6 +453,14 @@ AdminShell nav 분석 결과:
 - OpenAPI 검증은 python3 또는 위 PYTHONPATH 명령을 사용한다.
 ```
 
+#### origin/main 병합 충돌 처리 기록
+
+- [x] `origin/main`을 `juhoseok` 브랜치에 merge하는 과정에서 `README.md`, `apps/web/src/features/admin/adminApi.ts`, `apps/web/src/features/admin/pages/AdminPartsPage.tsx`, `docs/ROUTE_OWNERSHIP.md` 충돌을 해결했다.
+- [x] `adminApi.ts`는 5번의 `AdminAuditLog`/`getRecentAdminAuditLogs()`와 3번의 Agent/RAG/Tool 상세 타입을 모두 유지했다.
+- [x] `AdminPartsPage.tsx`는 부품 DB 조회와 가격 데이터 기준 안내만 유지하고, 가격 Job 실행은 별도 `/admin/price-jobs` 화면으로 분리하는 기준을 유지했다.
+- [x] `README.md`와 `ROUTE_OWNERSHIP.md`는 Auth/User 구현 owner 1번 기준과 2번의 parts/catalog refresh 확장 기준을 함께 반영했다.
+- [x] 충돌 marker 제거 후 `npm --prefix apps/web run build`와 `git diff --check`가 통과했다.
+
 ## 우선순위
 
 ### P0
