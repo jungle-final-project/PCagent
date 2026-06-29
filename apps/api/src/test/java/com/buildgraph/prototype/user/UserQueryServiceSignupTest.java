@@ -26,7 +26,18 @@ class UserQueryServiceSignupTest {
             java.time.Duration.ofMinutes(15),
             java.time.Clock.systemUTC()
     );
-    private final UserQueryService userQueryService = new UserQueryService(jdbcTemplate, passwordService, jwtTokenService, currentUserService);
+    private final RefreshTokenService refreshTokenService = new RefreshTokenService(
+            new java.security.SecureRandom(),
+            java.time.Duration.ofDays(30),
+            java.time.Clock.systemUTC()
+    );
+    private final UserQueryService userQueryService = new UserQueryService(
+            jdbcTemplate,
+            passwordService,
+            jwtTokenService,
+            currentUserService,
+            refreshTokenService
+    );
 
     @Test
     void signupStoresPasswordHash() {
