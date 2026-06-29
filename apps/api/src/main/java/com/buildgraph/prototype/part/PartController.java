@@ -6,25 +6,67 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api")
 public class PartController {
     private final PartQueryService partQueryService;
+    private final NaverShoppingOfferService naverShoppingOfferService;
 
-    public PartController(PartQueryService partQueryService) {
+    public PartController(PartQueryService partQueryService, NaverShoppingOfferService naverShoppingOfferService) {
         this.partQueryService = partQueryService;
+        this.naverShoppingOfferService = naverShoppingOfferService;
     }
 
     @GetMapping("/parts")
-    Map<String, Object> parts() {
-        return partQueryService.parts();
+    Map<String, Object> parts(
+            @RequestParam(value = "category", required = false) String category,
+            @RequestParam(value = "q", required = false) String query,
+            @RequestParam(value = "manufacturer", required = false) String manufacturer,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "minPrice", required = false) Integer minPrice,
+            @RequestParam(value = "maxPrice", required = false) Integer maxPrice,
+            @RequestParam(value = "page", required = false) Integer page,
+            @RequestParam(value = "size", required = false) Integer size,
+            @RequestParam(value = "sort", required = false) String sort
+    ) {
+        return partQueryService.parts(category, query, manufacturer, status, minPrice, maxPrice, page, size, sort);
     }
 
     @GetMapping("/parts/{id}")
     Map<String, Object> part(@PathVariable String id) {
         return partQueryService.part(id);
+    }
+
+    @GetMapping("/parts/{id}/price-history")
+    Map<String, Object> priceHistory(
+            @PathVariable String id,
+            @RequestParam(value = "days", required = false) Integer days,
+            @RequestParam(value = "source", required = false) String source,
+            @RequestParam(value = "limit", required = false) Integer limit
+    ) {
+        return partQueryService.priceHistory(id, days, source, limit);
+    }
+
+    @PostMapping("/admin/parts/external-offers/refresh")
+    Map<String, Object> refreshExternalOffers(
+            @RequestParam(value = "category", required = false) String category,
+            @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestParam(value = "force", required = false) Boolean force
+    ) {
+        return naverShoppingOfferService.refreshOffers(category, limit, force);
+    }
+
+    @PostMapping("/admin/parts/catalog/refresh")
+    Map<String, Object> refreshCatalog(
+            @RequestParam(value = "category") String category,
+            @RequestParam(value = "limitPerQuery", required = false) Integer limitPerQuery,
+            @RequestParam(value = "publish", required = false) Boolean publish,
+            @RequestParam(value = "q", required = false) String query
+    ) {
+        return naverShoppingOfferService.refreshCatalog(category, limitPerQuery, publish, query);
     }
 
     @PostMapping("/tools/compatibility/check")

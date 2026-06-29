@@ -212,6 +212,34 @@ paths:
           name: category
           schema:
             $ref: "#/components/schemas/PartCategory"
+        - in: query
+          name: q
+          schema:
+            type: string
+          description: 부품명, 제조사, attributes JSON 검색어
+        - in: query
+          name: manufacturer
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            $ref: "#/components/schemas/GenericStatus"
+        - in: query
+          name: minPrice
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: maxPrice
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [category, price_asc, price_desc, name]
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/Size"
       responses:
@@ -233,6 +261,38 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PartDto"
+  /api/parts/{id}/price-history:
+    get:
+      summary: 부품 가격 이력
+      description: 저장된 price_snapshots를 기준으로 상품별 가격변동 추이를 조회한다. 외부 검색 API를 실시간 호출하지 않는다.
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+        - in: query
+          name: days
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3650
+            default: 90
+        - in: query
+          name: source
+          schema:
+            type: string
+          description: "특정 가격 출처만 조회할 때 사용한다. 예: NAVER_SHOPPING_SEARCH"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 120
+      responses:
+        "200":
+          description: 부품 가격 이력
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartPriceHistoryResponse"
   /api/price-alerts:
     get:
       summary: 목표가 알림 목록
@@ -290,6 +350,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PriceJobDto"
+  /api/admin/parts/external-offers/refresh:
+    post:
+      summary: 외부 상품 캐시 갱신
+      description: 네이버 쇼핑 검색 API를 호출해 part_external_offers 캐시를 갱신한다. 사용자 부품 조회 API는 이 캐시만 읽는다.
+      parameters:
+        - in: query
+          name: category
+          schema:
+            $ref: "#/components/schemas/PartCategory"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - in: query
+          name: force
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: 갱신 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalOfferRefreshResponse"
+  /api/admin/parts/catalog/refresh:
+    post:
+      summary: 내부 자산 카탈로그 후보 갱신
+      description: 카테고리별 query pack으로 외부 검색 API를 호출해 part_catalog_candidates를 채우고, publish=true일 때 parts에 게시한다. 사용자 부품 조회 API는 외부 API를 직접 호출하지 않는다.
+      parameters:
+        - in: query
+          name: category
+          required: true
+          schema:
+            $ref: "#/components/schemas/PartCategory"
+        - in: query
+          name: limitPerQuery
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 3
+        - in: query
+          name: publish
+          schema:
+            type: boolean
+            default: false
+        - in: query
+          name: q
+          schema:
+            type: string
+          description: 단일 검색어 테스트용. 생략하면 category별 query pack을 사용한다.
+      responses:
+        "200":
+          description: 내부 자산 갱신 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartCatalogRefreshResponse"
   /api/tools/compatibility/check:
     post:
       summary: 호환성 Tool check
@@ -929,6 +1051,94 @@ components:
         benchmarkSummary:
           type: object
           additionalProperties: true
+        latestPriceSource:
+          type: string
+          nullable: true
+        latestPriceCollectedAt:
+          type: string
+          format: date-time
+          nullable: true
+        externalOffer:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PartExternalOfferDto"
+    PartExternalOfferDto:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          nullable: true
+        supplierName:
+          type: string
+          nullable: true
+        offerUrl:
+          type: string
+          nullable: true
+        lowPrice:
+          type: integer
+          nullable: true
+        source:
+          type: string
+        refreshedAt:
+          type: string
+          format: date-time
+          nullable: true
+    PartPriceHistoryResponse:
+      type: object
+      required: [partId, partName, currentPrice, days, items, summary]
+      properties:
+        partId:
+          type: string
+          format: uuid
+        partName:
+          type: string
+        currentPrice:
+          type: integer
+        days:
+          type: integer
+        source:
+          type: string
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PriceHistoryPoint"
+        summary:
+          $ref: "#/components/schemas/PriceHistorySummary"
+    PriceHistoryPoint:
+      type: object
+      required: [price, source, collectedAt]
+      properties:
+        price:
+          type: integer
+        source:
+          type: string
+        collectedAt:
+          type: string
+          format: date-time
+    PriceHistorySummary:
+      type: object
+      required: [sampleCount, currentPrice, minPrice, maxPrice, firstPrice, lastPrice, changeAmount, changeRatePercent]
+      properties:
+        sampleCount:
+          type: integer
+        currentPrice:
+          type: integer
+        minPrice:
+          type: integer
+        maxPrice:
+          type: integer
+        firstPrice:
+          type: integer
+        lastPrice:
+          type: integer
+        changeAmount:
+          type: integer
+        changeRatePercent:
+          type: number
     PriceAlertCreateRequest:
       type: object
       required: [partId, targetPrice]
@@ -985,6 +1195,59 @@ components:
         createdAt:
           type: string
           format: date-time
+    ExternalOfferRefreshResponse:
+      type: object
+      required: [configured, limit, attempted, updated, skipped, failed]
+      properties:
+        configured:
+          type: boolean
+        category:
+          $ref: "#/components/schemas/PartCategory"
+          nullable: true
+        limit:
+          type: integer
+        force:
+          type: boolean
+        attempted:
+          type: integer
+        updated:
+          type: integer
+        skipped:
+          type: integer
+        failed:
+          type: integer
+        message:
+          type: string
+    PartCatalogRefreshResponse:
+      type: object
+      required: [configured, category, queryCount, limitPerQuery, attempted, discovered, published, failed]
+      properties:
+        configured:
+          type: boolean
+        jobId:
+          type: string
+          format: uuid
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        queryCount:
+          type: integer
+        limitPerQuery:
+          type: integer
+        publish:
+          type: boolean
+        attempted:
+          type: integer
+        discovered:
+          type: integer
+        published:
+          type: integer
+        failed:
+          type: integer
+        errorSummary:
+          type: string
+          nullable: true
+        message:
+          type: string
     ToolCheckRequest:
       type: object
       required: [partIds, context]

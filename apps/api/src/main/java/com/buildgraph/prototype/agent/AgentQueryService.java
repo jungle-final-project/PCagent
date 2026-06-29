@@ -2,7 +2,7 @@ package com.buildgraph.prototype.agent;
 
 import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.buildgraph.prototype.rag.RagQueryService;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -12,71 +12,37 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class AgentQueryService {
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private final JdbcTemplate jdbcTemplate;
+    private final RagQueryService ragQueryService;
+    private final AgentTraceService agentTraceService;
+    private final AgentRunner agentRunner;
 
-    public AgentQueryService(JdbcTemplate jdbcTemplate) {
+    public AgentQueryService(
+            JdbcTemplate jdbcTemplate,
+            RagQueryService ragQueryService,
+            AgentTraceService agentTraceService,
+            AgentRunner agentRunner
+    ) {
         this.jdbcTemplate = jdbcTemplate;
+        this.ragQueryService = ragQueryService;
+        this.agentTraceService = agentTraceService;
+        this.agentRunner = agentRunner;
     }
 
-    public Map<String, Object> createSession(Map<String, Object> request) {
-        String requirementId = stringOrNull(request == null ? null : request.get("requirementId"));
-        String buildId = stringOrNull(request == null ? null : request.get("buildId"));
-        String asTicketId = stringOrNull(request == null ? null : request.get("asTicketId"));
-        int rootCount = (requirementId == null ? 0 : 1) + (buildId == null ? 0 : 1) + (asTicketId == null ? 0 : 1);
-        if (rootCount > 1) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "requirementId, buildId, asTicketId 중 하나만 보낼 수 있습니다.");
-        }
-        if (requirementId == null && buildId == null && asTicketId == null) {
-            requirementId = latestRequirementId();
-        }
-        Map<String, Object> row = jdbcTemplate.queryForMap("""
-                INSERT INTO agent_sessions (
-                  user_id,
-                  requirement_id,
-                  build_id,
-                  as_ticket_id,
-                  status,
-                  state_timeline
-                )
-                VALUES (
-                  (SELECT id FROM users WHERE email = 'user@example.com'),
-                  (SELECT id FROM requirements WHERE public_id = ?::uuid),
-                  (SELECT id FROM builds WHERE public_id = ?::uuid),
-                  (SELECT id FROM as_tickets WHERE public_id = ?::uuid),
-                  'QUEUED',
-                  ?::jsonb
-                )
-                RETURNING public_id::text AS id, status, created_at
-                """, requirementId, buildId, asTicketId, json(List.of(timelineItem(null, "QUEUED", "SYSTEM", "session created"))));
-        String id = DbValueMapper.string(row, "id");
-        return MockData.map(
-                "id", id,
-                "status", DbValueMapper.string(row, "status"),
-                "mode", "LIMITED_ORCHESTRATOR",
-                "nextAction", "/api/agent/sessions/" + id + "/run"
-        );
+    public Map<String, Object> createSession(AgentSessionCreateRequest request) {
+        AgentSessionRoot root = parseRoot(request);
+        String id = agentTraceService.createQueuedSession(root, "USER");
+        return session(id);
     }
 
     public Map<String, Object> runSession(String id) {
-        Map<String, Object> timeline = MockData.map(
-                "timeline", List.of(
-                        timelineItem(null, "QUEUED", "SYSTEM", "session created"),
-                        timelineItem("QUEUED", "RUNNING", "SYSTEM", "agent run requested"),
-                        timelineItem("RUNNING", "RAG_SEARCHED", "SYSTEM", "evidence retrieved"),
-                        timelineItem("RAG_SEARCHED", "TOOLS_CALLED", "SYSTEM", "tools completed"),
-                        timelineItem("TOOLS_CALLED", "SUMMARY_READY", "SYSTEM", "summary generated")
-                )
-        );
-        jdbcTemplate.update("""
-                UPDATE agent_sessions
-                SET status = 'SUMMARY_READY',
-                    summary = COALESCE(summary, 'DB-backed prototype agent summary.'),
-                    state_timeline = ?::jsonb,
-                    updated_at = now()
-                WHERE public_id = ?::uuid
-                """, json(timeline.get("timeline")), id);
-        return session(id);
+        Map<String, Object> row = agentSessionRow(id);
+        AgentSessionRoot root = rootFromRow(row);
+        AgentRunProfile profile = AgentRunProfiles.forRoot(root);
+        agentTraceService.advanceStatus(id, AgentStatus.RUNNING, "SYSTEM", "agent run requested for " + profile.purpose());
+        Map<String, Object> startedSession = session(id);
+        agentRunner.run(id, root, profile);
+        return startedSession;
     }
 
     public Map<String, Object> session(String id) {
@@ -86,8 +52,8 @@ public class AgentQueryService {
                 "status", DbValueMapper.string(row, "status"),
                 "stateTimeline", DbValueMapper.json(row, "state_timeline", List.of()),
                 "summary", DbValueMapper.string(row, "summary"),
-                "toolInvocations", toolInvocationsBySession(id),
-                "ragEvidence", ragEvidenceBySession(id)
+                "toolInvocationIds", toolInvocationIdsBySession(id),
+                "evidenceIds", evidenceIdsBySession(id)
         );
     }
 
@@ -98,8 +64,9 @@ public class AgentQueryService {
                 "status", DbValueMapper.string(row, "status"),
                 "summary", DbValueMapper.string(row, "summary"),
                 "stateTimeline", DbValueMapper.json(row, "state_timeline", List.of()),
+                "purpose", rootFromRow(row).purpose().name(),
                 "toolInvocations", toolInvocationsBySession(id),
-                "evidenceIds", ragEvidenceBySession(id).stream().map(evidence -> evidence.get("id")).toList()
+                "evidenceIds", evidenceIdsBySession(id)
         );
     }
 
@@ -140,49 +107,22 @@ public class AgentQueryService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Tool invocation을 찾을 수 없습니다."));
     }
 
-    public Map<String, Object> ragEvidence(String id) {
-        return jdbcTemplate.queryForList("""
-                        SELECT re.public_id::text AS id,
-                               s.public_id::text AS agent_session_id,
-                               re.source_id,
-                               re.chunk_text,
-                               re.summary,
-                               re.score,
-                               re.metadata
-                        FROM rag_evidence re
-                        LEFT JOIN agent_sessions s ON s.id = re.agent_session_id
-                        WHERE re.public_id = ?::uuid
-                        """, id)
-                .stream()
-                .findFirst()
-                .map(this::ragEvidenceMap)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "RAG 근거를 찾을 수 없습니다."));
-    }
-
-    public Map<String, Object> ragSearch() {
-        List<Map<String, Object>> items = jdbcTemplate.queryForList("""
-                        SELECT re.public_id::text AS id,
-                               s.public_id::text AS agent_session_id,
-                               re.source_id,
-                               re.chunk_text,
-                               re.summary,
-                               re.score,
-                               re.metadata
-                        FROM rag_evidence re
-                        LEFT JOIN agent_sessions s ON s.id = re.agent_session_id
-                        ORDER BY re.score DESC NULLS LAST, re.id
-                        """)
-                .stream()
-                .map(this::ragEvidenceMap)
-                .toList();
-        return MockData.map("items", items, "page", 0, "size", 20, "total", items.size());
-    }
-
     private Map<String, Object> agentSessionRow(String id) {
         return jdbcTemplate.queryForList("""
-                        SELECT public_id::text AS id, status, summary, state_timeline, created_at, updated_at
-                        FROM agent_sessions
-                        WHERE public_id = ?::uuid
+                        SELECT s.public_id::text AS id,
+                               s.status,
+                               s.summary,
+                               s.state_timeline,
+                               s.created_at,
+                               s.updated_at,
+                               r.public_id::text AS requirement_id,
+                               b.public_id::text AS build_id,
+                               t.public_id::text AS as_ticket_id
+                        FROM agent_sessions s
+                        LEFT JOIN requirements r ON r.id = s.requirement_id
+                        LEFT JOIN builds b ON b.id = s.build_id
+                        LEFT JOIN as_tickets t ON t.id = s.as_ticket_id
+                        WHERE s.public_id = ?::uuid
                         """, id)
                 .stream()
                 .findFirst()
@@ -196,23 +136,12 @@ public class AgentQueryService {
                 .toList();
     }
 
-    private List<Map<String, Object>> ragEvidenceBySession(String sessionId) {
-        return jdbcTemplate.queryForList("""
-                        SELECT re.public_id::text AS id,
-                               s.public_id::text AS agent_session_id,
-                               re.source_id,
-                               re.chunk_text,
-                               re.summary,
-                               re.score,
-                               re.metadata
-                        FROM rag_evidence re
-                        JOIN agent_sessions s ON s.id = re.agent_session_id
-                        WHERE s.public_id = ?::uuid
-                        ORDER BY re.id
-                        """, sessionId)
-                .stream()
-                .map(this::ragEvidenceMap)
-                .toList();
+    private List<Object> toolInvocationIdsBySession(String sessionId) {
+        return toolInvocationsBySession(sessionId).stream().map(invocation -> invocation.get("id")).toList();
+    }
+
+    private List<Object> evidenceIdsBySession(String sessionId) {
+        return ragQueryService.evidenceBySession(sessionId).stream().map(evidence -> evidence.get("id")).toList();
     }
 
     private String toolInvocationSql() {
@@ -247,41 +176,28 @@ public class AgentQueryService {
         );
     }
 
-    private Map<String, Object> ragEvidenceMap(Map<String, Object> row) {
-        return MockData.map(
-                "id", DbValueMapper.string(row, "id"),
-                "agentSessionId", DbValueMapper.string(row, "agent_session_id"),
-                "sourceId", DbValueMapper.string(row, "source_id"),
-                "chunkText", DbValueMapper.string(row, "chunk_text"),
-                "summary", DbValueMapper.string(row, "summary"),
-                "score", row.get("score"),
-                "metadata", DbValueMapper.json(row, "metadata", Map.of())
-        );
+    private static AgentSessionRoot rootFromRow(Map<String, Object> row) {
+        String requirementId = DbValueMapper.string(row, "requirement_id");
+        if (requirementId != null) {
+            return new AgentSessionRoot(AgentSessionRootType.REQUIREMENT, requirementId);
+        }
+        String buildId = DbValueMapper.string(row, "build_id");
+        if (buildId != null) {
+            return new AgentSessionRoot(AgentSessionRootType.BUILD, buildId);
+        }
+        String asTicketId = DbValueMapper.string(row, "as_ticket_id");
+        if (asTicketId != null) {
+            return new AgentSessionRoot(AgentSessionRootType.AS_TICKET, asTicketId);
+        }
+        throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent session root를 확인할 수 없습니다.");
     }
 
-    private String latestRequirementId() {
-        List<String> rows = jdbcTemplate.queryForList("""
-                SELECT public_id::text
-                FROM requirements
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
-                """, String.class);
-        return rows.isEmpty() ? null : rows.get(0);
-    }
-
-    private static Map<String, Object> timelineItem(String from, String to, String actor, String reason) {
-        return MockData.map("from", from, "to", to, "at", MockData.now(), "actor", actor, "reason", reason);
-    }
-
-    private static String stringOrNull(Object value) {
-        return value == null ? null : value.toString();
-    }
-
-    private static String json(Object value) {
+    private static AgentSessionRoot parseRoot(AgentSessionCreateRequest request) {
         try {
-            return OBJECT_MAPPER.writeValueAsString(value);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("JSON 변환에 실패했습니다.", e);
+            return AgentSessionRoot.from(request);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage(), e);
         }
     }
+
 }

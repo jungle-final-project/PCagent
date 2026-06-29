@@ -18,7 +18,7 @@ public class AgentController {
     }
 
     @PostMapping("/agent/sessions")
-    Map<String, Object> createSession(@RequestBody(required = false) Map<String, Object> request) {
+    Map<String, Object> createSession(@RequestBody(required = false) AgentSessionCreateRequest request) {
         return agentQueryService.createSession(request);
     }
 

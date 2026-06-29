@@ -171,6 +171,8 @@ users
 
 parts
   ├─ price_snapshots
+  ├─ part_external_offers
+  ├─ part_catalog_candidates
   ├─ build_items
   ├─ price_alerts
   ├─ compatibility_rules
@@ -371,6 +373,114 @@ Index:
 
 - index: `price_snapshots.part_id`
 - index: `(part_id, collected_at)`
+
+### part_external_offers
+
+목적: 쇼핑몰 화면에 표시할 외부 상품 사진, 공급업체, 최저가 후보를 캐시한다. `/api/parts`는 이 테이블만 읽고, 네이버 쇼핑 검색 API는 관리자 갱신 작업에서만 호출한다.
+
+주 owner: 2번
+
+협업자: 5번
+
+| 컬럼명 | 타입 | nullable | FK | 설명 |
+|---|---|---:|---|---|
+| `id` | `BIGINT` | no | - | 내부 PK |
+| `part_id` | `BIGINT` | no | `parts.id` | 대상 부품 |
+| `source` | `VARCHAR(100)` | no | - | `NAVER_SHOPPING_SEARCH` 등 외부 출처 |
+| `search_query` | `VARCHAR(255)` | no | - | 갱신에 사용한 검색어 |
+| `title` | `VARCHAR(500)` | yes | - | 외부 상품명 |
+| `image_url` | `TEXT` | yes | - | 상품 이미지 URL |
+| `supplier_name` | `VARCHAR(255)` | yes | - | 공급업체 또는 mall name |
+| `offer_url` | `TEXT` | yes | - | 외부 상품 URL |
+| `low_price` | `INTEGER` | yes | - | 외부 검색 결과의 최저가 후보 |
+| `raw_payload` | `JSONB` | yes | - | 외부 검색 결과 원문 요약 |
+| `refreshed_at` | `TIMESTAMPTZ` | no | - | 마지막 갱신 시각 |
+| `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
+| `updated_at` | `TIMESTAMPTZ` | yes | - | 수정 시각 |
+| `deleted_at` | `TIMESTAMPTZ` | yes | - | soft delete |
+
+Index:
+
+- partial unique: active 상태에서는 `(part_id, source)` 중복을 허용하지 않는다.
+- index: `part_external_offers.part_id`
+- index: `part_external_offers.source`
+- index: `part_external_offers.refreshed_at`
+- index: `part_external_offers.deleted_at`
+
+### part_catalog_refresh_jobs
+
+목적: 외부 검색 API로 내부 자산 후보를 수집한 작업 이력을 저장한다. 사용자 화면 조회 중에는 이 작업을 실행하지 않는다.
+
+주 owner: 2번
+
+협업자: 5번
+
+| 컬럼명 | 타입 | nullable | FK | 설명 |
+|---|---|---:|---|---|
+| `id` | `BIGINT` | no | - | 내부 PK |
+| `public_id` | `UUID` | no | - | 외부 ID |
+| `source` | `VARCHAR(100)` | no | - | `NAVER_SHOPPING_SEARCH` 등 |
+| `category` | `VARCHAR(50)` | no | - | 수집 category |
+| `search_query` | `VARCHAR(255)` | no | - | query pack 요약 또는 단일 검색어 |
+| `status` | `VARCHAR(30)` | no | - | `RUNNING`, `SUCCEEDED`, `FAILED` |
+| `attempted_count` | `INTEGER` | no | - | 외부 검색 결과 처리 시도 수 |
+| `discovered_count` | `INTEGER` | no | - | 후보 저장 수 |
+| `published_count` | `INTEGER` | no | - | `parts` 게시 수 |
+| `error_summary` | `TEXT` | yes | - | 실패 요약 |
+| `started_at` | `TIMESTAMPTZ` | no | - | 시작 시각 |
+| `finished_at` | `TIMESTAMPTZ` | yes | - | 종료 시각 |
+| `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
+| `deleted_at` | `TIMESTAMPTZ` | yes | - | soft delete |
+
+Index:
+
+- unique: `part_catalog_refresh_jobs.public_id`
+- index: `part_catalog_refresh_jobs.category`
+- index: `part_catalog_refresh_jobs.status`
+- index: `part_catalog_refresh_jobs.started_at`
+- index: `part_catalog_refresh_jobs.deleted_at`
+
+### part_catalog_candidates
+
+목적: 외부 검색 API로 발견한 내부 자산 후보를 저장한다. 후보는 검증 전 `DISCOVERED` 상태로 남고, `publish=true` 갱신 또는 관리자 검수 후 `parts`에 게시된다.
+
+주 owner: 2번
+
+협업자: 5번
+
+| 컬럼명 | 타입 | nullable | FK | 설명 |
+|---|---|---:|---|---|
+| `id` | `BIGINT` | no | - | 내부 PK |
+| `public_id` | `UUID` | no | - | 외부 ID |
+| `refresh_job_id` | `BIGINT` | yes | `part_catalog_refresh_jobs.id` | 발견 작업 |
+| `published_part_id` | `BIGINT` | yes | `parts.id` | 게시된 내부 자산 |
+| `source` | `VARCHAR(100)` | no | - | 외부 출처 |
+| `category` | `VARCHAR(50)` | no | - | 후보 category |
+| `source_product_key` | `VARCHAR(500)` | no | - | 외부 검색 결과 중복 제거 키 |
+| `search_query` | `VARCHAR(255)` | no | - | 후보를 발견한 검색어 |
+| `title` | `VARCHAR(500)` | no | - | 외부 상품명 |
+| `manufacturer_guess` | `VARCHAR(100)` | yes | - | 외부 결과 기반 제조사 후보 |
+| `image_url` | `TEXT` | yes | - | 상품 이미지 URL |
+| `supplier_name` | `VARCHAR(255)` | yes | - | 공급업체 또는 mall name |
+| `offer_url` | `TEXT` | yes | - | 외부 상품 URL |
+| `low_price` | `INTEGER` | yes | - | 외부 검색 결과 가격 후보 |
+| `candidate_status` | `VARCHAR(30)` | no | - | `DISCOVERED`, `PUBLISHED`, `REJECTED` |
+| `raw_payload` | `JSONB` | yes | - | 외부 검색 결과 원문 요약 |
+| `discovered_at` | `TIMESTAMPTZ` | no | - | 최초 발견 시각 |
+| `last_seen_at` | `TIMESTAMPTZ` | no | - | 마지막 발견 시각 |
+| `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
+| `updated_at` | `TIMESTAMPTZ` | yes | - | 수정 시각 |
+| `deleted_at` | `TIMESTAMPTZ` | yes | - | soft delete |
+
+Index:
+
+- unique: active 상태에서는 `(source, category, source_product_key)` 중복을 허용하지 않는다.
+- index: `part_catalog_candidates.category`
+- index: `part_catalog_candidates.candidate_status`
+- index: `part_catalog_candidates.refresh_job_id`
+- index: `part_catalog_candidates.published_part_id`
+- index: `part_catalog_candidates.last_seen_at`
+- index: `part_catalog_candidates.deleted_at`
 
 ### price_alerts
 
@@ -669,6 +779,8 @@ JSONB 허용 대상:
 - `builds.warnings`
 - `parts.attributes`
 - `price_snapshots.raw_payload`
+- `part_external_offers.raw_payload`
+- `part_catalog_candidates.raw_payload`
 - `compatibility_rules.condition`
 - `benchmark_summaries.metadata`
 - `agent_sessions.state_timeline`
@@ -744,8 +856,32 @@ JSONB 금지 대상:
   "socket": "AM5",
   "chipset": "B650",
   "wattage": 120,
+  "tdpW": 120,
   "lengthMm": 304,
+  "slotWidth": 3.0,
   "memoryType": "DDR5",
+  "formFactor": "ATX",
+  "widthMm": 305,
+  "depthMm": 244,
+  "heightMm": 45,
+  "maxGpuLengthMm": 380,
+  "maxCpuCoolerHeightMm": 170,
+  "radiatorSupportMm": [120, 240, 280, 360],
+  "shortSpec": "RTX 4070 Ti SUPER, 16GB, 285W",
+  "toolReady": true,
+  "specSource": "SEED_OR_TITLE_ENRICHED",
+  "specConfidence": "MODEL_LEVEL",
+  "specReferenceUrl": "https://example.com/product-spec",
+  "externalSources": {
+    "danawa": {
+      "keyword": "RTX 4070 Ti SUPER 16GB",
+      "backupOnly": true
+    },
+    "naver": {
+      "keyword": "RTX 4070 Ti SUPER",
+      "backupOnly": true
+    }
+  },
   "metadataVersion": 1
 }
 ```
@@ -755,9 +891,46 @@ JSONB 금지 대상:
 | `socket` | `string` | yes | CPU/메인보드 socket |
 | `chipset` | `string` | yes | 메인보드 chipset |
 | `wattage` | `number` | yes | 소비전력 또는 권장 전력 계산 기준 |
-| `lengthMm` | `number` | yes | GPU/case 호환성 계산 기준 |
+| `tdpW` | `number` | yes | CPU/쿨러 열 설계 전력 계산 기준 |
+| `lengthMm` | `number` | yes | GPU 길이. 케이스 장착 가능 여부 계산 기준 |
+| `slotWidth` | `number` | yes | GPU 슬롯 점유 폭. 케이스/메인보드 간섭 판단 기준 |
 | `memoryType` | `string` | yes | RAM/메인보드 메모리 타입 |
+| `formFactor` | `string` | yes | 메인보드/케이스/SSD 규격. 예: `ATX`, `MATX`, `M.2 2280` |
+| `widthMm` | `number` | yes | 부품 폭. Tool 호환성 계산용 |
+| `depthMm` | `number` | yes | 부품 깊이 또는 길이 방향 치수. Tool 호환성 계산용 |
+| `heightMm` | `number` | yes | 부품 높이. 케이스/쿨러 간섭 계산용 |
+| `maxGpuLengthMm` | `number` | yes | 케이스 GPU 장착 가능 길이 |
+| `maxCpuCoolerHeightMm` | `number` | yes | 케이스 공랭 CPU 쿨러 장착 가능 높이 |
+| `radiatorSupportMm` | `number[]` | yes | 케이스 또는 수랭 쿨러 라디에이터 지원 규격 |
+| `coolerType` | `string` | yes | `AIR`, `LIQUID_AIO` 등 CPU 쿨러 유형 |
+| `socketSupport` | `string[]` | yes | CPU 쿨러 지원 소켓 목록 |
+| `capacityW` | `number` | yes | PSU 정격 출력 |
+| `requiredSystemPowerW` | `number` | yes | GPU 기준 권장 시스템 전력 |
+| `gpuConnector` | `string` | yes | PSU/GPU 전원 커넥터. 예: `12V-2x6` |
+| `vramGb` | `number` | yes | GPU VRAM 용량 |
+| `capacityGb` | `number` | yes | RAM/SSD 용량 |
+| `interface` | `string` | yes | SSD/확장 인터페이스. 예: `PCIe 5.0 x4 NVMe` |
+| `toolReady` | `boolean` | yes | Tool 계산에 필요한 최소 속성 확보 여부 |
+| `specSource` | `string` | yes | 스펙 출처. 예: `SEED_OR_TITLE_ENRICHED`, `NAVER_SHOPPING_SEARCH`, `MANUAL_PRODUCT_SPEC` |
+| `specConfidence` | `string` | yes | 스펙 신뢰도. 예: `MODEL_LEVEL`, `ESTIMATED_FROM_TITLE`, `VERIFIED_FIXED_SPEC` |
+| `specReferenceUrl` | `string` | yes | `MANUAL_PRODUCT_SPEC` 수동 검증 시 참고한 제조사/공식/리뷰 스펙 URL |
+| `shortSpec` | `string` | yes | 쇼핑몰 목록에 표시할 짧은 사양 |
+| `catalogGeneration` | `string` | yes | 내부 자산 카탈로그 기준 세대. 예: `CURRENT_2026_06` |
+| `currentLineupOnly` | `boolean` | yes | 쇼핑몰 기본 노출용 최신 라인업 여부 |
+| `externalSources` | `object` | yes | 다나와/네이버 등 외부 가격 백업 검색 키워드와 source metadata |
 | `metadataVersion` | `number` | no | attributes shape 버전. MVP 기본값 `1` |
+
+외부 가격 백업은 별도 `products` 테이블을 만들지 않고 `parts` 도메인 안에 보관한다. 수집된 가격 이력은 `price_snapshots.source`, `price_snapshots.raw_payload`에 저장하며, 쇼핑몰 목록에 노출할 외부 상품 사진/공급업체/URL 후보는 `part_external_offers`에 캐시한다. 내부 쇼핑몰 노출 기준 상품명/카테고리/기준 가격은 항상 `parts`를 기준으로 한다.
+
+네이버 쇼핑 검색 갱신 작업이 `part_external_offers.low_price`를 저장하면 같은 가격을 `parts.price`에 동기화하고 `price_snapshots`에도 `NAVER_SHOPPING_SEARCH` 이력으로 남긴다. 따라서 `/api/parts`의 가격, 가격 정렬, 가격 필터, 목표가 알림의 현재가는 모두 마지막으로 저장된 외부 검색 가격이 우선 기준이다. 사용자 조회 API는 실시간 검색 API를 직접 호출하지 않고 저장된 값을 읽는다.
+
+상품별 가격변동 추이는 `price_snapshots` 누적 데이터가 기준이다. 네이버 쇼핑 검색 API는 현재 검색 결과를 가져오는 용도이고 과거 가격 이력을 소급 제공하는 계약으로 보지 않는다. 따라서 관리자 갱신 작업을 주기적으로 실행해 현재가를 계속 snapshot으로 쌓고, `GET /api/parts/{id}/price-history`가 이 누적 이력을 조회한다.
+
+`/api/parts`와 `/api/parts/{id}`는 외부 검색 API를 직접 호출하지 않는다. 내부 자산 최신화는 `part_catalog_refresh_jobs` 작업이 외부 API를 호출해 `part_catalog_candidates`를 채운 뒤, 게시된 후보를 `parts`에 반영하는 방식으로 수행한다. 사용자 화면은 마지막으로 저장된 `parts`와 `part_external_offers` row만 읽는다.
+
+카테고리별 대량 갱신은 query pack을 사용한다. GPU, MOTHERBOARD, PSU처럼 제조사와 라인업이 많은 category는 한 검색어에 의존하지 않고 여러 모델/제조사 검색어를 나눠 후보를 수십 개 이상 확보한다.
+
+쇼핑몰 기본 목록은 `parts.status = 'ACTIVE'`인 row만 노출한다. 구형 seed나 기준에서 제외된 자산은 `INACTIVE`로 보관하고, 관리자나 점검 목적에서만 명시적으로 조회한다.
 
 ### `agent_sessions.state_timeline`
 
@@ -957,6 +1130,15 @@ V4__quote_build.sql
 V5__support_ticket.sql
 V6__agent_rag_tool.sql
 V7__admin_audit_seed.sql
+V8__parts_catalog_seed.sql
+V9__current_lineup_parts_seed.sql
+V10__part_external_offers_cache.sql
+V11__part_catalog_refresh_pipeline.sql
+V12__part_tool_spec_enrichment.sql
+V13__part_psu_capacity_enrichment.sql
+V14__part_spec_confidence_normalization.sql
+V15__part_manual_verified_specs.sql
+V16__sync_parts_price_from_external_offers.sql
 ```
 
 현재 저장소에는 위 순서의 Flyway migration이 반영되어 있다. 기존 PostgreSQL volume이 남아 있으면 새 migration과 seed가 다시 실행되지 않으므로, 공통 DB를 처음부터 검증할 때는 `docker compose down -v` 후 `docker compose up --build`를 사용한다.
