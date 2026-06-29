@@ -64,8 +64,23 @@
 | 7 | 목적별 mock Agent runner | 완료 | `AgentMockRunService`, 목적별 RAG/Tool 기록, `SUCCEEDED` 완료 흐름 | 실제 LLM/RAG 연동 시 교체 가능한 경계 유지 |
 | 8 | 관리자 Agent 상세 화면 API 연결 | 완료 | `AgentSessionAdminPage`가 Agent session/RAG evidence API 데이터로 패널 표시 | Tool/RAG drill-down 상세 화면과 UX 맞추기 |
 | 9 | Tool/RAG 상세 화면 API 연결 | 완료 | `ToolInvocationAdminPage`, `RagEvidenceAdminPage`가 관리자 상세 API 데이터 표시 | 테스트/계약 검증에서 route smoke 유지 |
-| 10 | 테스트와 계약 검증 | 다음 작업 | 프론트 build와 Playwright route/admin guard 통과 | backend smoke, OpenAPI 검증까지 묶어 확인 |
-| 11 | 협업 인터페이스 문서화 | 대기 | 협업 지점 표 존재 | 1번/2번/4번이 호출할 내부 service 예시 정리 |
+| 10 | 테스트와 계약 검증 | 완료 | OpenAPI, backend bootJar, frontend build/test, 임시 Docker smoke 통과 | PR 전 같은 명령 재실행 |
+| 11 | 협업 인터페이스 문서화 | 다음 작업 | 협업 지점 표 존재 | 1번/2번/4번이 호출할 내부 service 예시 정리 |
+
+## 2026-06-29 검증 기록
+
+| 구분 | 명령 / 방식 | 결과 |
+|---|---|---|
+| OpenAPI 계약 | `python tools/validate_openapi.py` | `OpenAPI validation passed: 42 paths` |
+| Compose 설정 | `docker compose config` | compose 설정 출력 성공 |
+| 백엔드 빌드 | `apps/api/gradlew.bat bootJar --no-daemon` | `BUILD SUCCESSFUL` |
+| 프론트 빌드 | `npm --prefix apps/web run build` | TypeScript/Vite build 통과 |
+| 프론트 라우트 테스트 | `npm --prefix apps/web run test` | `31 passed` |
+| Docker 기동 | 기존 `buildgraph-*` 스택을 내리지 않고 임시 compose로 API `18080`, Web `15173` 포트 기동 | Postgres, Redis, RabbitMQ, Mailpit, API, Web 시작 성공 후 정리 |
+| API health | `GET /api/health` | `status=UP`, `database=UP` |
+| Web smoke | `GET http://localhost:15173` | HTTP `200` |
+| Agent smoke | 세션 생성 -> 실행 -> 상세 조회 | `RUNNING` 응답 후 최종 `SUCCEEDED`, Tool 5개, RAG evidence 1개 확인 |
+| Admin smoke | 관리자 Agent/Tool/RAG 상세 API 조회 | 첫 Tool `compatibility / PASS`, RAG source `internal-rule-qhd-gaming-mock` 확인 |
 
 ## 빠른 완성 순서
 
