@@ -168,6 +168,10 @@ test('renders eight admin shell navigation entries for ADMIN role', async ({ pag
   await expect(navigation.getByRole('link', { name: 'AS 티켓' })).toHaveAttribute('href', '/admin/as-tickets');
   await expect(navigation.getByRole('link', { name: '가격 Job' })).toHaveAttribute('href', '/admin/price-jobs');
   await expect(navigation.getByRole('link', { name: '부하 테스트' })).toHaveAttribute('href', '/admin/load-tests');
+
+  await expect(page.getByRole('searchbox', { name: '관리자 검색' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '내보내기' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '작업 실행' })).toBeDisabled();
 });
 
 test('renders price job and load test admin menu pages for ADMIN role', async ({ page }) => {

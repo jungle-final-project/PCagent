@@ -10,8 +10,22 @@ export function AdminShell({ children, title }: { children: ReactNode; title: st
         <div className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-7">
           <div className="text-lg font-bold text-brand-navy">{title}</div>
           <div className="flex gap-2">
-            <button className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold">내보내기</button>
-            <button className="rounded bg-brand-blue px-3 py-2 text-xs font-semibold text-white">작업 실행</button>
+            <button
+              type="button"
+              disabled
+              title="Sprint 1 export scope pending"
+              className="cursor-not-allowed rounded border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400"
+            >
+              내보내기
+            </button>
+            <button
+              type="button"
+              disabled
+              title="Sprint 1 job action pending"
+              className="cursor-not-allowed rounded bg-slate-300 px-3 py-2 text-xs font-semibold text-slate-500"
+            >
+              작업 실행
+            </button>
           </div>
         </div>
         <main className="p-7">{children}</main>
