@@ -189,7 +189,9 @@ Google OAuth 정책:
 
 부품 검색 정렬은 `category`, `price_asc`, `price_desc`, `name`만 허용한다. `q`는 `parts.name`, `parts.manufacturer`, `parts.attributes`를 대상으로 검색한다.
 
-외부 가격 수집 백업은 별도 public API를 만들지 않는다. 현재 단계에서는 `price_snapshots.source = "DANAWA_BACKUP"`와 `price_snapshots.raw_payload`, `parts.attributes.externalSources`에 키워드와 source metadata를 저장한다. 실제 크롤러/수집기는 관리자 가격 Job 내부 처리로만 붙인다.
+`GET /api/parts`에서 `status`를 생략하면 쇼핑몰 기본 노출 기준인 `ACTIVE`만 반환한다. 구형 seed나 교체 후보 보관용 자산은 `status=INACTIVE` 또는 `status=DISCONTINUED`를 명시해 조회한다.
+
+외부 가격 수집 백업은 별도 public API를 만들지 않는다. 현재 단계에서는 `price_snapshots.source = "DANAWA_BACKUP"` 또는 최신 라인업 수동 seed용 `MANUAL_CURRENT_LINEUP`, `price_snapshots.raw_payload`, `parts.attributes.externalSources`에 키워드와 source metadata를 저장한다. 실제 크롤러/수집기는 관리자 가격 Job 내부 처리로만 붙인다.
 
 ### Tool
 

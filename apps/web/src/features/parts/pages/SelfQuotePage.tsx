@@ -24,7 +24,7 @@ export function SelfQuotePage() {
   const [selectedParts, setSelectedParts] = useState<PartRow[]>([]);
   const { data, isError, isLoading } = useQuery({
     queryKey: ['parts', 'self-quote', category, query, sort],
-    queryFn: () => listParts({ category, q: query, size: 50, sort })
+    queryFn: () => listParts({ category, q: query, size: 100, sort })
   });
   const parts = data?.items ?? [];
   const selectedTotal = selectedParts.reduce((sum, part) => sum + part.price, 0);

@@ -769,10 +769,14 @@ JSONB 금지 대상:
 | `lengthMm` | `number` | yes | GPU/case 호환성 계산 기준 |
 | `memoryType` | `string` | yes | RAM/메인보드 메모리 타입 |
 | `shortSpec` | `string` | yes | 쇼핑몰 목록에 표시할 짧은 사양 |
+| `catalogGeneration` | `string` | yes | 내부 자산 카탈로그 기준 세대. 예: `CURRENT_2026_06` |
+| `currentLineupOnly` | `boolean` | yes | 쇼핑몰 기본 노출용 최신 라인업 여부 |
 | `externalSources` | `object` | yes | 다나와/네이버 등 외부 가격 백업 검색 키워드와 source metadata |
 | `metadataVersion` | `number` | no | attributes shape 버전. MVP 기본값 `1` |
 
 외부 가격 백업은 별도 `products` 테이블을 만들지 않고 `parts` 도메인 안에 보관한다. 수집된 가격은 `price_snapshots.source`, `price_snapshots.raw_payload`에 저장하며, 내부 쇼핑몰 노출 기준 상품명/카테고리/가격은 항상 `parts`를 기준으로 한다.
+
+쇼핑몰 기본 목록은 `parts.status = 'ACTIVE'`인 row만 노출한다. 구형 seed나 기준에서 제외된 자산은 `INACTIVE`로 보관하고, 관리자나 점검 목적에서만 명시적으로 조회한다.
 
 ### `agent_sessions.state_timeline`
 

@@ -280,7 +280,7 @@ public class PartQueryService {
                     normalizeEnum(category, CATEGORIES, "지원하지 않는 부품 category입니다."),
                     blankToNull(query),
                     blankToNull(manufacturer),
-                    normalizeEnum(status, STATUSES, "지원하지 않는 부품 status입니다."),
+                    normalizeStatus(status),
                     positiveOrNull(minPrice, "minPrice는 0 이상이어야 합니다."),
                     positiveOrNull(maxPrice, "maxPrice는 0 이상이어야 합니다."),
                     page == null ? 0 : Math.max(page, 0),
@@ -299,6 +299,11 @@ public class PartQueryService {
         int offset() {
             return page * size;
         }
+    }
+
+    private static String normalizeStatus(String value) {
+        String normalized = normalizeEnum(value, STATUSES, "지원하지 않는 부품 status입니다.");
+        return normalized == null ? "ACTIVE" : normalized;
     }
 
     private static String normalizeEnum(String value, Set<String> allowedValues, String message) {
