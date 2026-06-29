@@ -647,6 +647,8 @@ Index:
 
 목적: RAG 근거 chunk와 embedding을 저장한다. 전체 원문 문서는 저장하지 않는다.
 
+`agent_session_id IS NULL`인 row는 Agent가 검색할 수 있는 재사용 지식 청크다. 특정 Agent 실행에서 실제로 사용한 근거는 같은 테이블에 `agent_session_id`를 채워 새 row로 저장한다.
+
 Owner: 3번
 
 | 컬럼명 | 타입 | nullable | FK | 설명 |
@@ -1016,6 +1018,13 @@ JSONB 금지 대상:
 | `chunkIndex` | `number` | yes | 문서 내 chunk 순서 |
 | `retrievedAt` | `string` | yes | 검색 또는 수집 시각 |
 
+MVP 구현 기준:
+
+- `agent_session_id = null`이면 재사용 RAG source chunk다.
+- `agent_session_id != null`이면 특정 Agent 실행에서 선택되어 저장된 evidence다.
+- 세션별 evidence는 원본 chunk의 `source_id`, `summary`, `chunk_text`를 복사하고, `metadata.sourceEvidenceId`에 원본 `rag_evidence.public_id`를 저장한다.
+- `metadata.purpose`는 `BUILD_RECOMMEND`, `BUILD_EXPLAIN`, `AS_ANALYZE` 중 하나다.
+
 ### `as_tickets.cause_candidates`
 
 ```json
@@ -1146,6 +1155,7 @@ V20__budget_psu_wattage_catalog_seed.sql
 V21__official_spec_option_gap_seed.sql
 V22__gpu_tool_dimension_seed.sql
 V23__team_shared_naver_offer_price_seed.sql
+V24__agent_rag_asset_knowledge_seed.sql
 ```
 
 현재 저장소에는 위 순서의 Flyway migration이 반영되어 있다. 기존 PostgreSQL volume이 남아 있으면 새 migration과 seed가 다시 실행되지 않으므로, 공통 DB를 처음부터 검증할 때는 `docker compose down -v` 후 `docker compose up --build`를 사용한다.

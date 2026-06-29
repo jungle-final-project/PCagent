@@ -17,8 +17,12 @@ public class RagController {
     }
 
     @GetMapping("/rag/search")
-    Map<String, Object> search(@RequestParam(value = "q", required = false) String query) {
-        return ragQueryService.search(query);
+    Map<String, Object> search(
+            @RequestParam(value = "q", required = false) String query,
+            @RequestParam(value = "page", required = false) Integer page,
+            @RequestParam(value = "size", required = false) Integer size
+    ) {
+        return ragQueryService.search(query, page, size);
     }
 
     @GetMapping("/rag/evidence/{id}")

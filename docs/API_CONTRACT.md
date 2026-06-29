@@ -270,6 +270,9 @@ RAG 공개 범위:
 
 - 일반 RAG API는 요약 중심이다.
 - admin RAG API는 `chunkText`, `metadata`, `score`를 포함할 수 있다.
+- `GET /api/rag/search`는 `page=0`, `size=20`, `size<=100` pagination 기준을 따른다.
+- `agent_session_id`가 없는 `rag_evidence` row는 재사용 지식 청크로 검색 대상에 포함된다.
+- Agent 실행 중 선택된 RAG 청크는 세션별 `rag_evidence` row로 복사되어 `evidenceIds`에 노출된다.
 
 `POST /api/agent/sessions/{id}/run` 409 조건:
 

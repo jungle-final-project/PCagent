@@ -51,6 +51,15 @@ final class AgentRunTraceDrafts {
         };
     }
 
+    static String deterministicSummary(AgentRunProfile profile, AgentRagEvidenceDraft evidence) {
+        String evidenceSummary = evidence == null ? "no RAG evidence" : evidence.summary();
+        return switch (profile.purpose()) {
+            case BUILD_RECOMMEND -> "Agent completed a build recommendation trace using retrieved RAG evidence: " + evidenceSummary;
+            case BUILD_EXPLAIN -> "Agent completed a build explanation trace using retrieved RAG evidence: " + evidenceSummary;
+            case AS_ANALYZE -> "Agent completed an AS analysis trace using retrieved RAG evidence: " + evidenceSummary;
+        };
+    }
+
     private static AgentRagEvidenceDraft evidence(
             String sourceId,
             String chunkText,

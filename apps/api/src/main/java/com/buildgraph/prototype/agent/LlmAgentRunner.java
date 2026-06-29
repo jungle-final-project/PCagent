@@ -14,16 +14,22 @@ public class LlmAgentRunner implements AgentRunner {
             """;
 
     private final AgentTraceService agentTraceService;
+    private final AgentRagRetrievalService agentRagRetrievalService;
     private final OpenAiResponsesClient openAiResponsesClient;
 
-    public LlmAgentRunner(AgentTraceService agentTraceService, OpenAiResponsesClient openAiResponsesClient) {
+    public LlmAgentRunner(
+            AgentTraceService agentTraceService,
+            AgentRagRetrievalService agentRagRetrievalService,
+            OpenAiResponsesClient openAiResponsesClient
+    ) {
         this.agentTraceService = agentTraceService;
+        this.agentRagRetrievalService = agentRagRetrievalService;
         this.openAiResponsesClient = openAiResponsesClient;
     }
 
     @Override
     public void run(String sessionId, AgentSessionRoot root, AgentRunProfile profile) {
-        AgentRagEvidenceDraft evidence = AgentRunTraceDrafts.ragEvidence(root, profile);
+        AgentRagEvidenceDraft evidence = agentRagRetrievalService.retrieveEvidence(root, profile);
         String evidenceId = agentTraceService.recordRagEvidence(sessionId, evidence);
         agentTraceService.advanceStatus(sessionId, AgentStatus.RAG_SEARCHED, "SYSTEM", "RAG evidence retrieved for " + profile.purpose());
 

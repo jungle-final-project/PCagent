@@ -9,13 +9,14 @@ public class AgentRunnerConfig {
     @Bean
     AgentRunner agentRunner(
             AgentTraceService agentTraceService,
+            AgentRagRetrievalService agentRagRetrievalService,
             OpenAiResponsesClient openAiResponsesClient,
             @Value("${agent.runner.mode:deterministic}") String runnerMode
     ) {
         String normalizedMode = runnerMode == null ? "deterministic" : runnerMode.trim().toLowerCase();
         return switch (normalizedMode) {
-            case "deterministic" -> new DeterministicAgentRunner(agentTraceService);
-            case "llm" -> new LlmAgentRunner(agentTraceService, openAiResponsesClient);
+            case "deterministic" -> new DeterministicAgentRunner(agentTraceService, agentRagRetrievalService);
+            case "llm" -> new LlmAgentRunner(agentTraceService, agentRagRetrievalService, openAiResponsesClient);
             default -> throw new IllegalArgumentException("지원하지 않는 AGENT_RUNNER_MODE입니다: " + runnerMode);
         };
     }
