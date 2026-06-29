@@ -1,5 +1,6 @@
 package com.buildgraph.prototype.user;
 
+import com.buildgraph.prototype.common.ApiException;
 import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
 import java.util.List;
@@ -12,9 +13,11 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class UserQueryService {
     private final JdbcTemplate jdbcTemplate;
+    private final PasswordService passwordService;
 
-    public UserQueryService(JdbcTemplate jdbcTemplate) {
+    public UserQueryService(JdbcTemplate jdbcTemplate, PasswordService passwordService) {
         this.jdbcTemplate = jdbcTemplate;
+        this.passwordService = passwordService;
     }
 
     public Map<String, Object> login(String email) {
@@ -27,16 +30,26 @@ public class UserQueryService {
         );
     }
 
-    public Map<String, Object> signup(String name, String email, Boolean marketingAccepted) {
+    public Map<String, Object> signup(
+            String name,
+            String email,
+            String password,
+            Boolean termsAccepted,
+            Boolean marketingAccepted
+    ) {
+        if (!Boolean.TRUE.equals(termsAccepted)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "약관 동의가 필요합니다.");
+        }
         List<Map<String, Object>> existing = findRowsByEmail(email);
         if (!existing.isEmpty()) {
-            return userMap(existing.get(0));
+            throw new ApiException(HttpStatus.CONFLICT, "DUPLICATE_RESOURCE", "이미 가입된 이메일입니다.");
         }
+        String passwordHash = passwordService.hash(password);
         Map<String, Object> row = jdbcTemplate.queryForMap("""
                 INSERT INTO users (email, password_hash, name, role, terms_accepted_at, marketing_accepted_at)
-                VALUES (?, 'seed-signup-password-hash', ?, 'USER', now(), CASE WHEN ? THEN now() ELSE NULL END)
+                VALUES (?, ?, ?, 'USER', now(), CASE WHEN ? THEN now() ELSE NULL END)
                 RETURNING public_id::text AS id, email, name, role, created_at
-                """, email, name, Boolean.TRUE.equals(marketingAccepted));
+                """, email, passwordHash, name, Boolean.TRUE.equals(marketingAccepted));
         return userMap(row);
     }
 
