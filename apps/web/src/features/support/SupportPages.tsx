@@ -8,7 +8,7 @@ import type { AsChatEvidence, AsChatResponse, AsChatToolResult } from './asChatA
 import { createSupportTicket, getSupportTicket, uploadAgentLog } from './supportApi';
 import type { AsTicketDto, CauseCandidate } from './types';
 
-type SubmitState = 'default' | 'consent_required' | 'uploading' | 'upload_error' | 'ticket_created';
+type SubmitState = 'default' | 'validation_error' | 'consent_required' | 'uploading' | 'upload_error' | 'ticket_error' | 'ticket_created';
 
 export function AsChatPage() {
   const [searchParams] = useSearchParams();
@@ -219,18 +219,35 @@ export function SupportNewPage() {
   const [submitState, setSubmitState] = useState<SubmitState>('default');
   const [error, setError] = useState('');
 
+  function downloadSampleJsonl() {
+    const sampleLines = [
+      { timestamp: '2026-06-29T10:00:00Z', cpuUsagePercent: 42, memoryUsagePercent: 61, gpuTemperatureC: 72 },
+      { timestamp: '2026-06-29T10:00:05Z', cpuUsagePercent: 48, memoryUsagePercent: 63, gpuTemperatureC: 78 },
+      { timestamp: '2026-06-29T10:00:10Z', cpuUsagePercent: 55, memoryUsagePercent: 64, gpuTemperatureC: 84, note: 'example only' }
+    ];
+    const body = `${sampleLines.map((line) => JSON.stringify(line)).join('\n')}\n`;
+    const blob = new Blob([body], { type: 'application/x-ndjson;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'buildgraph-agent-sample.jsonl';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     setError('');
     setSelectedFile(null);
     setLogPreview('');
+    setSubmitState('default');
 
     if (!file) return;
 
     const lowerName = file.name.toLowerCase();
     if (!lowerName.endsWith('.jsonl') && !lowerName.endsWith('.ndjson')) {
-      setSubmitState('upload_error');
-      setError('JSONL 또는 NDJSON 로그 파일만 업로드할 수 있습니다.');
+      setSubmitState('validation_error');
+      setError('로그 파일 확장자는 .jsonl 또는 .ndjson만 사용할 수 있습니다.');
       return;
     }
 
@@ -249,14 +266,19 @@ export function SupportNewPage() {
 
     const title = symptomTitle.trim();
     const detail = symptomDetail.trim();
-    if (!title || !detail) {
-      setSubmitState('upload_error');
-      setError('증상 제목과 상세 내용을 모두 입력해 주세요.');
+    if (!title) {
+      setSubmitState('validation_error');
+      setError('증상 제목을 입력해 주세요.');
+      return;
+    }
+    if (!detail) {
+      setSubmitState('validation_error');
+      setError('증상 상세 내용을 입력해 주세요.');
       return;
     }
     if (!selectedFile) {
-      setSubmitState('upload_error');
-      setError('최근 30분 PC Agent JSONL 로그 파일을 선택해 주세요.');
+      setSubmitState('validation_error');
+      setError('최근 30분 PC Agent 로그 파일을 선택해 주세요. .jsonl 또는 .ndjson 파일을 사용할 수 있습니다.');
       return;
     }
     if (!consentAccepted) {
@@ -267,14 +289,27 @@ export function SupportNewPage() {
 
     try {
       setSubmitState('uploading');
-      const uploadedLog = await uploadAgentLog(30, consentAccepted, selectedFile);
-      const symptom = `${title}\n\n${detail}`;
+      await uploadAndCreateTicket(title, detail, selectedFile);
+    } catch (cause) {
+      if (cause instanceof TicketCreateError) {
+        setSubmitState('ticket_error');
+        setError('AS 티켓 생성에 실패했습니다. POST /api/as-tickets 응답과 로그인 상태를 확인해 주세요.');
+        return;
+      }
+      setSubmitState('upload_error');
+      setError(uploadFailureMessage(cause));
+    }
+  }
+
+  async function uploadAndCreateTicket(title: string, detail: string, file: File) {
+    const uploadedLog = await uploadAgentLog(30, consentAccepted, file);
+    const symptom = `${title}\n\n${detail}`;
+    try {
       const ticket = await createSupportTicket(symptom, uploadedLog.id);
       setSubmitState('ticket_created');
       navigate(`/support/${ticket.id}`);
     } catch {
-      setSubmitState('upload_error');
-      setError('로그 업로드 또는 AS 티켓 생성에 실패했습니다. 백엔드 실행 상태를 확인해 주세요.');
+      throw new TicketCreateError();
     }
   }
 
@@ -305,6 +340,16 @@ export function SupportNewPage() {
             </div>
             <div>
               <label className="mb-1 block text-xs font-bold text-slate-600">최근 30분 로그 파일</label>
+              <button
+                type="button"
+                className="mb-2 rounded border border-slate-300 px-3 py-2 text-xs font-bold"
+                onClick={downloadSampleJsonl}
+              >
+                샘플 JSONL 다운로드
+              </button>
+              <p className="mb-2 text-xs leading-5 text-slate-500">
+                샘플은 JSON Lines 형식 예시입니다. 실제 서버 검증 규칙을 확정하는 파일은 아닙니다.
+              </p>
               <input
                 className="block w-full rounded border border-slate-300 p-3 text-sm file:mr-4 file:rounded file:border-0 file:bg-brand-blue file:px-4 file:py-2 file:text-sm file:font-bold file:text-white"
                 type="file"
@@ -323,15 +368,17 @@ export function SupportNewPage() {
             {error ? <StateMessage type="warn" title="AS 접수 확인 필요" body={error} /> : null}
             {submitState === 'ticket_created' ? <StateMessage type="success" title="AS 티켓 생성 완료" body="생성된 티켓 상세 화면으로 이동합니다." /> : null}
             <button disabled={isUploading} className="rounded bg-brand-blue px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-              {isUploading ? '업로드 중...' : 'AS 접수하기'}
+              {isUploading ? '로그 업로드 및 티켓 생성 중...' : 'AS 접수하기'}
             </button>
           </div>
         </Panel>
         <Panel title="접수 상태">
           {submitState === 'default' ? <StateMessage type="info" title="로그 제출 준비" body="증상과 최근 30분 JSONL 로그를 함께 제출하면 AS 티켓이 생성됩니다." /> : null}
+          {submitState === 'validation_error' ? <StateMessage type="warn" title="입력 확인 필요" body={error || '증상과 로그 파일 입력값을 확인해 주세요.'} /> : null}
           {submitState === 'consent_required' ? <StateMessage type="warn" title="동의 필요" body="PC Agent 로그에는 사용 환경 정보가 포함될 수 있어 업로드 동의가 필요합니다." /> : null}
           {submitState === 'uploading' ? <StateMessage type="info" title="업로드 중" body="로그 업로드 후 AS 티켓 생성 API를 순서대로 호출하고 있습니다." /> : null}
-          {submitState === 'upload_error' ? <StateMessage type="warn" title="접수 실패" body={error || '입력값과 백엔드 실행 상태를 확인해 주세요.'} /> : null}
+          {submitState === 'upload_error' ? <StateMessage type="warn" title="로그 업로드 실패" body={error || '로그 파일과 백엔드 실행 상태를 확인해 주세요.'} /> : null}
+          {submitState === 'ticket_error' ? <StateMessage type="warn" title="티켓 생성 실패" body={error || 'AS 티켓 생성 API 응답을 확인해 주세요.'} /> : null}
           {submitState === 'ticket_created' ? <StateMessage type="success" title="접수 완료" body="사용자 티켓 상세 화면에서 상태를 확인할 수 있습니다." /> : null}
           <div className="mt-5 rounded border border-blue-100 bg-blue-50 px-3 py-2 text-center text-xs font-bold text-brand-blue">POST /api/agent-logs/upload</div>
           <div className="mt-2 rounded border border-blue-100 bg-blue-50 px-3 py-2 text-center text-xs font-bold text-brand-blue">POST /api/as-tickets</div>
@@ -339,6 +386,15 @@ export function SupportNewPage() {
       </form>
     </Screen>
   );
+}
+
+class TicketCreateError extends Error {}
+
+function uploadFailureMessage(cause: unknown) {
+  if (cause instanceof ApiError && cause.status === 400) {
+    return '로그 업로드가 거부되었습니다. JSONL/NDJSON 파일 형식 또는 내용 검증에 실패했을 수 있습니다.';
+  }
+  return '로그 업로드에 실패했습니다. POST /api/agent-logs/upload 응답과 백엔드 실행 상태를 확인해 주세요.';
 }
 
 export function SupportTicketPage() {
