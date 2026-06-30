@@ -8,6 +8,10 @@ type ErrorResponseBody = {
   message?: unknown;
 };
 
+export type AuthChangedDetail = {
+  user?: unknown;
+};
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -52,14 +56,14 @@ async function readErrorResponse(response: Response) {
   }
 }
 
-function dispatchAuthChanged() {
-  window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+function dispatchAuthChanged(detail?: AuthChangedDetail) {
+  window.dispatchEvent(new CustomEvent<AuthChangedDetail>(AUTH_CHANGED_EVENT, { detail }));
 }
 
-export function saveAuthTokens(accessToken: string, refreshToken: string) {
+export function saveAuthTokens(accessToken: string, refreshToken: string, user?: unknown) {
   localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
   localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
-  dispatchAuthChanged();
+  dispatchAuthChanged({ user });
 }
 
 export function saveToken(token: string) {

@@ -19,7 +19,7 @@ export function LoginPage() {
       const email = String(form.get('email') ?? '').trim();
       const password = String(form.get('password') ?? '');
       const response = await login(email, password);
-      saveAuthTokens(response.accessToken, response.refreshToken);
+      saveAuthTokens(response.accessToken, response.refreshToken, response.user);
       navigate(safeRedirect(searchParams.get('redirect')));
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : 'API 연결 전에는 Docker compose로 백엔드를 먼저 실행해 주세요.');
@@ -80,21 +80,35 @@ function safeRedirect(value: string | null) {
 export function SignupPage() {
   const navigate = useNavigate();
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
+    setSubmitting(true);
     const form = new FormData(event.currentTarget);
     try {
-      await signup(
-        String(form.get('name') ?? ''),
-        String(form.get('email') ?? ''),
-        String(form.get('password') ?? '')
-      );
+      const name = String(form.get('name') ?? '').trim();
+      const email = String(form.get('email') ?? '').trim();
+      const password = String(form.get('password') ?? '');
+      const passwordConfirm = String(form.get('passwordConfirm') ?? '');
+      const termsAccepted = form.get('termsAccepted') === 'on';
+      const marketingAccepted = form.get('marketingAccepted') === 'on';
+
+      if (password !== passwordConfirm) {
+        setError('비밀번호 확인이 일치하지 않습니다.');
+        return;
+      }
+
+      await signup({ name, email, password, termsAccepted, marketingAccepted });
       navigate('/login');
-    } catch {
-      setError('API 연결 전에는 Docker compose로 백엔드를 먼저 실행해 주세요.');
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : 'API 연결 전에는 Docker compose로 백엔드를 먼저 실행해 주세요.');
+    } finally {
+      setSubmitting(false);
     }
   }
+
   return (
     <Screen>
       <div className="mx-auto mt-16 w-[520px] panel p-8">
@@ -102,13 +116,63 @@ export function SignupPage() {
         <p className="mt-1 text-sm text-slate-500">이메일 로그인용 User/Auth 공통 모듈</p>
         {error ? <div className="mt-4"><StateMessage type="warn" title="회원가입 실패" body={error} /></div> : null}
         <form onSubmit={submit} className="mt-6 grid grid-cols-2 gap-4">
-          <input name="name" className="h-11 rounded border border-slate-300 px-3 text-sm" defaultValue="홍길동" />
-          <input className="h-11 rounded border border-slate-300 px-3 text-sm" defaultValue="010-0000-0000" />
-          <input name="email" className="col-span-2 h-11 rounded border border-slate-300 px-3 text-sm" defaultValue="new-user@example.com" />
-          <input name="password" className="h-11 rounded border border-slate-300 px-3 text-sm" defaultValue="passw0rd!" type="password" />
-          <input className="h-11 rounded border border-slate-300 px-3 text-sm" defaultValue="passw0rd!" type="password" />
-          <label className="col-span-2 flex items-center gap-2 text-sm"><input type="checkbox" defaultChecked /> 서비스 이용약관 및 로그 업로드 정책 확인</label>
-          <button className="col-span-2 h-11 rounded bg-brand-blue text-sm font-bold text-white">회원가입</button>
+          <label className="block text-sm font-semibold text-slate-700">
+            이름
+            <input
+              name="name"
+              className="mt-2 h-11 w-full rounded border border-slate-300 px-3 text-sm"
+              placeholder="홍길동"
+              autoComplete="name"
+              required
+            />
+          </label>
+          <label className="block text-sm font-semibold text-slate-700">
+            이메일
+            <input
+              name="email"
+              className="mt-2 h-11 w-full rounded border border-slate-300 px-3 text-sm"
+              placeholder="new-user@example.com"
+              autoComplete="email"
+              type="email"
+              required
+            />
+          </label>
+          <label className="block text-sm font-semibold text-slate-700">
+            비밀번호
+            <input
+              name="password"
+              className="mt-2 h-11 w-full rounded border border-slate-300 px-3 text-sm"
+              placeholder="비밀번호"
+              autoComplete="new-password"
+              type="password"
+              required
+            />
+          </label>
+          <label className="block text-sm font-semibold text-slate-700">
+            비밀번호 확인
+            <input
+              name="passwordConfirm"
+              className="mt-2 h-11 w-full rounded border border-slate-300 px-3 text-sm"
+              placeholder="비밀번호 확인"
+              autoComplete="new-password"
+              type="password"
+              required
+            />
+          </label>
+          <label className="col-span-2 flex items-center gap-2 text-sm text-slate-700">
+            <input name="termsAccepted" type="checkbox" required />
+            서비스 이용약관 및 로그 업로드 정책 확인
+          </label>
+          <label className="col-span-2 flex items-center gap-2 text-sm text-slate-700">
+            <input name="marketingAccepted" type="checkbox" />
+            마케팅 정보 수신 동의
+          </label>
+          <button
+            className="col-span-2 h-11 rounded bg-brand-blue text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
+            disabled={submitting}
+          >
+            {submitting ? '가입 중' : '회원가입'}
+          </button>
         </form>
       </div>
     </Screen>
