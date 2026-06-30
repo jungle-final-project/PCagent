@@ -8,9 +8,16 @@ type ErrorResponseBody = {
   message?: unknown;
 };
 
+type RefreshResponseBody = {
+  accessToken?: unknown;
+  refreshToken?: unknown;
+};
+
 export type AuthChangedDetail = {
   user?: unknown;
 };
+
+let refreshPromise: Promise<boolean> | null = null;
 
 export class ApiError extends Error {
   constructor(
@@ -24,6 +31,26 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetchApi(path, init);
+
+  if (!response.ok) {
+    if (response.status === 401 && shouldAttemptTokenRefresh(path) && await refreshAuthTokens()) {
+      const retryResponse = await fetchApi(path, init);
+      if (retryResponse.ok) {
+        return retryResponse.json() as Promise<T>;
+      }
+      const retryErrorBody = await readErrorResponse(retryResponse);
+      throw new ApiError(retryResponse.status, path, retryErrorBody.code, retryErrorBody.message);
+    }
+
+    const errorBody = await readErrorResponse(response);
+    throw new ApiError(response.status, path, errorBody.code, errorBody.message);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function fetchApi(path: string, init?: RequestInit) {
   const token = localStorage.getItem(ACCESS_TOKEN_KEY);
   const headers = new Headers(init?.headers);
   if (!(init?.body instanceof FormData)) {
@@ -31,17 +58,62 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  return fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers
   });
+}
 
-  if (!response.ok) {
-    const errorBody = await readErrorResponse(response);
-    throw new ApiError(response.status, path, errorBody.code, errorBody.message);
+function shouldAttemptTokenRefresh(path: string) {
+  if (!getRefreshToken()) {
+    return false;
+  }
+  return ![
+    '/api/auth/login',
+    '/api/auth/refresh',
+    '/api/auth/logout',
+    '/api/auth/exchange',
+    '/api/users'
+  ].includes(path) && !path.startsWith('/api/auth/google/');
+}
+
+async function refreshAuthTokens() {
+  refreshPromise ??= requestTokenRefresh().finally(() => {
+    refreshPromise = null;
+  });
+  return refreshPromise;
+}
+
+async function requestTokenRefresh() {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    return false;
   }
 
-  return response.json() as Promise<T>;
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken })
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        clearToken();
+      }
+      return false;
+    }
+
+    const body = await response.json() as RefreshResponseBody;
+    if (typeof body.accessToken !== 'string' || typeof body.refreshToken !== 'string') {
+      return false;
+    }
+
+    storeAuthTokens(body.accessToken, body.refreshToken);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function readErrorResponse(response: Response) {
@@ -60,9 +132,13 @@ function dispatchAuthChanged(detail?: AuthChangedDetail) {
   window.dispatchEvent(new CustomEvent<AuthChangedDetail>(AUTH_CHANGED_EVENT, { detail }));
 }
 
-export function saveAuthTokens(accessToken: string, refreshToken: string, user?: unknown) {
+function storeAuthTokens(accessToken: string, refreshToken: string) {
   localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
   localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+}
+
+export function saveAuthTokens(accessToken: string, refreshToken: string, user?: unknown) {
+  storeAuthTokens(accessToken, refreshToken);
   dispatchAuthChanged({ user });
 }
 

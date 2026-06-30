@@ -66,6 +66,68 @@ test('updates header from login response before auth me finishes', async ({ page
   await expect(page.getByText('Fast User')).toBeVisible({ timeout: 500 });
 });
 
+test('refreshes expired access token and retries current user request', async ({ page }) => {
+  let expiredMeCalls = 0;
+  let refreshedMeCalls = 0;
+  let refreshCalls = 0;
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'expired-access-token');
+    localStorage.setItem('buildgraph.refreshToken', 'valid-refresh-token');
+  });
+  await page.route('**/api/auth/me', async (route) => {
+    const authorization = route.request().headers().authorization;
+    if (authorization === 'Bearer expired-access-token') {
+      expiredMeCalls += 1;
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 'UNAUTHORIZED',
+          message: 'Access token is expired.'
+        })
+      });
+      return;
+    }
+
+    expect(authorization).toBe('Bearer refreshed-access-token');
+    refreshedMeCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: '00000000-0000-4000-8000-000000001077',
+        email: 'refreshed@example.com',
+        name: 'Refresh User',
+        role: 'USER'
+      })
+    });
+  });
+  await page.route('**/api/auth/refresh', async (route) => {
+    refreshCalls += 1;
+    expect(JSON.parse(route.request().postData() ?? '{}')).toEqual({
+      refreshToken: 'valid-refresh-token'
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        accessToken: 'refreshed-access-token',
+        refreshToken: 'rotated-refresh-token'
+      })
+    });
+  });
+
+  await page.goto('/login');
+
+  await expect(page.getByText('refreshed@example.com')).toBeVisible();
+  await expect(page.getByText('Refresh User')).toBeVisible();
+  expect(expiredMeCalls).toBeGreaterThanOrEqual(1);
+  expect(refreshedMeCalls).toBeGreaterThanOrEqual(1);
+  expect(refreshCalls).toBe(1);
+  expect(await page.evaluate(() => localStorage.getItem('buildgraph.token'))).toBe('refreshed-access-token');
+  expect(await page.evaluate(() => localStorage.getItem('buildgraph.refreshToken'))).toBe('rotated-refresh-token');
+});
+
 test('submits signup form with the OpenAPI user payload', async ({ page }) => {
   await page.route('**/api/users', async (route) => {
     expect(JSON.parse(route.request().postData() ?? '{}')).toEqual({
