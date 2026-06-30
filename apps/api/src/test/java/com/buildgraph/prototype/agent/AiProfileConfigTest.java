@@ -13,6 +13,7 @@ class AiProfileConfigTest {
         AiProfileDefinition profile = config.defaultAsChatProfile();
 
         assertThat(profile.profile()).isEqualTo(AiProfile.AS_CHAT_FAST);
+        assertThat(profile.provider()).isEqualTo(LlmProvider.OPENAI);
         assertThat(profile.model()).isEqualTo("gpt-5.5");
         assertThat(profile.reasoningEffort()).isEqualTo("low");
         assertThat(profile.ragTopK()).isEqualTo(2);
@@ -34,6 +35,18 @@ class AiProfileConfigTest {
         assertThat(profile.model()).isEqualTo("gpt-5.5");
         assertThat(profile.reasoningEffort()).isEqualTo("low");
         assertThat(profile.ragTopK()).isEqualTo(2);
+    }
+
+    @Test
+    void explicitHeaderProfileCanSelectGeminiProfile() {
+        AiProfileConfig config = config("AS_CHAT_FAST");
+
+        AiProfileDefinition profile = config.asChatProfile("AS_CHAT_GEMINI_FAST");
+
+        assertThat(profile.profile()).isEqualTo(AiProfile.AS_CHAT_GEMINI_FAST);
+        assertThat(profile.provider()).isEqualTo(LlmProvider.GEMINI);
+        assertThat(profile.model()).isEqualTo("gemini-2.5-flash");
+        assertThat(profile.promptVersion()).isEqualTo("as-chat-v3-gemini-fast-compact");
     }
 
     @Test
@@ -68,6 +81,22 @@ class AiProfileConfigTest {
                 2600,
                 5,
                 true,
+                false,
+                true,
+                "gemini-2.5-flash",
+                "none",
+                2,
+                900,
+                3,
+                false,
+                false,
+                true,
+                "gemini-2.5-pro",
+                "none",
+                3,
+                1200,
+                4,
+                false,
                 false,
                 true
         );

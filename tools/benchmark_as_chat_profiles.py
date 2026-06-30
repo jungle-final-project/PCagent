@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import math
+import os
 import statistics
 import sys
 import time
@@ -15,7 +16,8 @@ import urllib.request
 from pathlib import Path
 
 
-DEFAULT_PROFILES = ["AS_CHAT_FAST", "AS_CHAT_BALANCED", "AS_CHAT_HIGH_QUALITY"]
+DEFAULT_OPENAI_PROFILES = ["AS_CHAT_FAST", "AS_CHAT_BALANCED", "AS_CHAT_HIGH_QUALITY"]
+DEFAULT_GEMINI_PROFILES = ["AS_CHAT_GEMINI_FAST", "AS_CHAT_GEMINI_BALANCED"]
 
 
 def main() -> int:
@@ -27,15 +29,17 @@ def main() -> int:
     parser.add_argument("--user-password", default="passw0rd!")
     parser.add_argument("--admin-email", default="admin@example.com")
     parser.add_argument("--admin-password", default="passw0rd!")
-    parser.add_argument("--profiles", nargs="+", default=DEFAULT_PROFILES)
+    parser.add_argument("--profiles", nargs="+", default=None)
+    parser.add_argument("--include-gemini", action="store_true", help="Gemini profile까지 함께 실행")
     args = parser.parse_args()
 
     cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))
+    profiles = selected_profiles(args.profiles, args.include_gemini)
     user_token = login(args.base_url, args.user_email, args.user_password)
     admin_token = login(args.base_url, args.admin_email, args.admin_password)
 
     results = []
-    for profile in args.profiles:
+    for profile in profiles:
         for case in cases:
             results.append(run_case(args.base_url, user_token, admin_token, profile, case))
 
@@ -117,6 +121,7 @@ def run_case(base_url: str, user_token: str, admin_token: str, profile: str, cas
         "inputTokens": llm_generation.get("inputTokens"),
         "outputTokens": llm_generation.get("outputTokens"),
         "totalTokens": llm_generation.get("totalTokens"),
+        "provider": llm_generation.get("provider") or provider_from_profile(profile),
         "model": llm_generation.get("model") or response.get("model") if response else "-",
         "reasoningEffort": llm_generation.get("reasoningEffort"),
         "evidenceCount": evidence_count,
@@ -144,8 +149,8 @@ def write_report(output_dir: Path, results: list[dict]) -> Path:
         "",
         "## Summary",
         "",
-        "| profile | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgInputTokens | avgOutputTokens | avgTokens | schemaValidRate |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| profile | provider | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgInputTokens | avgOutputTokens | avgTokens | schemaValidRate |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for profile, rows in grouped.items():
         success_rate = ratio(row["success"] for row in rows)
@@ -156,21 +161,26 @@ def write_report(output_dir: Path, results: list[dict]) -> Path:
         output_tokens = [row["outputTokens"] for row in rows if row["outputTokens"] is not None]
         tokens = [row["totalTokens"] for row in rows if row["totalTokens"] is not None]
         lines.append(
-            f"| {profile} | {success_rate:.1%} | {mean(first_events):.0f} | {mean(latencies):.0f} | {percentile(latencies, 95):.0f} | "
+            f"| {profile} | {rows[0].get('provider') or provider_from_profile(profile)} | {success_rate:.1%} | {mean(first_events):.0f} | {mean(latencies):.0f} | {percentile(latencies, 95):.0f} | "
             f"{mean(input_tokens):.0f} | {mean(output_tokens):.0f} | {mean(tokens):.0f} | {schema_rate:.1%} |"
         )
+
+    provider_notes = availability_notes(results)
+    if provider_notes:
+        lines.extend(["", "## Provider Availability", ""])
+        lines.extend(f"- {note}" for note in provider_notes)
 
     lines.extend([
         "",
         "## Cases",
         "",
-        "| profile | case | risk | ok | firstEventMs | finalLatencyMs | model | inTok | outTok | tokens | evidence | tools | actions | keywords | error |",
-        "|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| profile | provider | case | risk | ok | firstEventMs | finalLatencyMs | model | inTok | outTok | tokens | evidence | tools | actions | keywords | error |",
+        "|---|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ])
     for row in results:
         error = (row["error"] or "").replace("|", "/")
         lines.append(
-            f"| {row['profile']} | {row['caseId']} | {row['risk']} | {yes(row['success'])} | "
+            f"| {row['profile']} | {row['provider']} | {row['caseId']} | {row['risk']} | {yes(row['success'])} | "
             f"{value(row['timeToFirstEventMs'])} | {row['wallLatencyMs']} | {row['model']} | "
             f"{value(row['inputTokens'])} | {value(row['outputTokens'])} | {value(row['totalTokens'])} | "
             f"{row['evidenceCount']} | {row['toolCount']} | {row['nextActionCount']} | "
@@ -197,6 +207,47 @@ def login(base_url: str, email: str, password: str) -> str:
     if not token:
         raise RuntimeError(f"login failed for {email}: accessToken missing")
     return token
+
+
+def selected_profiles(explicit_profiles: list[str] | None, include_gemini: bool) -> list[str]:
+    if explicit_profiles:
+        return explicit_profiles
+    profiles = list(DEFAULT_OPENAI_PROFILES)
+    if include_gemini or configured_secret("GEMINI_API_KEY"):
+        profiles.extend(DEFAULT_GEMINI_PROFILES)
+    return profiles
+
+
+def configured_secret(key: str) -> bool:
+    value = os.environ.get(key)
+    if value and value.strip():
+        return True
+    env_path = Path(".env")
+    if not env_path.exists():
+        return False
+    for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, raw_value = stripped.split("=", 1)
+        if name.strip() == key and raw_value.strip().strip('"').strip("'"):
+            return True
+    return False
+
+
+def provider_from_profile(profile: str) -> str:
+    return "gemini" if "GEMINI" in profile else "openai"
+
+
+def availability_notes(results: list[dict]) -> list[str]:
+    notes = []
+    gemini_resource_exhausted = any(
+        row.get("provider") == "gemini" and "RESOURCE_EXHAUSTED" in str(row.get("error") or "")
+        for row in results
+    )
+    if gemini_resource_exhausted:
+        notes.append("Gemini profile은 API까지 도달했지만 현재 key가 `HTTP 429 RESOURCE_EXHAUSTED`를 반환해 품질/속도 비교를 완료하지 못했다.")
+    return notes
 
 
 def request_json(

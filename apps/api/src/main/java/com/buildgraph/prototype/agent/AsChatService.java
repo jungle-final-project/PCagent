@@ -36,7 +36,7 @@ public class AsChatService {
     private final JdbcTemplate jdbcTemplate;
     private final AgentTraceService agentTraceService;
     private final AgentRagRetrievalService agentRagRetrievalService;
-    private final OpenAiResponsesClient openAiResponsesClient;
+    private final StructuredLlmClientRouter structuredLlmClientRouter;
     private final ToolCheckService toolCheckService;
     private final AiProfileConfig aiProfileConfig;
     private final LlmGenerationService llmGenerationService;
@@ -45,7 +45,7 @@ public class AsChatService {
             JdbcTemplate jdbcTemplate,
             AgentTraceService agentTraceService,
             AgentRagRetrievalService agentRagRetrievalService,
-            OpenAiResponsesClient openAiResponsesClient,
+            StructuredLlmClientRouter structuredLlmClientRouter,
             ToolCheckService toolCheckService,
             AiProfileConfig aiProfileConfig,
             LlmGenerationService llmGenerationService
@@ -53,7 +53,7 @@ public class AsChatService {
         this.jdbcTemplate = jdbcTemplate;
         this.agentTraceService = agentTraceService;
         this.agentRagRetrievalService = agentRagRetrievalService;
-        this.openAiResponsesClient = openAiResponsesClient;
+        this.structuredLlmClientRouter = structuredLlmClientRouter;
         this.toolCheckService = toolCheckService;
         this.aiProfileConfig = aiProfileConfig;
         this.llmGenerationService = llmGenerationService;
@@ -88,14 +88,14 @@ public class AsChatService {
     ) {
         AsChatProgressSink progress = progressSink == null ? NOOP_PROGRESS : progressSink;
         progress.emit("STARTED", progressPayload("STARTED", "AS 티켓과 사용자 세션을 확인하고 있습니다.", Map.of("asTicketId", safe(asTicketId))));
-        if (!openAiResponsesClient.isConfigured()) {
-            throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED, "OPENAI_API_KEY가 필요합니다.");
-        }
 
         String ticketId = requireText(asTicketId, "AS 티켓 ID가 필요합니다.");
         String userMessage = requireText(message, "챗봇에 보낼 메시지가 필요합니다.");
         TicketRow ticket = ticket(ticketId, user);
         AiProfileDefinition aiProfile = requireAiProfile(requestedAiProfile, ticket, userMessage);
+        if (!structuredLlmClientRouter.isConfigured(aiProfile.provider())) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED, structuredLlmClientRouter.missingKeyMessage(aiProfile.provider()));
+        }
         ChatSessionRow chatSession = findOrCreateActiveSession(ticket, user);
         saveMessage(chatSession.internalId(), "USER", userMessage, Map.of(), null);
 
@@ -328,16 +328,14 @@ public class AsChatService {
             List<String> toolInvocationIds
     ) {
         long startedAt = System.nanoTime();
-        OpenAiResponsesClient.OpenAiResponseResult llmResult = null;
+        LlmResponseResult llmResult = null;
         try {
-            llmResult = openAiResponsesClient.createStructuredJsonResult(
+            llmResult = structuredLlmClientRouter.createStructuredJsonResult(
+                    aiProfile,
                     SYSTEM_PROMPT,
                     llmPrompt(ticket, recentMessages, userMessage, evidence, toolResults, aiProfile),
                     AS_CHAT_SCHEMA_NAME,
-                    asChatResponseSchema(evidenceIds, toolInvocationIds),
-                    aiProfile.model(),
-                    aiProfile.reasoningEffort(),
-                    aiProfile.maxOutputTokens()
+                    asChatResponseSchema(evidenceIds, toolInvocationIds)
             );
             Map<String, Object> llmJson = strictJson(llmResult.text());
             llmGenerationService.recordSuccess(agentInternalId, aiProfile, AS_CHAT_SCHEMA_NAME, llmResult);
@@ -408,12 +406,12 @@ public class AsChatService {
 
     private static Map<String, Object> responseLimits(AiProfileDefinition aiProfile) {
         return switch (aiProfile.profile()) {
-            case AS_CHAT_FAST -> MockData.map(
+            case AS_CHAT_FAST, AS_CHAT_GEMINI_FAST -> MockData.map(
                     "assistantMessage", "Korean, around 220 characters",
                     "causeCandidatesMax", 1,
                     "nextActionsMax", 2
             );
-            case AS_CHAT_BALANCED -> MockData.map(
+            case AS_CHAT_BALANCED, AS_CHAT_GEMINI_BALANCED -> MockData.map(
                     "assistantMessage", "Korean, around 350 characters",
                     "causeCandidatesMax", 2,
                     "nextActionsMax", 3
@@ -717,6 +715,9 @@ public class AsChatService {
             AiProfileDefinition defaultProfile = aiProfileConfig.defaultAsChatProfile();
             if (defaultProfile.profile() == AiProfile.AS_CHAT_FAST && highRiskAsCase(ticket, userMessage)) {
                 return aiProfileConfig.asChatProfile(AiProfile.AS_CHAT_BALANCED);
+            }
+            if (defaultProfile.profile() == AiProfile.AS_CHAT_GEMINI_FAST && highRiskAsCase(ticket, userMessage)) {
+                return aiProfileConfig.asChatProfile(AiProfile.AS_CHAT_GEMINI_BALANCED);
             }
             return defaultProfile;
         } catch (IllegalArgumentException error) {

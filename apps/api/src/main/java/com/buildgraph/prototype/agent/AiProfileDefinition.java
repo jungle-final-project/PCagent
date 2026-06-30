@@ -2,6 +2,7 @@ package com.buildgraph.prototype.agent;
 
 public record AiProfileDefinition(
         AiProfile profile,
+        LlmProvider provider,
         String model,
         String reasoningEffort,
         int ragTopK,

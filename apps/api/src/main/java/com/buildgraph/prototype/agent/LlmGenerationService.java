@@ -19,7 +19,7 @@ public class LlmGenerationService {
             Long agentSessionId,
             AiProfileDefinition profile,
             String schemaName,
-            OpenAiResponsesClient.OpenAiResponseResult result
+            LlmResponseResult result
     ) {
         return record(
                 agentSessionId,
@@ -121,11 +121,12 @@ public class LlmGenerationService {
                   error_message,
                   request_metadata
                 )
-                VALUES (?, ?, 'openai', ?, ?, 'AS_CHAT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                VALUES (?, ?, ?, ?, ?, 'AS_CHAT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
                 RETURNING public_id::text AS id
                 """,
                 agentSessionId,
                 profile.profile().name(),
+                profile.provider().storageValue(),
                 profile.model(),
                 profile.reasoningEffort(),
                 status,

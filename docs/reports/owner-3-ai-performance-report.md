@@ -114,16 +114,19 @@ OPENAI_REASONING_EFFORT=medium
 
 | profile | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgTokens | schemaValidRate |
 |---|---:|---:|---:|---:|---:|---:|
-| `AS_CHAT_FAST` | 100.0% | 21 | 9272 | 11022 | 1822 | 100.0% |
-| `AS_CHAT_BALANCED` | 100.0% | 11 | 10654 | 11975 | 2175 | 100.0% |
-| `AS_CHAT_HIGH_QUALITY` | 100.0% | 11 | 14913 | 17573 | 2966 | 100.0% |
+| `AS_CHAT_FAST` | 100.0% | 6 | 8332 | 9183 | 1812 | 100.0% |
+| `AS_CHAT_BALANCED` | 100.0% | 12 | 11415 | 13344 | 2205 | 100.0% |
+| `AS_CHAT_HIGH_QUALITY` | 100.0% | 6 | 14377 | 17572 | 3035 | 100.0% |
+| `AS_CHAT_GEMINI_FAST` | 0.0% | 0 | 368 | 655 | 0 | 0.0% |
+| `AS_CHAT_GEMINI_BALANCED` | 0.0% | 0 | 303 | 346 | 0 | 0.0% |
 
 판단:
 
-- 세 profile 모두 구조화 응답과 자동 품질 기준을 통과했다.
+- OpenAI 세 profile 모두 구조화 응답과 자동 품질 기준을 통과했다.
 - `AS_CHAT_FAST`가 평균 10초 이하와 p95 20초 이하 조건을 만족하므로 사용자 기본 profile로 둔다.
 - 첫 진행 이벤트는 모든 profile이 평균 1초 이내라, 사용자는 요청 직후 처리 진행 상태를 볼 수 있다.
 - `AS_CHAT_BALANCED`와 `AS_CHAT_HIGH_QUALITY`는 관리자 검증 또는 고위험 분석 후보로 유지한다.
+- Gemini profile은 동일 AS Chat 실행 경로에 연결됐고 모델명은 `gemini-2.5-flash`, `gemini-2.5-pro`로 교정했다. 다만 현재 제공된 Gemini key가 `HTTP 429 RESOURCE_EXHAUSTED`를 반환해 실제 품질 비교는 완료하지 못했다.
 
 ## 책임 경계
 

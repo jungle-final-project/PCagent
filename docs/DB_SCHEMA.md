@@ -892,8 +892,8 @@ Owner: 3번
 | `id` | `BIGINT` | no | - | 내부 PK |
 | `public_id` | `UUID` | no | - | 외부 ID |
 | `agent_session_id` | `BIGINT` | no | `agent_sessions.id` | LLM 호출이 속한 Agent 세션 |
-| `ai_profile` | `VARCHAR(60)` | no | - | `AS_CHAT_FAST`, `AS_CHAT_BALANCED`, `AS_CHAT_HIGH_QUALITY` |
-| `provider` | `VARCHAR(40)` | no | - | `openai` |
+| `ai_profile` | `VARCHAR(60)` | no | - | `AS_CHAT_FAST`, `AS_CHAT_BALANCED`, `AS_CHAT_HIGH_QUALITY`, `AS_CHAT_GEMINI_FAST`, `AS_CHAT_GEMINI_BALANCED` |
+| `provider` | `VARCHAR(40)` | no | - | `openai`, `gemini` |
 | `model` | `VARCHAR(120)` | no | - | 실제 호출 모델 |
 | `reasoning_effort` | `VARCHAR(30)` | yes | - | reasoning effort |
 | `use_case` | `VARCHAR(60)` | no | - | `AS_CHAT` |
@@ -902,9 +902,9 @@ Owner: 3번
 | `rag_top_k` | `INTEGER` | no | - | 해당 profile의 RAG 근거 수 |
 | `prompt_version` | `VARCHAR(120)` | no | - | prompt/profile 버전 |
 | `latency_ms` | `BIGINT` | yes | - | LLM 호출 또는 실패까지 걸린 시간 |
-| `input_tokens` | `INTEGER` | yes | - | OpenAI usage input tokens |
-| `output_tokens` | `INTEGER` | yes | - | OpenAI usage output tokens |
-| `total_tokens` | `INTEGER` | yes | - | OpenAI usage total tokens |
+| `input_tokens` | `INTEGER` | yes | - | provider usage input/prompt tokens |
+| `output_tokens` | `INTEGER` | yes | - | provider usage output/candidate tokens |
+| `total_tokens` | `INTEGER` | yes | - | provider usage total tokens |
 | `schema_valid` | `BOOLEAN` | no | - | 응답 schema 검증 성공 여부 |
 | `error_code` | `VARCHAR(80)` | yes | - | 실패 코드 |
 | `error_message` | `TEXT` | yes | - | 실패 요약 |
@@ -1382,6 +1382,7 @@ V29__quote_draft_category_policy.sql
 V30__auth_seed_password_hashes.sql
 V31__as_chat_sessions.sql
 V32__llm_generations.sql
+V33__llm_generations_gemini_profiles.sql
 ```
 
 현재 저장소에는 위 순서의 Flyway migration이 반영되어 있다. 기존 PostgreSQL volume이 남아 있으면 새 migration과 seed가 다시 실행되지 않으므로, 공통 DB를 처음부터 검증할 때는 `docker compose down -v` 후 `docker compose up --build`를 사용한다.

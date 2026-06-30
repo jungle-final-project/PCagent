@@ -10,6 +10,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
 
 @Component
@@ -58,7 +59,7 @@ public class OpenAiResponsesClient {
         return createStructuredJsonResult(systemPrompt, userPrompt, schemaName, jsonSchema, model, reasoningEffort).text();
     }
 
-    public OpenAiResponseResult createStructuredJsonResult(
+    public LlmResponseResult createStructuredJsonResult(
             String systemPrompt,
             String userPrompt,
             String schemaName,
@@ -69,7 +70,7 @@ public class OpenAiResponsesClient {
         return createStructuredJsonResult(systemPrompt, userPrompt, schemaName, jsonSchema, requestedModel, requestedReasoningEffort, null);
     }
 
-    public OpenAiResponseResult createStructuredJsonResult(
+    public LlmResponseResult createStructuredJsonResult(
             String systemPrompt,
             String userPrompt,
             String schemaName,
@@ -91,11 +92,11 @@ public class OpenAiResponsesClient {
         return createResponse(systemPrompt, userPrompt, structuredOutput, requestedModel, requestedReasoningEffort, requestedMaxOutputTokens);
     }
 
-    private OpenAiResponseResult createResponse(String systemPrompt, String userPrompt, Map<String, Object> extraRequestFields) {
+    private LlmResponseResult createResponse(String systemPrompt, String userPrompt, Map<String, Object> extraRequestFields) {
         return createResponse(systemPrompt, userPrompt, extraRequestFields, model, reasoningEffort, null);
     }
 
-    private OpenAiResponseResult createResponse(
+    private LlmResponseResult createResponse(
             String systemPrompt,
             String userPrompt,
             Map<String, Object> extraRequestFields,
@@ -110,19 +111,29 @@ public class OpenAiResponsesClient {
         String effectiveReasoningEffort = blankToNull(requestedReasoningEffort) == null ? reasoningEffort : requestedReasoningEffort.trim();
         Map<String, Object> request = requestBody(systemPrompt, userPrompt, extraRequestFields, effectiveModel, effectiveReasoningEffort, requestedMaxOutputTokens);
         long startedAt = System.nanoTime();
-        Map<String, Object> response = restClient.post()
-                .uri("/responses")
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                .body(request)
-                .retrieve()
-                .body(MAP_RESPONSE);
+        Map<String, Object> response;
+        try {
+            response = restClient.post()
+                    .uri("/responses")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                    .body(request)
+                    .retrieve()
+                    .body(MAP_RESPONSE);
+        } catch (RestClientResponseException error) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "OpenAI 호출 실패: HTTP " + error.getStatusCode().value(),
+                    error
+            );
+        }
         long latencyMs = Math.max(0L, (System.nanoTime() - startedAt) / 1_000_000L);
         String output = extractOutputText(response);
         if (output == null || output.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "OpenAI 응답에서 summary text를 찾을 수 없습니다.");
         }
-        return new OpenAiResponseResult(
+        return new LlmResponseResult(
                 output.trim(),
+                LlmProvider.OPENAI,
                 effectiveModel,
                 effectiveReasoningEffort,
                 latencyMs,
@@ -230,14 +241,4 @@ public class OpenAiResponsesClient {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
-    public record OpenAiResponseResult(
-            String text,
-            String model,
-            String reasoningEffort,
-            long latencyMs,
-            Integer inputTokens,
-            Integer outputTokens,
-            Integer totalTokens
-    ) {
-    }
 }

@@ -36,12 +36,29 @@ public class AiProfileConfig {
             @Value("${ai.as-chat.high-quality.recent-message-limit:5}") int highQualityRecentMessageLimit,
             @Value("${ai.as-chat.high-quality.include-evidence-chunk-text:true}") boolean highQualityIncludeEvidenceChunkText,
             @Value("${ai.as-chat.high-quality.include-tool-result-payload:false}") boolean highQualityIncludeToolResultPayload,
-            @Value("${ai.as-chat.high-quality.use-compact-prompt:true}") boolean highQualityUseCompactPrompt
+            @Value("${ai.as-chat.high-quality.use-compact-prompt:true}") boolean highQualityUseCompactPrompt,
+            @Value("${ai.as-chat.gemini-fast.model:gemini-2.5-flash}") String geminiFastModel,
+            @Value("${ai.as-chat.gemini-fast.reasoning-effort:none}") String geminiFastReasoningEffort,
+            @Value("${ai.as-chat.gemini-fast.rag-top-k:2}") int geminiFastRagTopK,
+            @Value("${ai.as-chat.gemini-fast.max-output-tokens:900}") int geminiFastMaxOutputTokens,
+            @Value("${ai.as-chat.gemini-fast.recent-message-limit:3}") int geminiFastRecentMessageLimit,
+            @Value("${ai.as-chat.gemini-fast.include-evidence-chunk-text:false}") boolean geminiFastIncludeEvidenceChunkText,
+            @Value("${ai.as-chat.gemini-fast.include-tool-result-payload:false}") boolean geminiFastIncludeToolResultPayload,
+            @Value("${ai.as-chat.gemini-fast.use-compact-prompt:true}") boolean geminiFastUseCompactPrompt,
+            @Value("${ai.as-chat.gemini-balanced.model:gemini-2.5-pro}") String geminiBalancedModel,
+            @Value("${ai.as-chat.gemini-balanced.reasoning-effort:none}") String geminiBalancedReasoningEffort,
+            @Value("${ai.as-chat.gemini-balanced.rag-top-k:3}") int geminiBalancedRagTopK,
+            @Value("${ai.as-chat.gemini-balanced.max-output-tokens:1200}") int geminiBalancedMaxOutputTokens,
+            @Value("${ai.as-chat.gemini-balanced.recent-message-limit:4}") int geminiBalancedRecentMessageLimit,
+            @Value("${ai.as-chat.gemini-balanced.include-evidence-chunk-text:false}") boolean geminiBalancedIncludeEvidenceChunkText,
+            @Value("${ai.as-chat.gemini-balanced.include-tool-result-payload:false}") boolean geminiBalancedIncludeToolResultPayload,
+            @Value("${ai.as-chat.gemini-balanced.use-compact-prompt:true}") boolean geminiBalancedUseCompactPrompt
     ) {
         this.defaultAsChatProfile = parseProfile(defaultAsChatProfile);
         this.definitions = new EnumMap<>(AiProfile.class);
         definitions.put(AiProfile.AS_CHAT_FAST, definition(
                 AiProfile.AS_CHAT_FAST,
+                LlmProvider.OPENAI,
                 fastModel,
                 fastReasoningEffort,
                 fastRagTopK,
@@ -54,6 +71,7 @@ public class AiProfileConfig {
         ));
         definitions.put(AiProfile.AS_CHAT_BALANCED, definition(
                 AiProfile.AS_CHAT_BALANCED,
+                LlmProvider.OPENAI,
                 balancedModel,
                 balancedReasoningEffort,
                 balancedRagTopK,
@@ -66,6 +84,7 @@ public class AiProfileConfig {
         ));
         definitions.put(AiProfile.AS_CHAT_HIGH_QUALITY, definition(
                 AiProfile.AS_CHAT_HIGH_QUALITY,
+                LlmProvider.OPENAI,
                 highQualityModel,
                 highQualityReasoningEffort,
                 highQualityRagTopK,
@@ -75,6 +94,32 @@ public class AiProfileConfig {
                 highQualityIncludeEvidenceChunkText,
                 highQualityIncludeToolResultPayload,
                 highQualityUseCompactPrompt
+        ));
+        definitions.put(AiProfile.AS_CHAT_GEMINI_FAST, definition(
+                AiProfile.AS_CHAT_GEMINI_FAST,
+                LlmProvider.GEMINI,
+                geminiFastModel,
+                geminiFastReasoningEffort,
+                geminiFastRagTopK,
+                "as-chat-v3-gemini-fast-compact",
+                geminiFastMaxOutputTokens,
+                geminiFastRecentMessageLimit,
+                geminiFastIncludeEvidenceChunkText,
+                geminiFastIncludeToolResultPayload,
+                geminiFastUseCompactPrompt
+        ));
+        definitions.put(AiProfile.AS_CHAT_GEMINI_BALANCED, definition(
+                AiProfile.AS_CHAT_GEMINI_BALANCED,
+                LlmProvider.GEMINI,
+                geminiBalancedModel,
+                geminiBalancedReasoningEffort,
+                geminiBalancedRagTopK,
+                "as-chat-v3-gemini-balanced-compact",
+                geminiBalancedMaxOutputTokens,
+                geminiBalancedRecentMessageLimit,
+                geminiBalancedIncludeEvidenceChunkText,
+                geminiBalancedIncludeToolResultPayload,
+                geminiBalancedUseCompactPrompt
         ));
     }
 
@@ -95,6 +140,7 @@ public class AiProfileConfig {
 
     private static AiProfileDefinition definition(
             AiProfile profile,
+            LlmProvider provider,
             String model,
             String reasoningEffort,
             int ragTopK,
@@ -107,6 +153,9 @@ public class AiProfileConfig {
     ) {
         if (model == null || model.isBlank()) {
             throw new IllegalArgumentException(profile + " model 설정이 필요합니다.");
+        }
+        if (provider == null) {
+            throw new IllegalArgumentException(profile + " provider 설정이 필요합니다.");
         }
         if (reasoningEffort == null || reasoningEffort.isBlank()) {
             throw new IllegalArgumentException(profile + " reasoning effort 설정이 필요합니다.");
@@ -122,6 +171,7 @@ public class AiProfileConfig {
         }
         return new AiProfileDefinition(
                 profile,
+                provider,
                 model.trim(),
                 reasoningEffort.trim().toLowerCase(Locale.ROOT),
                 ragTopK,
