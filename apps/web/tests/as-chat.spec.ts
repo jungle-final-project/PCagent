@@ -27,7 +27,7 @@ test('renders AS AI chat response with Tool and RAG details', async ({ page }) =
           symptom: 'Game frame drops after 20 minutes.',
           logSummary: 'GPU temperature spikes.'
         },
-        model: 'gpt-4.1-mini',
+        model: 'gpt-5.5',
         messages: [],
         evidence: [],
         toolResults: []
@@ -52,7 +52,7 @@ test('renders AS AI chat response with Tool and RAG details', async ({ page }) =
           symptom: 'Game frame drops after 20 minutes.',
           logSummary: 'GPU temperature spikes.'
         },
-        model: 'gpt-4.1-mini',
+        model: 'gpt-5.5',
         agentSessionId: 'edc93fe3-b556-4c57-bb48-41873b7d49e5',
         messages: [
           { id: 'm1', role: 'USER', content: 'GPU 온도가 높아요.' },
@@ -66,6 +66,48 @@ test('renders AS AI chat response with Tool and RAG details', async ({ page }) =
         evidence: [{ id: 'e1', sourceId: 'support-guide-gpu-thermal', summary: 'GPU thermal evidence', score: 0.92 }],
         toolResults: [{ id: 't1', toolName: 'performance', status: 'WARN', confidence: 'MEDIUM', summary: 'Thermal throttling candidate' }]
       })
+    });
+  });
+
+  await page.route('**/api/ai/as-chat/stream', async (route) => {
+    const response = {
+      sessionId: '3c560ea5-174f-4d79-b815-0a7d4d8dfc6f',
+      asTicketId: ticketId,
+      ticket: {
+        id: ticketId,
+        status: 'IN_PROGRESS',
+        symptom: 'Game frame drops after 20 minutes.',
+        logSummary: 'GPU temperature spikes.'
+      },
+      model: 'gpt-4.1-mini',
+      agentSessionId: 'edc93fe3-b556-4c57-bb48-41873b7d49e5',
+      messages: [
+        { id: 'm1', role: 'USER', content: 'GPU 온도가 높아요.' },
+        { id: 'm2', role: 'ASSISTANT', content: 'GPU 과열 가능성을 먼저 확인하세요.', agentSessionId: 'edc93fe3-b556-4c57-bb48-41873b7d49e5' }
+      ],
+      assistantMessage: 'GPU 과열 가능성을 먼저 확인하세요.',
+      causeCandidates: [{ label: 'GPU 과열 가능성', confidence: 'MEDIUM', reason: '온도 상승과 프레임 급락이 함께 나타납니다.' }],
+      nextActions: [{ label: '팬과 먼지 확인', priority: 'HIGH', instruction: '흡기/배기 팬과 먼지를 확인하세요.' }],
+      escalation: { required: false, reason: '추가 로그 확인 전 원격지원 필수는 아닙니다.' },
+      ticketDraft: { symptomSummary: '게임 중 프레임 급락', recommendedLogRequest: 'GPU 온도 로그' },
+      evidence: [{ id: 'e1', sourceId: 'support-guide-gpu-thermal', summary: 'GPU thermal evidence', score: 0.92 }],
+      toolResults: [{ id: 't1', toolName: 'performance', status: 'WARN', confidence: 'MEDIUM', summary: 'Thermal throttling candidate' }]
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: [
+        'event: STARTED',
+        'data: {"message":"AS 티켓과 사용자 세션을 확인하고 있습니다."}',
+        '',
+        'event: RAG_READY',
+        'data: {"message":"관련 AS 근거를 찾았습니다."}',
+        '',
+        'event: DONE',
+        `data: ${JSON.stringify(response)}`,
+        '',
+        ''
+      ].join('\n')
     });
   });
 

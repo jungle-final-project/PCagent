@@ -210,11 +210,35 @@ LLM 실행에 필요한 `.env` 예시는 아래와 같다.
 ```env
 AGENT_RUNNER_MODE=llm
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5.5
+OPENAI_REASONING_EFFORT=medium
+AS_CHAT_DEFAULT_PROFILE=AS_CHAT_FAST
+AS_CHAT_FAST_MODEL=gpt-5.5
+AS_CHAT_FAST_REASONING_EFFORT=low
+AS_CHAT_FAST_RAG_TOP_K=2
+AS_CHAT_FAST_MAX_OUTPUT_TOKENS=900
+AS_CHAT_BALANCED_MODEL=gpt-5.5
+AS_CHAT_BALANCED_REASONING_EFFORT=low
+AS_CHAT_BALANCED_RAG_TOP_K=3
+AS_CHAT_BALANCED_MAX_OUTPUT_TOKENS=1100
+AS_CHAT_HIGH_QUALITY_MODEL=gpt-5.5
+AS_CHAT_HIGH_QUALITY_REASONING_EFFORT=medium
+AS_CHAT_HIGH_QUALITY_RAG_TOP_K=5
+AS_CHAT_HIGH_QUALITY_MAX_OUTPUT_TOKENS=2600
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 API 키는 저장소에 커밋하지 않는다. 각자 로컬 `.env`에만 넣는다.
+
+AS Chat은 기본 요청에서 `AS_CHAT_DEFAULT_PROFILE` 하나만 실행한다. profile 비교는 `tools/benchmark_as_chat_profiles.py`가 내부 검증용 header `X-BuildGraph-AI-Profile`을 사용해 순차 실행한다. 사용자 화면은 `POST /api/ai/as-chat/stream`을 우선 사용해 `STARTED -> RAG_READY -> TOOLS_READY -> LLM_RUNNING -> DONE` 진행 상태를 표시한다.
+
+| profile | 목적 | 기본 모델 | reasoning | RAG topK | max output |
+|---|---|---|---|---:|---:|
+| `AS_CHAT_FAST` | 기본 사용자 후보 | `gpt-5.5` | `low` | 2 | 900 |
+| `AS_CHAT_BALANCED` | 고위험/품질 보강 후보 | `gpt-5.5` | `low` | 3 | 1100 |
+| `AS_CHAT_HIGH_QUALITY` | 관리자 검증/고품질 후보 | `gpt-5.5` | `medium` | 5 | 2600 |
+
+LLM 호출 결과는 `llm_generations`에 저장한다. 저장 대상은 profile, model, reasoning, latency, token usage, schema validity, error 요약이다. prompt 원문, API key, 원본 로그 전문은 저장하지 않는다.
 
 LLM mode에서도 외부 담당자가 보는 계약은 바뀌지 않는다.
 

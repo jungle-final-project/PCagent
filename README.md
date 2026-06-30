@@ -131,7 +131,21 @@ docker compose up --build
 ```env
 AGENT_RUNNER_MODE=llm
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5.5
+OPENAI_REASONING_EFFORT=medium
+AS_CHAT_DEFAULT_PROFILE=AS_CHAT_FAST
+AS_CHAT_FAST_MODEL=gpt-5.5
+AS_CHAT_FAST_REASONING_EFFORT=low
+AS_CHAT_FAST_RAG_TOP_K=2
+AS_CHAT_FAST_MAX_OUTPUT_TOKENS=900
+AS_CHAT_BALANCED_MODEL=gpt-5.5
+AS_CHAT_BALANCED_REASONING_EFFORT=low
+AS_CHAT_BALANCED_RAG_TOP_K=3
+AS_CHAT_BALANCED_MAX_OUTPUT_TOKENS=1100
+AS_CHAT_HIGH_QUALITY_MODEL=gpt-5.5
+AS_CHAT_HIGH_QUALITY_REASONING_EFFORT=medium
+AS_CHAT_HIGH_QUALITY_RAG_TOP_K=5
+AS_CHAT_HIGH_QUALITY_MAX_OUTPUT_TOKENS=2600
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
@@ -149,6 +163,14 @@ docker compose up --build
 3. `GET /api/admin/agent-sessions/{id}`에서 `summary`가 LLM 생성 문장으로 표시되는지 확인합니다.
 
 `OPENAI_API_KEY`는 절대 커밋하지 않습니다. 저장소에는 `.env.example`만 유지합니다.
+
+AS Chat profile별 품질/속도 비교는 API가 실행 중일 때 아래 명령으로 수행합니다.
+
+```powershell
+python tools/benchmark_as_chat_profiles.py
+```
+
+결과는 `docs/reports/as-chat-profile-benchmark-YYYYMMDD.md`에 생성됩니다. 일반 사용자 요청은 `AS_CHAT_DEFAULT_PROFILE` 하나만 실행하며, benchmark 스크립트만 내부 header로 `AS_CHAT_FAST`, `AS_CHAT_BALANCED`, `AS_CHAT_HIGH_QUALITY`를 순차 비교합니다. `/support/ai-chat` 화면은 `POST /api/ai/as-chat/stream`을 우선 사용해 첫 진행 상태와 최종 응답 시간을 따로 검증합니다.
 
 ## 네이버 쇼핑 검색 연동
 
