@@ -666,6 +666,94 @@ test('updates quantity only for repeatable quote draft categories', async ({ pag
   await expect(page.getByText('1,060,000원')).toBeVisible();
 });
 
+test('shows price trend chart on product detail page', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'jwt-user-token');
+  });
+
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'user-test',
+        email: 'user@example.com',
+        name: 'Demo User',
+        role: 'USER'
+      })
+    });
+  });
+
+  await page.route('**/api/parts/part-gpu-trend-test**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/price-history')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          partId: 'part-gpu-trend-test',
+          partName: '가격 추이 RTX 테스트',
+          currentPrice: 950000,
+          days: 3650,
+          source: 'NAVER_SHOPPING_SEARCH',
+          items: [
+            { price: 1020000, source: 'NAVER_SHOPPING_SEARCH', collectedAt: '2026-06-27T00:00:00Z' },
+            { price: 990000, source: 'NAVER_SHOPPING_SEARCH', collectedAt: '2026-06-28T00:00:00Z' },
+            { price: 950000, source: 'NAVER_SHOPPING_SEARCH', collectedAt: '2026-06-29T00:00:00Z' }
+          ],
+          summary: {
+            sampleCount: 3,
+            currentPrice: 950000,
+            minPrice: 950000,
+            maxPrice: 1020000,
+            firstPrice: 1020000,
+            lastPrice: 950000,
+            changeAmount: -70000,
+            changeRatePercent: -6.86
+          }
+        })
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'part-gpu-trend-test',
+        category: 'GPU',
+        name: '가격 추이 RTX 테스트',
+        manufacturer: 'NVIDIA',
+        price: 950000,
+        status: 'ACTIVE',
+        latestPriceCollectedAt: '2026-06-29T00:00:00Z',
+        attributes: {
+          shortSpec: 'RTX price trend test',
+          vramGb: 12,
+          wattage: 220
+        },
+        externalOffer: {
+          imageUrl: 'https://example.test/trend-gpu.png',
+          supplierName: '가격테스트몰',
+          offerUrl: 'https://example.test/trend-gpu',
+          lowPrice: 950000,
+          source: 'NAVER_SHOPPING_SEARCH'
+        }
+      })
+    });
+  });
+
+  await page.goto('/parts/part-gpu-trend-test');
+
+  await expect(page.getByRole('heading', { name: '가격 추이 RTX 테스트' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '주요 스펙' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '가격 변동 추이' })).toBeVisible();
+  await expect(page.getByRole('img', { name: '가격 변동 추이 그래프' })).toBeVisible();
+  await expect(page.getByText('950,000원').first()).toBeVisible();
+  await expect(page.getByText('-70,000원 (-6.86%)')).toBeVisible();
+  await expect(page.getByText('전체 내부 스펙')).toHaveCount(0);
+});
+
 test('goes home after login from product detail redirect', async ({ page }) => {
   let savedToDraft = false;
 
