@@ -40,13 +40,23 @@ export function AppHeader() {
       }
     }
 
+    function handleAuthChanged(event: Event) {
+      const userFromEvent = event instanceof CustomEvent ? event.detail?.user : null;
+      if (isCurrentUser(userFromEvent)) {
+        setUser(userFromEvent);
+        setCheckingUser(false);
+        return;
+      }
+      void loadCurrentUser();
+    }
+
     void loadCurrentUser();
-    window.addEventListener(AUTH_CHANGED_EVENT, loadCurrentUser);
+    window.addEventListener(AUTH_CHANGED_EVENT, handleAuthChanged);
     window.addEventListener('storage', loadCurrentUser);
 
     return () => {
       cancelled = true;
-      window.removeEventListener(AUTH_CHANGED_EVENT, loadCurrentUser);
+      window.removeEventListener(AUTH_CHANGED_EVENT, handleAuthChanged);
       window.removeEventListener('storage', loadCurrentUser);
     };
   }, []);
@@ -101,6 +111,19 @@ export function AppHeader() {
       </header>
       <PrimaryNav />
     </>
+  );
+}
+
+function isCurrentUser(value: unknown): value is CurrentUser {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.email === 'string' &&
+    typeof candidate.name === 'string' &&
+    (candidate.role === 'USER' || candidate.role === 'ADMIN')
   );
 }
 

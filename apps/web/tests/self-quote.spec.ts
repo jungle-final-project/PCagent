@@ -575,6 +575,10 @@ test('returns to product detail after login and saves selected part to quote dra
   });
 
   await page.route('**/api/auth/login', async (route) => {
+    expect(JSON.parse(route.request().postData() ?? '{}')).toEqual({
+      email: 'user@example.com',
+      password: 'passw0rd!'
+    });
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -634,9 +638,12 @@ test('returns to product detail after login and saves selected part to quote dra
 
   await page.goto('/parts/part-gpu-detail-test');
   await expect(page).toHaveURL('/login?redirect=%2Fparts%2Fpart-gpu-detail-test');
+  await page.getByLabel('이메일').fill('user@example.com');
+  await page.getByLabel('비밀번호').fill('passw0rd!');
   await page.getByRole('button', { name: '로그인' }).click();
 
   await expect(page).toHaveURL('/parts/part-gpu-detail-test');
+  expect(await page.evaluate(() => localStorage.getItem('buildgraph.refreshToken'))).toBe('demo-refresh-user');
   await expect(page.getByText('로그인됨 · user@example.com · USER')).toBeVisible();
   await expect(page.getByText('Demo User')).toBeVisible();
   await expect(page.getByRole('button', { name: '로그아웃' })).toBeVisible();
