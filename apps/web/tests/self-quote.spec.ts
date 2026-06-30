@@ -280,6 +280,7 @@ test('shows selected AI build separately from the manual quote draft and marks d
       title: '균형 추천 조합',
       summary: 'QHD 게임과 개발을 함께 고려한 데모 조합입니다.',
       totalPrice: 1980000,
+      appliedPartCategories: ['GPU'],
       selectedAt: '2026-06-30T09:00:00.000Z',
       items: [
         {
@@ -387,8 +388,9 @@ test('shows selected AI build separately from the manual quote draft and marks d
   await expect(aiPanel).toBeVisible();
   await expect(aiPanel.getByRole('heading', { name: 'AI 선택 조합' })).toBeVisible();
   await expect(aiPanel.getByText('균형 추천 조합')).toBeVisible();
-  await expect(aiPanel.getByText('수동 장바구니와 별도 데모 상태')).toBeVisible();
-  await expect(aiPanel.getByText('이미 담김')).toBeVisible();
+  await expect(aiPanel.getByText('GPU 반영됨')).toBeVisible();
+  await expect(aiPanel.getByText('실제 장바구니 적용 기록')).toBeVisible();
+  await expect(aiPanel.getByText('이미 담김', { exact: true })).toBeVisible();
   await expect(aiPanel.getByText('별도 표시')).toBeVisible();
   await expect(page.getByRole('heading', { name: '견적 장바구니', exact: true })).toBeVisible();
   await expect(page.getByText('견적 합계')).toBeVisible();

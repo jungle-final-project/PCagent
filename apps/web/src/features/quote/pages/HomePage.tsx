@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   Activity,
   ArrowRight,
@@ -19,7 +20,16 @@ import {
   type LucideIcon
 } from 'lucide-react';
 import { Screen } from '../../../components/ui';
+import { applyAiBuildToQuoteDraft } from '../../parts/partsApi';
 import { AiBuildAssistant } from '../components/AiBuildAssistant';
+import {
+  AI_ASSISTANT_SESSION_CHANGED_EVENT,
+  PART_CATEGORY_LABELS,
+  readAssistantSession,
+  saveSelectedAiBuild,
+  type AiAssistantSession,
+  type AiRecommendedBuild
+} from '../aiSelection';
 
 type QuickCategory = {
   label: string;
@@ -49,6 +59,8 @@ type PopularPart = {
   to: string;
   icon: LucideIcon;
 };
+
+type RecommendationTab = 'popular' | 'ai';
 
 const quickCategories: QuickCategory[] = [
   { label: 'CPU', detail: '작업 성능 기준', to: '/self-quote?category=CPU', icon: Cpu },
@@ -102,6 +114,51 @@ const popularPartDeals: PopularPart[] = [
 ];
 
 export function HomePage() {
+  const navigate = useNavigate();
+  const [assistantSession, setAssistantSession] = useState<AiAssistantSession>(() => readAssistantSession());
+  const [recommendationTab, setRecommendationTab] = useState<RecommendationTab>(() => readAssistantSession().latestBuilds.length > 0 ? 'ai' : 'popular');
+  const [applyingBuildId, setApplyingBuildId] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const syncAssistantSession = () => {
+      const nextSession = readAssistantSession();
+      setAssistantSession(nextSession);
+      if (nextSession.latestBuilds.length > 0) {
+        setRecommendationTab('ai');
+      }
+    };
+    window.addEventListener(AI_ASSISTANT_SESSION_CHANGED_EVENT, syncAssistantSession);
+    window.addEventListener('storage', syncAssistantSession);
+    return () => {
+      window.removeEventListener(AI_ASSISTANT_SESSION_CHANGED_EVENT, syncAssistantSession);
+      window.removeEventListener('storage', syncAssistantSession);
+    };
+  }, []);
+
+  async function selectAiBuild(build: AiRecommendedBuild) {
+    if (applyingBuildId) return;
+    saveSelectedAiBuild(build);
+    setApplyError(null);
+    setApplyingBuildId(build.id);
+    try {
+      await applyAiBuildToQuoteDraft({
+        buildId: build.id,
+        conflictPolicy: 'REPLACE',
+        items: build.items.map((item) => ({
+          partId: item.partId,
+          category: item.category,
+          quantity: item.quantity
+        }))
+      });
+      navigate('/self-quote');
+    } catch {
+      setApplyError('AI 추천 조합을 셀프 견적 장바구니에 적용하지 못했습니다.');
+    } finally {
+      setApplyingBuildId(null);
+    }
+  }
+
   return (
     <Screen>
       <div className="space-y-7 pb-12">
@@ -114,19 +171,69 @@ export function HomePage() {
           <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <div className="text-xs font-black text-brand-blue">Recommended builds</div>
-              <h2 className="mt-1 text-xl font-black text-commerce-ink">오늘의 추천 견적</h2>
-              <p className="mt-1 text-sm text-slate-500">바로 비교하고 상세 견적으로 이동할 수 있는 대표 조합입니다.</p>
+              <h2 className="mt-1 text-xl font-black text-commerce-ink">추천상품</h2>
+              <p className="mt-1 text-sm text-slate-500">처음에는 인기상품을 보여주고, 챗봇 질문 후에는 최신 AI 추천상품 3개를 비교합니다.</p>
             </div>
-            <Link to="/requirements/new" className="inline-flex items-center gap-1 text-sm font-black text-brand-blue hover:underline">
-              AI 견적 더 보기
-              <ArrowRight size={15} />
-            </Link>
+            <div role="tablist" aria-label="홈 추천상품 탭" className="inline-flex rounded-lg border border-commerce-line bg-slate-50 p-1">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={recommendationTab === 'popular'}
+                onClick={() => setRecommendationTab('popular')}
+                className={`min-h-10 rounded-md px-4 text-sm font-black transition ${recommendationTab === 'popular' ? 'bg-commerce-ink text-white shadow-product' : 'text-slate-600 hover:bg-white hover:text-commerce-ink'}`}
+              >
+                인기상품
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={recommendationTab === 'ai'}
+                onClick={() => setRecommendationTab('ai')}
+                className={`min-h-10 rounded-md px-4 text-sm font-black transition ${recommendationTab === 'ai' ? 'bg-commerce-ink text-white shadow-product' : 'text-slate-600 hover:bg-white hover:text-commerce-ink'}`}
+              >
+                AI 추천상품
+              </button>
+            </div>
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
-            {featuredBuilds.map((build) => (
-              <FeaturedBuildCard key={build.name} build={build} />
-            ))}
-          </div>
+          {recommendationTab === 'popular' ? (
+            <div className="grid gap-3 md:grid-cols-3">
+              {featuredBuilds.map((build) => (
+                <FeaturedBuildCard key={build.name} build={build} />
+              ))}
+            </div>
+          ) : (
+            <div data-testid="home-ai-recommendations">
+              {assistantSession.latestBuilds.length > 0 ? (
+                <>
+                  {applyError ? (
+                    <div role="alert" className="mb-3 rounded-md border border-red-100 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+                      {applyError}
+                    </div>
+                  ) : null}
+                  <div className="grid gap-3 md:grid-cols-3">
+                    {assistantSession.latestBuilds.map((build) => (
+                      <AiRecommendationCard
+                        key={build.id}
+                        build={build}
+                        isApplying={applyingBuildId === build.id}
+                        onSelect={selectAiBuild}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-lg border border-dashed border-blue-200 bg-blue-50/60 p-6 text-center">
+                  <div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-white text-brand-blue shadow-product">
+                    <Bot size={24} />
+                  </div>
+                  <h3 className="mt-3 text-base font-black text-commerce-ink">AI 추천상품 대기 중</h3>
+                  <p className="mx-auto mt-2 max-w-lg break-keep text-sm leading-6 text-slate-500">
+                    AI에게 예산이나 부품을 물어보면 추천상품 3개가 여기에 표시됩니다.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -136,6 +243,54 @@ export function HomePage() {
       </div>
       <AiBuildAssistant surface="home" />
     </Screen>
+  );
+}
+
+function AiRecommendationCard({
+  build,
+  isApplying,
+  onSelect
+}: {
+  build: AiRecommendedBuild;
+  isApplying: boolean;
+  onSelect: (build: AiRecommendedBuild) => void;
+}) {
+  return (
+    <article className="rounded-lg border border-commerce-line bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-commerce-ink hover:shadow-product">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="rounded bg-commerce-ink px-2 py-1 text-[11px] font-black text-white">{build.label}</span>
+        {build.appliedPartCategories.map((category) => (
+          <span key={category} className="rounded bg-blue-50 px-2 py-1 text-[11px] font-black text-brand-blue">
+            {PART_CATEGORY_LABELS[category]} 반영됨
+          </span>
+        ))}
+      </div>
+      <h3 className="text-base font-black text-commerce-ink">{build.title}</h3>
+      <p className="mt-2 min-h-10 break-keep text-xs leading-5 text-slate-500">{build.summary}</p>
+      <div className="mt-4 flex flex-wrap items-end gap-2">
+        <span className="text-xl font-black tracking-tight text-commerce-sale">{build.totalPrice.toLocaleString()}원</span>
+        <span className="pb-0.5 text-xs font-bold text-commerce-green">AI 최신 추천</span>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs">
+        {build.items.slice(0, 4).map((item) => (
+          <div key={item.partId} className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-slate-50 px-3 py-2">
+            <span className="min-w-0 truncate font-bold text-slate-600">
+              {PART_CATEGORY_LABELS[item.category]} · {item.name}
+            </span>
+            <span className="shrink-0 font-black text-slate-900">{item.price.toLocaleString()}원</span>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => onSelect(build)}
+        disabled={isApplying}
+        className="mt-4 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-md bg-commerce-ink px-4 text-sm font-black text-white transition hover:bg-slate-700 focus:outline-none focus:ring-4 focus:ring-blue-100 disabled:bg-slate-300"
+      >
+        <ShoppingCart size={16} />
+        {isApplying ? '장바구니 적용 중' : '셀프 견적으로 보기'}
+      </button>
+    </article>
   );
 }
 
@@ -297,7 +452,7 @@ function PopularPartsSection() {
 function WorkflowPanel() {
   const rows = [
     { icon: Bot, title: '챗봇 추천', body: '우하단 AI 챗봇에서 3개 조합을 탭으로 비교합니다.' },
-    { icon: ShoppingCart, title: '셀프 견적 이동', body: '선택 조합은 실제 장바구니와 분리된 데모 패널로 표시합니다.' },
+    { icon: ShoppingCart, title: '셀프 견적 이동', body: '선택한 AI 조합을 실제 견적 장바구니에 한 번에 적용합니다.' },
     { icon: SearchCheck, title: 'Tool 검증', body: '수동 장바구니의 기존 검증 진입점은 그대로 유지합니다.' },
     { icon: ShieldCheck, title: '목표가 알림', body: '구매는 결제 없이 구매처 이동 CTA로만 연결합니다.' }
   ];
@@ -307,7 +462,7 @@ function WorkflowPanel() {
       <div className="mb-5">
         <div className="text-xs font-black text-brand-blue">Scenario</div>
         <h2 className="mt-1 text-xl font-black text-commerce-ink">추천부터 알림까지</h2>
-        <p className="mt-1 break-keep text-sm leading-6 text-slate-500">이번 화면은 백엔드 변경 없이 프론트 데모 흐름만 보여줍니다.</p>
+        <p className="mt-1 break-keep text-sm leading-6 text-slate-500">홈 추천은 챗봇 API와 셀프 견적 batch 적용 흐름으로 이어집니다.</p>
       </div>
       <div className="space-y-3">
         {rows.map((row) => (

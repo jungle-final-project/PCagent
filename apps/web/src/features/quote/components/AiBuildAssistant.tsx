@@ -1,12 +1,20 @@
-import { type FormEvent, useMemo, useState } from 'react';
+import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bot, CheckCircle2, Cpu, Send, ShoppingCart, Sparkles, X, Zap } from 'lucide-react';
+import { Bot, CheckCircle2, Cpu, PackageCheck, Send, ShoppingCart, Sparkles, X, Zap } from 'lucide-react';
+import { applyAiBuildToQuoteDraft } from '../../parts/partsApi';
 import {
-  type AiBuildTier,
-  defaultAiBuild,
-  getAiRecommendedBuilds,
-  saveSelectedAiBuild
+  AI_ASSISTANT_SESSION_CHANGED_EVENT,
+  PART_CATEGORY_LABELS,
+  createAiMessageId,
+  readAssistantSession,
+  saveAssistantSession,
+  saveSelectedAiBuild,
+  type AiAppliedPartPreference,
+  type AiBuildItem,
+  type AiChatMessage,
+  type AiRecommendedBuild
 } from '../aiSelection';
+import { buildChat } from '../quoteApi';
 
 type AiBuildAssistantProps = {
   surface?: 'home' | 'self-quote';
@@ -14,31 +22,120 @@ type AiBuildAssistantProps = {
 
 export function AiBuildAssistant({ surface = 'home' }: AiBuildAssistantProps) {
   const navigate = useNavigate();
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
-  const [submittedPrompt, setSubmittedPrompt] = useState('QHD 게임과 개발을 같이 할 PC 추천');
-  const [activeTier, setActiveTier] = useState<AiBuildTier>('balanced');
-  const [assistantMessage, setAssistantMessage] = useState('원하는 예산과 용도를 입력하면 가성비, 균형, 고성능 조합으로 바로 비교해드릴게요.');
+  const [session, setSession] = useState(() => readAssistantSession());
+  const [isSending, setIsSending] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [failedBuild, setFailedBuild] = useState<AiRecommendedBuild | null>(null);
+  const [applyingBuildId, setApplyingBuildId] = useState<string | null>(null);
 
-  const builds = useMemo(() => getAiRecommendedBuilds(submittedPrompt), [submittedPrompt]);
-  const activeBuild = builds.find((build) => build.tier === activeTier) ?? builds[0] ?? defaultAiBuild();
+  useEffect(() => {
+    const syncSession = () => setSession(readAssistantSession());
+    window.addEventListener(AI_ASSISTANT_SESSION_CHANGED_EVENT, syncSession);
+    window.addEventListener('storage', syncSession);
+    return () => {
+      window.removeEventListener(AI_ASSISTANT_SESSION_CHANGED_EVENT, syncSession);
+      window.removeEventListener('storage', syncSession);
+    };
+  }, []);
 
-  function submitPrompt(event: FormEvent) {
+  useEffect(() => {
+    if (!open) return;
+    messagesEndRef.current?.scrollIntoView({ block: 'end' });
+  }, [open, session.messages.length]);
+
+  async function submitPrompt(event: FormEvent) {
     event.preventDefault();
     const nextPrompt = prompt.trim();
-    if (!nextPrompt) return;
+    if (!nextPrompt || isSending) return;
 
-    setSubmittedPrompt(nextPrompt);
-    const nextTier = inferTier(nextPrompt);
-    setActiveTier(nextTier);
-    setAssistantMessage('입력한 조건에 맞춰 3가지 조합을 다시 정리했습니다. 탭을 눌러 가격과 부품 구성을 비교해보세요.');
+    const now = new Date().toISOString();
+    const userMessage: AiChatMessage = {
+      id: createAiMessageId('user'),
+      role: 'user',
+      text: nextPrompt,
+      createdAt: now,
+      kind: 'general'
+    };
+    const optimisticSession = {
+      ...session,
+      messages: [...session.messages, userMessage],
+      updatedAt: now
+    };
+    setSession(optimisticSession);
+    saveAssistantSession(optimisticSession);
     setPrompt('');
+    setSubmitError(null);
+    setIsSending(true);
+
+    try {
+      const response = await buildChat({
+        message: nextPrompt,
+        currentBuilds: session.latestBuilds,
+        appliedPartPreferences: session.appliedPartPreferences
+      });
+      const responseTime = new Date().toISOString();
+      const latestBuilds = response.builds?.length ? response.builds : session.latestBuilds;
+      const appliedPartPreferences = response.partRecommendation
+        ? replaceAppliedPartPreference(session.appliedPartPreferences, {
+            category: response.partRecommendation.category,
+            label: response.partRecommendation.label,
+            appliedAt: responseTime,
+            options: response.partRecommendation.options
+          })
+        : session.appliedPartPreferences;
+      const assistantMessage: AiChatMessage = {
+        id: createAiMessageId(response.answerType.toLowerCase()),
+        role: 'assistant',
+        text: response.message,
+        createdAt: responseTime,
+        kind: messageKind(response.answerType),
+        builds: response.builds?.length ? response.builds : undefined,
+        partRecommendation: response.partRecommendation ?? undefined,
+        warnings: response.warnings ?? []
+      };
+      const nextSession = {
+        messages: [...optimisticSession.messages, assistantMessage],
+        latestBuilds,
+        appliedPartPreferences,
+        updatedAt: responseTime
+      };
+      setSession(nextSession);
+      saveAssistantSession(nextSession);
+    } catch {
+      setSubmitError('AI 추천 API 호출에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setIsSending(false);
+    }
   }
 
-  function selectBuild() {
-    saveSelectedAiBuild(activeBuild);
-    setOpen(false);
-    navigate('/self-quote');
+  async function selectBuild(build: AiRecommendedBuild) {
+    if (applyingBuildId) return;
+    saveSelectedAiBuild(build);
+    setApplyError(null);
+    setFailedBuild(null);
+    setApplyingBuildId(build.id);
+    try {
+      await applyAiBuildToQuoteDraft({
+        buildId: build.id,
+        conflictPolicy: 'REPLACE',
+        items: build.items.map((item) => ({
+          partId: item.partId,
+          category: item.category,
+          quantity: item.quantity
+        }))
+      });
+      setOpen(false);
+      navigate('/self-quote');
+    } catch {
+      setFailedBuild(build);
+      setApplyError('AI 조합을 셀프 견적 장바구니에 적용하지 못했습니다.');
+    } finally {
+      setApplyingBuildId(null);
+    }
   }
 
   if (!open) {
@@ -61,7 +158,7 @@ export function AiBuildAssistant({ surface = 'home' }: AiBuildAssistantProps) {
   return (
     <section
       data-testid="ai-chatbot-panel"
-      className="fixed bottom-5 right-4 z-50 w-[min(calc(100vw-2rem),440px)] overflow-hidden rounded-xl border border-slate-900 bg-white shadow-2xl"
+      className="fixed bottom-4 right-3 z-50 w-[min(calc(100vw-1.5rem),460px)] overflow-hidden rounded-xl border border-slate-900 bg-white shadow-2xl sm:bottom-5 sm:right-4"
     >
       <div className="bg-slate-950 px-4 py-3 text-white">
         <div className="flex items-center justify-between gap-3">
@@ -71,7 +168,7 @@ export function AiBuildAssistant({ surface = 'home' }: AiBuildAssistantProps) {
             </div>
             <div className="min-w-0">
               <h2 className="truncate text-sm font-black">BuildGraph AI 챗봇</h2>
-              <p className="truncate text-xs text-white/70">{surface === 'home' ? '추천 조합 비교' : '셀프견적 보조'}</p>
+              <p className="truncate text-xs text-white/70">{surface === 'home' ? '예산/부품 DB 추천' : '셀프견적 보조 추천'}</p>
             </div>
           </div>
           <button
@@ -85,115 +182,207 @@ export function AiBuildAssistant({ surface = 'home' }: AiBuildAssistantProps) {
         </div>
       </div>
 
-      <div className="max-h-[72vh] overflow-y-auto p-4">
-        <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-slate-700">
-          <div className="mb-1 flex items-center gap-2 text-xs font-black text-brand-blue">
-            <Sparkles size={14} />
-            프론트 데모 추천
+      <div className="flex max-h-[78vh] flex-col">
+        <div className="border-b border-commerce-line bg-slate-50 px-4 py-3">
+          <div className="flex flex-wrap gap-2">
+            {['200만원 PC 추천', '300만원 PC 추천', 'GPU 추천해줘', '쿨러 추천해줘'].map((example) => (
+              <button
+                key={example}
+                type="button"
+                onClick={() => setPrompt(example)}
+                className="rounded-full border border-commerce-line bg-white px-3 py-1 text-[11px] font-black text-slate-600 hover:border-commerce-ink hover:text-commerce-ink"
+              >
+                {example}
+              </button>
+            ))}
           </div>
-          {assistantMessage}
         </div>
 
-        <form onSubmit={submitPrompt} className="mt-3 rounded-lg border border-commerce-line bg-slate-50 p-2">
+        <div data-testid="ai-chat-messages" className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+          {session.messages.map((message) => (
+            <ChatMessage key={message.id} message={message} onSelectBuild={selectBuild} />
+          ))}
+          {isSending ? (
+            <div className="rounded-xl border border-commerce-line bg-white px-3 py-2 text-sm font-bold text-slate-500">
+              서버 DB에서 추천 조합을 계산하는 중입니다.
+            </div>
+          ) : null}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <form onSubmit={submitPrompt} className="border-t border-commerce-line bg-white p-3">
+          {submitError ? (
+            <div role="alert" className="mb-2 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
+              {submitError}
+            </div>
+          ) : null}
+          {applyError ? (
+            <div role="alert" className="mb-2 flex flex-col gap-2 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 sm:flex-row sm:items-center sm:justify-between">
+              <span>{applyError}</span>
+              <button
+                type="button"
+                onClick={() => failedBuild && selectBuild(failedBuild)}
+                disabled={!failedBuild || Boolean(applyingBuildId)}
+                className="min-h-8 rounded bg-red-600 px-3 text-white disabled:bg-red-200"
+              >
+                재시도
+              </button>
+            </div>
+          ) : null}
           <label className="sr-only" htmlFor="ai-build-chat-input">AI 챗봇에게 PC 사양 질문</label>
-          <div className="flex gap-2">
+          <div className="flex gap-2 rounded-lg border border-commerce-line bg-slate-50 p-2 focus-within:border-commerce-ink focus-within:ring-4 focus-within:ring-blue-100">
             <input
               id="ai-build-chat-input"
               aria-label="AI 챗봇에게 PC 사양 질문"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="예: 200만원 QHD 게임용으로 추천해줘"
+              disabled={isSending}
+              placeholder="예: 200만원 PC 추천, GPU 추천해줘"
               className="min-w-0 flex-1 bg-transparent px-2 text-sm font-medium text-slate-900 outline-none placeholder:text-slate-400"
             />
             <button
               type="submit"
               aria-label="질문 보내기"
-              disabled={!prompt.trim()}
-              className="grid h-10 w-10 place-items-center rounded-md bg-commerce-ink text-white disabled:bg-slate-300"
+              disabled={!prompt.trim() || isSending}
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-commerce-ink text-white transition hover:bg-slate-700 disabled:bg-slate-300"
             >
               <Send size={17} />
             </button>
           </div>
+          <div className="mt-2 flex items-center gap-2 text-[11px] font-bold text-slate-500">
+            <CheckCircle2 size={14} className="text-commerce-green" />
+            추천은 서버 DB/룰 기반이며 대화 히스토리는 브라우저 세션에만 저장합니다.
+          </div>
         </form>
-
-        <div className="mt-4 grid grid-cols-3 gap-2" role="group" aria-label="추천 조합 탭">
-          {builds.map((build) => {
-            const selected = build.tier === activeBuild.tier;
-            return (
-              <button
-                key={build.id}
-                type="button"
-                onClick={() => setActiveTier(build.tier)}
-                className={`min-h-12 rounded-lg border px-2 py-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-blue-100 ${selected ? 'border-slate-950 bg-slate-950 text-white' : 'border-commerce-line bg-white text-slate-700 hover:border-commerce-ink hover:text-commerce-ink'}`}
-              >
-                {build.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <article className="mt-3 rounded-xl border border-commerce-line bg-white p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            {activeBuild.badges.map((badge) => (
-              <span key={badge} className="rounded bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-700">{badge}</span>
-            ))}
-          </div>
-          <h3 className="text-lg font-black text-commerce-ink">{activeBuild.title}</h3>
-          <p className="mt-2 break-keep text-xs leading-5 text-slate-500">{activeBuild.summary}</p>
-          <div className="mt-4 flex items-end gap-2">
-            <span className="text-2xl font-black tracking-tight text-commerce-sale">{activeBuild.totalPrice.toLocaleString()}원</span>
-            <span className="pb-1 text-xs font-bold text-commerce-green">호환성 검토 대상</span>
-          </div>
-
-          <div className="mt-4 space-y-2">
-            {activeBuild.items.slice(0, 4).map((item) => (
-              <div key={item.partId} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-xs">
-                <div className="min-w-0">
-                  <div className="font-black text-slate-900">{item.category}</div>
-                  <div className="truncate text-slate-500">{item.name}</div>
-                </div>
-                <div className="font-black text-slate-900">{item.price.toLocaleString()}원</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded-lg border border-commerce-line bg-slate-50 p-3">
-              <div className="flex items-center gap-1 font-black text-slate-900"><Cpu size={14} /> 8개 부품</div>
-              <div className="mt-1 text-slate-500">수동 장바구니와 분리</div>
-            </div>
-            <div className="rounded-lg border border-commerce-line bg-slate-50 p-3">
-              <div className="flex items-center gap-1 font-black text-slate-900"><Zap size={14} /> Tool 대상</div>
-              <div className="mt-1 text-slate-500">호환성/전력 확인</div>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={selectBuild}
-            className="mt-4 flex w-full min-h-11 items-center justify-center gap-2 rounded-lg bg-commerce-ink px-4 py-3 text-sm font-black text-white transition hover:bg-slate-700 focus:outline-none focus:ring-4 focus:ring-blue-100"
-          >
-            <ShoppingCart size={17} />
-            이 조합으로 셀프 견적 보기
-          </button>
-        </article>
-
-        <div className="mt-3 flex items-center gap-2 text-[11px] font-bold text-slate-500">
-          <CheckCircle2 size={14} className="text-commerce-green" />
-          실제 API 저장 없이 화면 상태만 저장합니다.
-        </div>
       </div>
     </section>
   );
 }
 
-function inferTier(prompt: string): AiBuildTier {
-  const normalized = prompt.toLowerCase();
-  if (normalized.includes('300') || normalized.includes('cuda') || normalized.includes('ai') || normalized.includes('고성능')) {
-    return 'performance';
-  }
-  if (normalized.includes('150') || normalized.includes('가성비') || normalized.includes('저렴')) {
-    return 'budget';
-  }
-  return 'balanced';
+function messageKind(answerType: 'BUDGET' | 'PART' | 'GENERAL'): AiChatMessage['kind'] {
+  if (answerType === 'BUDGET') return 'budget';
+  if (answerType === 'PART') return 'part';
+  return 'general';
+}
+
+function replaceAppliedPartPreference(preferences: AiAppliedPartPreference[], nextPreference: AiAppliedPartPreference) {
+  return [
+    ...preferences.filter((preference) => preference.category !== nextPreference.category),
+    nextPreference
+  ];
+}
+
+function ChatMessage({
+  message,
+  onSelectBuild
+}: {
+  message: AiChatMessage;
+  onSelectBuild: (build: AiRecommendedBuild) => void;
+}) {
+  const isUser = message.role === 'user';
+
+  return (
+    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className={`max-w-full ${isUser ? 'w-fit max-w-[86%]' : 'w-full'}`}>
+        <div className={`rounded-xl px-3 py-2 text-sm leading-6 ${isUser ? 'bg-commerce-ink text-white' : 'border border-commerce-line bg-white text-slate-700'}`}>
+          {!isUser ? (
+            <div className="mb-1 flex items-center gap-2 text-[11px] font-black text-brand-blue">
+              <Sparkles size={13} />
+              AI DB 답변
+            </div>
+          ) : null}
+          <p className="break-keep">{message.text}</p>
+        </div>
+
+        {message.builds ? (
+          <div className="mt-2 grid gap-2">
+            {message.builds.map((build) => (
+              <CompactBuildCard key={`${message.id}-${build.id}`} build={build} onSelectBuild={onSelectBuild} />
+            ))}
+          </div>
+        ) : null}
+
+        {message.partRecommendation ? (
+          <PartRecommendationCards options={message.partRecommendation.options} label={message.partRecommendation.label} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CompactBuildCard({
+  build,
+  onSelectBuild
+}: {
+  build: AiRecommendedBuild;
+  onSelectBuild: (build: AiRecommendedBuild) => void;
+}) {
+  return (
+    <article className="rounded-lg border border-commerce-line bg-slate-50 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded bg-commerce-ink px-2 py-1 text-[11px] font-black text-white">{build.label}</span>
+        {build.appliedPartCategories.map((category) => (
+          <span key={category} className="rounded bg-blue-50 px-2 py-1 text-[11px] font-black text-brand-blue">
+            {PART_CATEGORY_LABELS[category]} 반영됨
+          </span>
+        ))}
+      </div>
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-sm font-black text-commerce-ink">{build.title}</h3>
+          <p className="mt-1 line-clamp-2 break-keep text-xs leading-5 text-slate-500">{build.summary}</p>
+        </div>
+        <div className="shrink-0 text-left sm:text-right">
+          <div className="text-base font-black text-commerce-sale">{build.totalPrice.toLocaleString()}원</div>
+          <div className="text-[11px] font-bold text-commerce-green">8개 부품</div>
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+        {build.items.slice(0, 4).map((item) => (
+          <div key={item.partId} className="min-w-0 rounded-md bg-white px-2 py-1.5">
+            <span className="font-black text-slate-800">{PART_CATEGORY_LABELS[item.category]}</span>
+            <span className="ml-1 text-slate-500">{item.name}</span>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => onSelectBuild(build)}
+        className="mt-3 flex w-full min-h-10 items-center justify-center gap-2 rounded-md bg-commerce-ink px-3 text-xs font-black text-white transition hover:bg-slate-700 focus:outline-none focus:ring-4 focus:ring-blue-100"
+      >
+        <ShoppingCart size={15} />
+        이 조합으로 셀프 견적 보기
+      </button>
+    </article>
+  );
+}
+
+function PartRecommendationCards({ options, label }: { options: AiBuildItem[]; label: string }) {
+  return (
+    <div className="mt-2 rounded-lg border border-blue-100 bg-blue-50 p-3">
+      <div className="mb-2 flex items-center gap-2 text-xs font-black text-brand-blue">
+        <PackageCheck size={14} />
+        {label} 추천 후보
+      </div>
+      <div className="grid gap-2">
+        {options.map((option, index) => (
+          <div key={option.partId} className="rounded-lg border border-commerce-line bg-white p-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span className="rounded bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-700">
+                {index === 0 ? '가성비' : index === 1 ? '균형' : '고성능'}
+              </span>
+              <span className="text-xs font-black text-commerce-sale">{option.price.toLocaleString()}원</span>
+            </div>
+            <div className="font-black text-commerce-ink">{option.name}</div>
+            <div className="mt-1 text-xs text-slate-500">{option.manufacturer} · {option.note}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex items-center gap-2 text-[11px] font-bold text-slate-500">
+        <Cpu size={13} />
+        최신 AI 추천상품 3개에 바로 반영됨
+        <Zap size={13} />
+      </div>
+    </div>
+  );
 }
