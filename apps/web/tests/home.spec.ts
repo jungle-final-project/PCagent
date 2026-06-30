@@ -126,6 +126,70 @@ async function mockAiBuildChatApi(page: Page) {
   return requests;
 }
 
+async function mockHomePartsApi(page: Page) {
+  const homeParts = [
+    { id: 'home-cpu-ryzen7', category: 'CPU', query: 'Ryzen 7', name: 'Home Ryzen 7 CPU', imageUrl: 'https://example.test/popular-ryzen7.png', price: 420000 },
+    { id: 'home-board-b850', category: 'MOTHERBOARD', query: 'B850', name: 'Home B850 Motherboard', imageUrl: 'https://example.test/home-b850.png', price: 280000 },
+    { id: 'home-ram-ddr5-32', category: 'RAM', query: 'DDR5 32GB', name: 'Home DDR5 32GB RAM', imageUrl: 'https://example.test/popular-ddr5.png', price: 128000 },
+    { id: 'home-gpu-rtx5070', category: 'GPU', query: 'RTX 5070', name: 'Home RTX 5070 GPU', imageUrl: 'https://example.test/popular-rtx5070.png', price: 890000 },
+    { id: 'home-ssd-nvme-1tb', category: 'STORAGE', query: 'NVMe 1TB', name: 'Home NVMe 1TB SSD', imageUrl: 'https://example.test/home-nvme-1tb.png', price: 150000 },
+    { id: 'home-psu-850', category: 'PSU', query: '850W', name: 'Home ATX 3.1 850W PSU', imageUrl: 'https://example.test/popular-psu.png', price: 165000 },
+    { id: 'home-psu-850-popular', category: 'PSU', query: 'ATX 3.1 850W', name: 'Home ATX 3.1 850W PSU', imageUrl: 'https://example.test/popular-psu.png', price: 165000 },
+    { id: 'home-case-frame', category: 'CASE', query: 'FRAME 4000D', name: 'Home FRAME 4000D Case', imageUrl: 'https://example.test/case-home-1.png', price: 180000 },
+    { id: 'home-cooler-phantom', category: 'COOLER', query: 'Phantom Spirit', name: 'Home Phantom Spirit Cooler', imageUrl: 'https://example.test/home-phantom.png', price: 80000 },
+    { id: 'home-cpu-ryzen9', category: 'CPU', query: 'Ryzen 9', name: 'Home Ryzen 9 CPU', imageUrl: 'https://example.test/home-ryzen9.png', price: 620000 },
+    { id: 'home-board-x870e', category: 'MOTHERBOARD', query: 'X870E', name: 'Home X870E Motherboard', imageUrl: 'https://example.test/home-x870e.png', price: 540000 },
+    { id: 'home-ram-ddr5-64', category: 'RAM', query: 'DDR5 64GB', name: 'Home DDR5 64GB RAM', imageUrl: 'https://example.test/home-ddr5-64.png', price: 240000 },
+    { id: 'home-gpu-rtx5070ti', category: 'GPU', query: 'RTX 5070 Ti', name: 'Home RTX 5070 Ti GPU', imageUrl: 'https://example.test/home-rtx5070ti.png', price: 1390000 },
+    { id: 'home-ssd-nvme-2tb', category: 'STORAGE', query: 'NVMe 2TB', name: 'Home NVMe 2TB SSD', imageUrl: 'https://example.test/home-nvme-2tb.png', price: 230000 },
+    { id: 'home-psu-1000', category: 'PSU', query: '1000W', name: 'Home 1000W PSU', imageUrl: 'https://example.test/home-1000w.png', price: 245000 },
+    { id: 'home-case-h9', category: 'CASE', query: 'H9 Flow', name: 'Home H9 Flow Case', imageUrl: 'https://example.test/case-home-2.png', price: 230000 },
+    { id: 'home-cooler-liquid', category: 'COOLER', query: 'Liquid Freezer III', name: 'Home Liquid Freezer III Cooler', imageUrl: 'https://example.test/home-liquid.png', price: 191000 },
+    { id: 'home-case-light-base', category: 'CASE', query: 'LIGHT BASE 900', name: 'Home LIGHT BASE 900 Case', imageUrl: 'https://example.test/case-home-3.png', price: 220000 },
+    { id: 'home-cooler-dark-rock', category: 'COOLER', query: 'Dark Rock Pro 5', name: 'Home Dark Rock Pro 5 Cooler', imageUrl: 'https://example.test/home-dark-rock.png', price: 139000 }
+  ].map((part) => ({
+    id: part.id,
+    category: part.category,
+    name: part.name,
+    manufacturer: 'BuildGraph',
+    price: part.price,
+    status: 'ACTIVE',
+    attributes: {
+      shortSpec: part.query
+    },
+    externalOffer: {
+      imageUrl: part.imageUrl,
+      supplierName: 'Naver Store',
+      offerUrl: null,
+      lowPrice: part.price,
+      source: 'NAVER_SHOPPING_SEARCH',
+      refreshedAt: '2026-07-01T00:00:00Z'
+    }
+  }));
+
+  await page.route('**/api/parts**', async (route) => {
+    const url = new URL(route.request().url());
+    const category = url.searchParams.get('category');
+    const query = url.searchParams.get('q');
+    const matchedParts = homeParts.filter((part) => part.category === category && (!query || part.attributes.shortSpec === query));
+    if (url.pathname === '/api/parts' && matchedParts.length > 0) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: matchedParts,
+          page: 0,
+          size: matchedParts.length,
+          total: matchedParts.length
+        })
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+}
+
 async function openHomeAsUser(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('buildgraph.token', 'jwt-user-token');
@@ -143,11 +207,22 @@ async function openHomeAsUser(page: Page) {
       })
     });
   });
+  await mockHomePartsApi(page);
   await page.goto('/');
 }
 
 async function mockSelfQuoteApis(page: Page) {
   const applyRequests: unknown[] = [];
+  const draftPartNames: Record<string, string> = {
+    'home-cpu-ryzen7': 'Home Ryzen 7 CPU',
+    'home-board-b850': 'Home B850 Motherboard',
+    'home-ram-ddr5-32': 'Home DDR5 32GB RAM',
+    'home-gpu-rtx5070': 'Home RTX 5070 GPU',
+    'home-ssd-nvme-1tb': 'Home NVMe 1TB SSD',
+    'home-psu-850': 'Home ATX 3.1 850W PSU',
+    'home-case-frame': 'Home FRAME 4000D Case',
+    'home-cooler-phantom': 'Home Phantom Spirit Cooler'
+  };
   const emptyDraft = {
     id: 'draft-home-ai-test',
     status: 'ACTIVE',
@@ -185,7 +260,7 @@ async function mockSelfQuoteApis(page: Page) {
         id: `applied-${index}`,
         partId: next.partId,
         category: next.category,
-        name: next.category === 'GPU' ? '서버 반영 RTX 5070 서버 GPU' : `${next.category} 적용 부품`,
+        name: draftPartNames[next.partId] ?? (next.category === 'GPU' ? '서버 반영 RTX 5070 서버 GPU' : `${next.category} 적용 부품`),
         manufacturer: next.category === 'GPU' ? 'NVIDIA' : 'BuildGraph',
         quantity: next.quantity,
         unitPriceAtAdd: 100000 + index,
@@ -264,13 +339,35 @@ test('renders a single shopping home without the old hero prompt flow', async ({
   await expect(main.getByRole('tab', { name: '인기상품' })).toHaveAttribute('aria-selected', 'true');
   await expect(main.getByRole('tab', { name: 'AI 추천상품' })).toHaveAttribute('aria-selected', 'false');
   await expect(main.getByText('QHD 게이밍 추천팩')).toBeVisible();
+  await expect(main.getByText('2,293,000원')).toBeVisible();
+  await expect(main.getByRole('img', { name: /Home FRAME 4000D Case/ })).toBeVisible();
   await main.getByRole('tab', { name: 'AI 추천상품' }).click();
   await expect(main.getByText('AI에게 예산이나 부품을 물어보면 추천상품 3개가 여기에 표시됩니다.')).toBeVisible();
   await expect(main.getByRole('heading', { name: '인기 부품 랭킹' })).toBeVisible();
+  await expect(main.getByRole('img', { name: /Home RTX 5070 GPU/ })).toBeVisible();
 
   for (const label of ['CPU', '메인보드', 'RAM', 'GPU', 'SSD', '파워', '케이스', '쿨러']) {
     await expect(main.getByRole('link', { name: label, exact: true })).toBeVisible();
   }
+});
+
+test('selects a featured recommendation and applies every build part to self quote', async ({ page }) => {
+  const { applyRequests } = await mockSelfQuoteApis(page);
+  await openHomeAsUser(page);
+  const main = page.getByRole('main');
+
+  await expect(main.getByRole('img', { name: /Home FRAME 4000D Case/ })).toBeVisible();
+  await main.getByRole('button', { name: /QHD/ }).click();
+
+  await expect.poll(() => applyRequests.length).toBe(1);
+  const request = applyRequests[0] as { buildId?: string; items?: Array<{ partId: string; category: string; quantity: number }> };
+  expect(request.buildId).toBe('home-featured-qhd-gaming');
+  expect(request.items?.map((item) => item.category)).toEqual(['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'CASE', 'COOLER']);
+  expect(request.items).toContainEqual({ partId: 'home-gpu-rtx5070', category: 'GPU', quantity: 1 });
+  expect(request.items).toContainEqual({ partId: 'home-case-frame', category: 'CASE', quantity: 1 });
+  await expect(page).toHaveURL('/self-quote');
+  await expect(page.getByText('Home RTX 5070 GPU')).toBeVisible();
+  await expect(page.getByText('Home FRAME 4000D Case')).toBeVisible();
 });
 
 test('chatbot uses build-chat API and updates latest home AI recommendations', async ({ page }) => {
@@ -350,7 +447,7 @@ test('keeps shared header and navigation destinations unchanged', async ({ page 
   const header = page.locator('header');
   const nav = page.getByRole('navigation');
 
-  await expect(header.getByRole('link', { name: 'AI 견적' })).toHaveAttribute('href', '/requirements/new');
+  await expect(header.getByRole('link', { name: 'AI 견적' })).toHaveCount(0);
   await expect(header.getByRole('link', { name: '내 견적함' })).toHaveAttribute('href', '/my/quotes');
   await expect(header.getByRole('link', { name: 'AS 접수' })).toHaveAttribute('href', '/support/new');
   await expect(nav.getByRole('link', { name: '홈' })).toHaveAttribute('href', '/');
