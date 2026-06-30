@@ -21,6 +21,14 @@ public class AiProfileConfig {
             @Value("${ai.as-chat.fast.include-evidence-chunk-text:false}") boolean fastIncludeEvidenceChunkText,
             @Value("${ai.as-chat.fast.include-tool-result-payload:false}") boolean fastIncludeToolResultPayload,
             @Value("${ai.as-chat.fast.use-compact-prompt:true}") boolean fastUseCompactPrompt,
+            @Value("${ai.as-chat.nano-fast.model:gpt-5.4-nano}") String nanoFastModel,
+            @Value("${ai.as-chat.nano-fast.reasoning-effort:low}") String nanoFastReasoningEffort,
+            @Value("${ai.as-chat.nano-fast.rag-top-k:2}") int nanoFastRagTopK,
+            @Value("${ai.as-chat.nano-fast.max-output-tokens:700}") int nanoFastMaxOutputTokens,
+            @Value("${ai.as-chat.nano-fast.recent-message-limit:2}") int nanoFastRecentMessageLimit,
+            @Value("${ai.as-chat.nano-fast.include-evidence-chunk-text:false}") boolean nanoFastIncludeEvidenceChunkText,
+            @Value("${ai.as-chat.nano-fast.include-tool-result-payload:false}") boolean nanoFastIncludeToolResultPayload,
+            @Value("${ai.as-chat.nano-fast.use-compact-prompt:true}") boolean nanoFastUseCompactPrompt,
             @Value("${ai.as-chat.balanced.model:gpt-5.5}") String balancedModel,
             @Value("${ai.as-chat.balanced.reasoning-effort:low}") String balancedReasoningEffort,
             @Value("${ai.as-chat.balanced.rag-top-k:3}") int balancedRagTopK,
@@ -68,6 +76,19 @@ public class AiProfileConfig {
                 fastIncludeEvidenceChunkText,
                 fastIncludeToolResultPayload,
                 fastUseCompactPrompt
+        ));
+        definitions.put(AiProfile.AS_CHAT_NANO_FAST, definition(
+                AiProfile.AS_CHAT_NANO_FAST,
+                LlmProvider.OPENAI,
+                nanoFastModel,
+                nanoFastReasoningEffort,
+                nanoFastRagTopK,
+                "as-chat-v4-nano-fast-compact",
+                nanoFastMaxOutputTokens,
+                nanoFastRecentMessageLimit,
+                nanoFastIncludeEvidenceChunkText,
+                nanoFastIncludeToolResultPayload,
+                nanoFastUseCompactPrompt
         ));
         definitions.put(AiProfile.AS_CHAT_BALANCED, definition(
                 AiProfile.AS_CHAT_BALANCED,

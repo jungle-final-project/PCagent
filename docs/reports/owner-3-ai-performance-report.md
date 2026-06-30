@@ -55,7 +55,7 @@ OPENAI_MODEL=gpt-5.5
 OPENAI_REASONING_EFFORT=medium
 ```
 
-품질 우선 설정이므로 AS 분석 답변 품질에는 유리하다. 대신 응답 시간과 비용은 `gpt-4.1-mini` 같은 경량 모델보다 높다. 데모 속도가 더 중요해지면 환경 변수만 낮춰도 코드 구조는 유지된다.
+품질 우선 설정이므로 AS 분석 답변 품질에는 유리하다. 대신 응답 시간과 비용은 nano profile보다 높다. 데모 속도가 더 중요해지면 `AS_CHAT_NANO_FAST`(`gpt-5.4-nano`)를 같은 benchmark 구조에서 비교한 뒤 기본 profile 전환 여부를 판단한다.
 
 ### RAG 검색 개선
 
@@ -110,23 +110,23 @@ OPENAI_REASONING_EFFORT=medium
 
 ## Profile Benchmark 결과
 
-2026-06-30에 `tools/benchmark_as_chat_profiles.py`로 AS Chat profile 3종을 실제 OpenAI 호출 기준으로 비교했다. 이 결과는 `POST /api/ai/as-chat/stream`, compact prompt, profile별 출력 제한 적용 후 측정한 값이다.
+2026-06-30에 `tools/benchmark_as_chat_profiles.py`로 AS Chat profile을 실제 OpenAI 호출 기준으로 비교했다. 이 결과는 `POST /api/ai/as-chat/stream`, compact prompt, profile별 출력 제한 적용 후 측정한 값이다. 최신 세부 결과는 `docs/reports/as-chat-profile-benchmark-20260630.md`를 기준으로 본다.
 
-| profile | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgTokens | schemaValidRate |
-|---|---:|---:|---:|---:|---:|---:|
-| `AS_CHAT_FAST` | 100.0% | 6 | 8332 | 9183 | 1812 | 100.0% |
-| `AS_CHAT_BALANCED` | 100.0% | 12 | 11415 | 13344 | 2205 | 100.0% |
-| `AS_CHAT_HIGH_QUALITY` | 100.0% | 6 | 14377 | 17572 | 3035 | 100.0% |
-| `AS_CHAT_GEMINI_FAST` | 0.0% | 0 | 368 | 655 | 0 | 0.0% |
-| `AS_CHAT_GEMINI_BALANCED` | 0.0% | 0 | 303 | 346 | 0 | 0.0% |
+| profile | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgTokens | schemaValidRate | avgUnsupportedClaims |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `AS_CHAT_FAST` | 100.0% | 17 | 9287 | 12838 | 1833 | 100.0% | 0.0 |
+| `AS_CHAT_NANO_FAST` | 33.3% | 9 | 5643 | 6237 | 1914 | 33.3% | 0.0 |
+| `AS_CHAT_BALANCED` | 100.0% | 16 | 11835 | 13784 | 2199 | 100.0% | 0.0 |
+| `AS_CHAT_HIGH_QUALITY` | 83.3% | 17 | 16870 | 21170 | 3001 | 100.0% | 0.2 |
 
 판단:
 
-- OpenAI 세 profile 모두 구조화 응답과 자동 품질 기준을 통과했다.
-- `AS_CHAT_FAST`가 평균 10초 이하와 p95 20초 이하 조건을 만족하므로 사용자 기본 profile로 둔다.
+- `AS_CHAT_FAST`와 `AS_CHAT_BALANCED`는 구조화 응답과 자동 품질 기준을 통과했다.
+- `AS_CHAT_NANO_FAST`는 평균 5.6초대로 가장 빠르지만 schema valid 33.3%라 기본값 전환 조건을 만족하지 못했다. nano는 실험 후보로 유지한다.
+- `AS_CHAT_FAST`가 평균 10초 이하와 p95 20초 이하 조건을 만족하므로 현재 사용자 기본 profile로 둔다.
 - 첫 진행 이벤트는 모든 profile이 평균 1초 이내라, 사용자는 요청 직후 처리 진행 상태를 볼 수 있다.
 - `AS_CHAT_BALANCED`와 `AS_CHAT_HIGH_QUALITY`는 관리자 검증 또는 고위험 분석 후보로 유지한다.
-- Gemini profile은 동일 AS Chat 실행 경로에 연결됐고 모델명은 `gemini-2.5-flash`, `gemini-2.5-pro`로 교정했다. 다만 현재 제공된 Gemini key가 `HTTP 429 RESOURCE_EXHAUSTED`를 반환해 실제 품질 비교는 완료하지 못했다.
+- Gemini profile은 동일 AS Chat 실행 경로에 연결됐고 모델명은 `gemini-2.5-flash`, `gemini-2.5-pro`로 교정했다. 다만 제공된 Gemini key가 `HTTP 429 RESOURCE_EXHAUSTED`를 반환해 실제 품질 비교는 quota 문제로 분리 기록한다.
 
 ## 책임 경계
 

@@ -39,6 +39,7 @@ public class AsChatService {
     private final StructuredLlmClientRouter structuredLlmClientRouter;
     private final ToolCheckService toolCheckService;
     private final AiProfileConfig aiProfileConfig;
+    private final AsChatProfilePolicy asChatProfilePolicy;
     private final LlmGenerationService llmGenerationService;
 
     public AsChatService(
@@ -48,6 +49,7 @@ public class AsChatService {
             StructuredLlmClientRouter structuredLlmClientRouter,
             ToolCheckService toolCheckService,
             AiProfileConfig aiProfileConfig,
+            AsChatProfilePolicy asChatProfilePolicy,
             LlmGenerationService llmGenerationService
     ) {
         this.jdbcTemplate = jdbcTemplate;
@@ -56,6 +58,7 @@ public class AsChatService {
         this.structuredLlmClientRouter = structuredLlmClientRouter;
         this.toolCheckService = toolCheckService;
         this.aiProfileConfig = aiProfileConfig;
+        this.asChatProfilePolicy = asChatProfilePolicy;
         this.llmGenerationService = llmGenerationService;
     }
 
@@ -406,7 +409,7 @@ public class AsChatService {
 
     private static Map<String, Object> responseLimits(AiProfileDefinition aiProfile) {
         return switch (aiProfile.profile()) {
-            case AS_CHAT_FAST, AS_CHAT_GEMINI_FAST -> MockData.map(
+            case AS_CHAT_FAST, AS_CHAT_NANO_FAST, AS_CHAT_GEMINI_FAST -> MockData.map(
                     "assistantMessage", "Korean, around 220 characters",
                     "causeCandidatesMax", 1,
                     "nextActionsMax", 2
@@ -610,7 +613,7 @@ public class AsChatService {
 
     private Map<String, Object> strictJson(String raw) {
         try {
-            Map<String, Object> parsed = OBJECT_MAPPER.readValue(raw, MAP_TYPE);
+            Map<String, Object> parsed = OBJECT_MAPPER.readValue(normalizeJsonPayload(raw), MAP_TYPE);
             requireJsonField(parsed, "assistantMessage");
             requireJsonField(parsed, "causeCandidates");
             requireJsonField(parsed, "nextActions");
@@ -622,6 +625,22 @@ public class AsChatService {
         } catch (Exception error) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "LLM이 JSON 계약을 지키지 않았습니다.", error);
         }
+    }
+
+    private static String normalizeJsonPayload(String raw) {
+        String text = safe(raw).trim();
+        if (text.startsWith("```")) {
+            text = text.replaceFirst("^```[a-zA-Z0-9_-]*\\s*", "").replaceFirst("\\s*```$", "").trim();
+        }
+        if (text.startsWith("{") && text.endsWith("}")) {
+            return text;
+        }
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return text.substring(start, end + 1).trim();
+        }
+        return text;
     }
 
     private static void requireJsonField(Map<String, Object> parsed, String key) {
@@ -709,33 +728,10 @@ public class AsChatService {
 
     private AiProfileDefinition requireAiProfile(String requestedAiProfile, TicketRow ticket, String userMessage) {
         try {
-            if (requestedAiProfile != null && !requestedAiProfile.isBlank()) {
-                return aiProfileConfig.asChatProfile(requestedAiProfile);
-            }
-            AiProfileDefinition defaultProfile = aiProfileConfig.defaultAsChatProfile();
-            if (defaultProfile.profile() == AiProfile.AS_CHAT_FAST && highRiskAsCase(ticket, userMessage)) {
-                return aiProfileConfig.asChatProfile(AiProfile.AS_CHAT_BALANCED);
-            }
-            if (defaultProfile.profile() == AiProfile.AS_CHAT_GEMINI_FAST && highRiskAsCase(ticket, userMessage)) {
-                return aiProfileConfig.asChatProfile(AiProfile.AS_CHAT_GEMINI_BALANCED);
-            }
-            return defaultProfile;
+            return asChatProfilePolicy.resolve(requestedAiProfile, ticket.symptom(), ticket.logSummary(), userMessage);
         } catch (IllegalArgumentException error) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, error.getMessage(), error);
         }
-    }
-
-    private static boolean highRiskAsCase(TicketRow ticket, String userMessage) {
-        String text = (safe(ticket.symptom()) + " " + safe(ticket.logSummary()) + " " + safe(userMessage)).toLowerCase();
-        return text.contains("전원")
-                || text.contains("재부팅")
-                || text.contains("꺼지")
-                || text.contains("타는")
-                || text.contains("연기")
-                || text.contains("95도")
-                || text.contains("100도")
-                || text.contains("power")
-                || text.contains("psu");
     }
 
     private static Long longValue(Map<String, Object> row, String key) {

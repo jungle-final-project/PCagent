@@ -892,7 +892,7 @@ Owner: 3번
 | `id` | `BIGINT` | no | - | 내부 PK |
 | `public_id` | `UUID` | no | - | 외부 ID |
 | `agent_session_id` | `BIGINT` | no | `agent_sessions.id` | LLM 호출이 속한 Agent 세션 |
-| `ai_profile` | `VARCHAR(60)` | no | - | `AS_CHAT_FAST`, `AS_CHAT_BALANCED`, `AS_CHAT_HIGH_QUALITY`, `AS_CHAT_GEMINI_FAST`, `AS_CHAT_GEMINI_BALANCED` |
+| `ai_profile` | `VARCHAR(60)` | no | - | `AS_CHAT_FAST`, `AS_CHAT_NANO_FAST`, `AS_CHAT_BALANCED`, `AS_CHAT_HIGH_QUALITY`, `AS_CHAT_GEMINI_FAST`, `AS_CHAT_GEMINI_BALANCED` |
 | `provider` | `VARCHAR(40)` | no | - | `openai`, `gemini` |
 | `model` | `VARCHAR(120)` | no | - | 실제 호출 모델 |
 | `reasoning_effort` | `VARCHAR(30)` | yes | - | reasoning effort |
@@ -1383,6 +1383,7 @@ V30__auth_seed_password_hashes.sql
 V31__as_chat_sessions.sql
 V32__llm_generations.sql
 V33__llm_generations_gemini_profiles.sql
+V34__llm_generations_nano_profile.sql
 ```
 
 현재 저장소에는 위 순서의 Flyway migration이 반영되어 있다. 기존 PostgreSQL volume이 남아 있으면 새 migration과 seed가 다시 실행되지 않으므로, 공통 DB를 처음부터 검증할 때는 `docker compose down -v` 후 `docker compose up --build`를 사용한다.

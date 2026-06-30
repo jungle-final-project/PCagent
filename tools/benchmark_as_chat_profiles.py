@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import statistics
 import sys
 import time
@@ -16,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 
-DEFAULT_OPENAI_PROFILES = ["AS_CHAT_FAST", "AS_CHAT_BALANCED", "AS_CHAT_HIGH_QUALITY"]
+DEFAULT_OPENAI_PROFILES = ["AS_CHAT_FAST", "AS_CHAT_NANO_FAST", "AS_CHAT_BALANCED", "AS_CHAT_HIGH_QUALITY"]
 DEFAULT_GEMINI_PROFILES = ["AS_CHAT_GEMINI_FAST", "AS_CHAT_GEMINI_BALANCED"]
 
 
@@ -31,6 +32,7 @@ def main() -> int:
     parser.add_argument("--admin-password", default="passw0rd!")
     parser.add_argument("--profiles", nargs="+", default=None)
     parser.add_argument("--include-gemini", action="store_true", help="Gemini profile까지 함께 실행")
+    parser.add_argument("--strict", action="store_true", help="모든 케이스가 통과하지 않으면 non-zero로 종료")
     args = parser.parse_args()
 
     cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))
@@ -45,7 +47,7 @@ def main() -> int:
 
     output = write_report(Path(args.output_dir), results)
     print(output)
-    return 0 if all(result["success"] for result in results) else 1
+    return 0 if not args.strict or all(result["success"] for result in results) else 1
 
 
 def run_case(base_url: str, user_token: str, admin_token: str, profile: str, case: dict) -> dict:
@@ -94,6 +96,9 @@ def run_case(base_url: str, user_token: str, admin_token: str, profile: str, cas
     evidence_count = len(response.get("evidence", [])) if response else 0
     tool_count = len(response.get("toolResults", [])) if response else 0
     next_action_count = len(response.get("nextActions", [])) if response else 0
+    grounded_rate = grounded_evidence_rate(response)
+    unsupported_count = unsupported_claim_count(response, case)
+    failure_type = provider_failure_type(error)
     schema_valid = bool(
         response
         and response.get("assistantMessage")
@@ -108,6 +113,8 @@ def run_case(base_url: str, user_token: str, admin_token: str, profile: str, cas
         and tool_count >= 1
         and next_action_count >= 2
         and keyword_hits >= max(1, math.ceil(len(expected_keywords) / 2))
+        and unsupported_count == 0
+        and grounded_rate >= 0.5
     )
     return {
         "profile": profile,
@@ -129,6 +136,9 @@ def run_case(base_url: str, user_token: str, admin_token: str, profile: str, cas
         "nextActionCount": next_action_count,
         "keywordHits": keyword_hits,
         "keywordTotal": len(expected_keywords),
+        "groundedEvidenceRate": grounded_rate,
+        "unsupportedClaimCount": unsupported_count,
+        "providerFailureType": failure_type,
         "error": error,
     }
 
@@ -149,8 +159,8 @@ def write_report(output_dir: Path, results: list[dict]) -> Path:
         "",
         "## Summary",
         "",
-        "| profile | provider | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgInputTokens | avgOutputTokens | avgTokens | schemaValidRate |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| profile | provider | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgInputTokens | avgOutputTokens | avgTokens | schemaValidRate | avgGroundedEvidenceRate | avgUnsupportedClaims |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for profile, rows in grouped.items():
         success_rate = ratio(row["success"] for row in rows)
@@ -160,9 +170,11 @@ def write_report(output_dir: Path, results: list[dict]) -> Path:
         input_tokens = [row["inputTokens"] for row in rows if row["inputTokens"] is not None]
         output_tokens = [row["outputTokens"] for row in rows if row["outputTokens"] is not None]
         tokens = [row["totalTokens"] for row in rows if row["totalTokens"] is not None]
+        grounded_rates = [row["groundedEvidenceRate"] for row in rows]
+        unsupported_counts = [row["unsupportedClaimCount"] for row in rows]
         lines.append(
             f"| {profile} | {rows[0].get('provider') or provider_from_profile(profile)} | {success_rate:.1%} | {mean(first_events):.0f} | {mean(latencies):.0f} | {percentile(latencies, 95):.0f} | "
-            f"{mean(input_tokens):.0f} | {mean(output_tokens):.0f} | {mean(tokens):.0f} | {schema_rate:.1%} |"
+            f"{mean(input_tokens):.0f} | {mean(output_tokens):.0f} | {mean(tokens):.0f} | {schema_rate:.1%} | {mean(grounded_rates):.1%} | {mean(unsupported_counts):.1f} |"
         )
 
     provider_notes = availability_notes(results)
@@ -174,8 +186,8 @@ def write_report(output_dir: Path, results: list[dict]) -> Path:
         "",
         "## Cases",
         "",
-        "| profile | provider | case | risk | ok | firstEventMs | finalLatencyMs | model | inTok | outTok | tokens | evidence | tools | actions | keywords | error |",
-        "|---|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| profile | provider | case | risk | ok | firstEventMs | finalLatencyMs | model | inTok | outTok | tokens | evidence | tools | actions | keywords | grounded | unsupported | failureType | error |",
+        "|---|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
     ])
     for row in results:
         error = (row["error"] or "").replace("|", "/")
@@ -184,7 +196,8 @@ def write_report(output_dir: Path, results: list[dict]) -> Path:
             f"{value(row['timeToFirstEventMs'])} | {row['wallLatencyMs']} | {row['model']} | "
             f"{value(row['inputTokens'])} | {value(row['outputTokens'])} | {value(row['totalTokens'])} | "
             f"{row['evidenceCount']} | {row['toolCount']} | {row['nextActionCount']} | "
-            f"{row['keywordHits']}/{row['keywordTotal']} | {error} |"
+            f"{row['keywordHits']}/{row['keywordTotal']} | {row['groundedEvidenceRate']:.0%} | "
+            f"{row['unsupportedClaimCount']} | {row['providerFailureType']} | {error} |"
         )
 
     lines.extend([
@@ -192,10 +205,13 @@ def write_report(output_dir: Path, results: list[dict]) -> Path:
         "## Selection Notes",
         "",
         "- 기본 profile 후보는 schema valid 100%, 성공률 95% 이상을 먼저 만족해야 한다.",
+        "- 근거 없는 단정 카운트가 0인 profile을 우선한다.",
+        "- cause candidate가 RAG evidence 또는 Tool invocation을 참조하는 비율을 grounded evidence rate로 본다.",
         "- 첫 진행 이벤트 평균이 1초 이하인 profile을 우선한다.",
         "- 평균 응답 시간이 10초 이하인 profile을 우선한다.",
         "- p95 응답 시간이 20초를 넘으면 사용자 체감상 감점한다.",
         "- 품질 차이가 작으면 더 빠른 profile을 선택한다.",
+        "- benchmark 명령은 기본적으로 보고서 생성을 성공으로 본다. 전체 통과를 CI gate로 강제하려면 `--strict`를 사용한다.",
     ])
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output_path
@@ -216,6 +232,74 @@ def selected_profiles(explicit_profiles: list[str] | None, include_gemini: bool)
     if include_gemini or configured_secret("GEMINI_API_KEY"):
         profiles.extend(DEFAULT_GEMINI_PROFILES)
     return profiles
+
+
+def grounded_evidence_rate(response: dict | None) -> float:
+    if not response:
+        return 0.0
+    candidates = response.get("causeCandidates")
+    if not isinstance(candidates, list) or not candidates:
+        return 0.0
+    grounded = sum(1 for item in candidates if referenced_ids(item))
+    return grounded / len(candidates)
+
+
+def unsupported_claim_count(response: dict | None, case: dict) -> int:
+    if not response:
+        return 0
+    candidates = response.get("causeCandidates")
+    unsupported_candidates = 0
+    if isinstance(candidates, list):
+        unsupported_candidates = sum(1 for item in candidates if not referenced_ids(item))
+    allowed_text = json.dumps(
+        {
+            "symptom": case.get("symptom"),
+            "message": case.get("message"),
+            "evidence": response.get("evidence"),
+            "toolResults": response.get("toolResults"),
+        },
+        ensure_ascii=False,
+    ).lower()
+    assistant_text = json.dumps(
+        {
+            "assistantMessage": response.get("assistantMessage"),
+            "causeCandidates": response.get("causeCandidates"),
+            "nextActions": response.get("nextActions"),
+            "ticketDraft": response.get("ticketDraft"),
+        },
+        ensure_ascii=False,
+    ).lower()
+    unsupported_numbers = sum(1 for claim in numeric_claims(assistant_text) if claim not in allowed_text)
+    return unsupported_candidates + unsupported_numbers
+
+
+def referenced_ids(item) -> bool:
+    if not isinstance(item, dict):
+        return False
+    evidence_ids = item.get("evidenceIds")
+    tool_ids = item.get("toolInvocationIds")
+    return bool(evidence_ids) or bool(tool_ids)
+
+
+def numeric_claims(text: str) -> set[str]:
+    return set(re.findall(r"\d+(?:\.\d+)?\s?(?:fps|프레임|%|도|w|gb|만원|원)", text, flags=re.IGNORECASE))
+
+
+def provider_failure_type(error: str | None) -> str:
+    if not error:
+        return "-"
+    normalized = error.lower()
+    if "resource_exhausted" in normalized or "429" in normalized or "quota" in normalized or "rate" in normalized:
+        return "quota"
+    if "401" in normalized or "403" in normalized or "api_key" in normalized:
+        return "auth"
+    if "428" in normalized or "precondition" in normalized:
+        return "missing_key"
+    if "json" in normalized or "schema" in normalized:
+        return "schema"
+    if "502" in normalized or "http" in normalized:
+        return "upstream"
+    return "runtime"
 
 
 def configured_secret(key: str) -> bool:
@@ -241,12 +325,13 @@ def provider_from_profile(profile: str) -> str:
 
 def availability_notes(results: list[dict]) -> list[str]:
     notes = []
-    gemini_resource_exhausted = any(
-        row.get("provider") == "gemini" and "RESOURCE_EXHAUSTED" in str(row.get("error") or "")
-        for row in results
-    )
-    if gemini_resource_exhausted:
-        notes.append("Gemini profile은 API까지 도달했지만 현재 key가 `HTTP 429 RESOURCE_EXHAUSTED`를 반환해 품질/속도 비교를 완료하지 못했다.")
+    for provider in sorted({row.get("provider") for row in results if row.get("provider")}):
+        quota_failures = [
+            row for row in results
+            if row.get("provider") == provider and row.get("providerFailureType") == "quota"
+        ]
+        if quota_failures:
+            notes.append(f"{provider} profile은 API까지 도달했지만 quota/rate-limit 실패가 있어 품질 실패와 분리 기록했다.")
     return notes
 
 

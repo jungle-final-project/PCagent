@@ -50,6 +50,22 @@ class AiProfileConfigTest {
     }
 
     @Test
+    void explicitHeaderProfileCanSelectNanoProfile() {
+        AiProfileConfig config = config("AS_CHAT_FAST");
+
+        AiProfileDefinition profile = config.asChatProfile("AS_CHAT_NANO_FAST");
+
+        assertThat(profile.profile()).isEqualTo(AiProfile.AS_CHAT_NANO_FAST);
+        assertThat(profile.provider()).isEqualTo(LlmProvider.OPENAI);
+        assertThat(profile.model()).isEqualTo("gpt-5.4-nano");
+        assertThat(profile.reasoningEffort()).isEqualTo("low");
+        assertThat(profile.ragTopK()).isEqualTo(2);
+        assertThat(profile.promptVersion()).isEqualTo("as-chat-v4-nano-fast-compact");
+        assertThat(profile.maxOutputTokens()).isEqualTo(700);
+        assertThat(profile.recentMessageLimit()).isEqualTo(2);
+    }
+
+    @Test
     void unknownDefaultProfileFailsFast() {
         assertThatThrownBy(() -> config("UNKNOWN"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -64,6 +80,14 @@ class AiProfileConfigTest {
                 2,
                 900,
                 3,
+                false,
+                false,
+                true,
+                "gpt-5.4-nano",
+                "low",
+                2,
+                700,
+                2,
                 false,
                 false,
                 true,

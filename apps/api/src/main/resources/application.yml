@@ -58,6 +58,15 @@ ai:
       include-evidence-chunk-text: ${AS_CHAT_FAST_INCLUDE_EVIDENCE_CHUNK_TEXT:false}
       include-tool-result-payload: ${AS_CHAT_FAST_INCLUDE_TOOL_RESULT_PAYLOAD:false}
       use-compact-prompt: ${AS_CHAT_FAST_USE_COMPACT_PROMPT:true}
+    nano-fast:
+      model: ${AS_CHAT_NANO_FAST_MODEL:gpt-5.4-nano}
+      reasoning-effort: ${AS_CHAT_NANO_FAST_REASONING_EFFORT:low}
+      rag-top-k: ${AS_CHAT_NANO_FAST_RAG_TOP_K:2}
+      max-output-tokens: ${AS_CHAT_NANO_FAST_MAX_OUTPUT_TOKENS:700}
+      recent-message-limit: ${AS_CHAT_NANO_FAST_RECENT_MESSAGE_LIMIT:2}
+      include-evidence-chunk-text: ${AS_CHAT_NANO_FAST_INCLUDE_EVIDENCE_CHUNK_TEXT:false}
+      include-tool-result-payload: ${AS_CHAT_NANO_FAST_INCLUDE_TOOL_RESULT_PAYLOAD:false}
+      use-compact-prompt: ${AS_CHAT_NANO_FAST_USE_COMPACT_PROMPT:true}
     balanced:
       model: ${AS_CHAT_BALANCED_MODEL:${OPENAI_MODEL:gpt-5.5}}
       reasoning-effort: ${AS_CHAT_BALANCED_REASONING_EFFORT:low}

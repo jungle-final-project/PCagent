@@ -1,61 +1,53 @@
 # AS Chat AI Profile Benchmark
 
-- generatedAt: 2026-06-30T04:18:39
-- totalCases: 30
+- generatedAt: 2026-06-30T06:29:16
+- totalCases: 24
 
 ## Summary
 
-| profile | provider | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgInputTokens | avgOutputTokens | avgTokens | schemaValidRate |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| AS_CHAT_FAST | openai | 100.0% | 6 | 8332 | 9183 | 1235 | 577 | 1812 | 100.0% |
-| AS_CHAT_BALANCED | openai | 100.0% | 12 | 11415 | 13344 | 1344 | 861 | 2205 | 100.0% |
-| AS_CHAT_HIGH_QUALITY | openai | 100.0% | 6 | 14377 | 17572 | 1887 | 1148 | 3035 | 100.0% |
-| AS_CHAT_GEMINI_FAST | gemini | 0.0% | 0 | 368 | 655 | 0 | 0 | 0 | 0.0% |
-| AS_CHAT_GEMINI_BALANCED | gemini | 0.0% | 0 | 303 | 346 | 0 | 0 | 0 | 0.0% |
-
-## Provider Availability
-
-- Gemini profile은 API까지 도달했지만 현재 key가 `HTTP 429 RESOURCE_EXHAUSTED`를 반환해 품질/속도 비교를 완료하지 못했다.
+| profile | provider | successRate | avgFirstEventMs | avgFinalLatencyMs | p95FinalLatencyMs | avgInputTokens | avgOutputTokens | avgTokens | schemaValidRate | avgGroundedEvidenceRate | avgUnsupportedClaims |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| AS_CHAT_FAST | openai | 100.0% | 17 | 9287 | 12838 | 1248 | 585 | 1833 | 100.0% | 100.0% | 0.0 |
+| AS_CHAT_NANO_FAST | openai | 33.3% | 9 | 5643 | 6237 | 1239 | 676 | 1914 | 33.3% | 33.3% | 0.0 |
+| AS_CHAT_BALANCED | openai | 100.0% | 16 | 11835 | 13784 | 1363 | 836 | 2199 | 100.0% | 100.0% | 0.0 |
+| AS_CHAT_HIGH_QUALITY | openai | 83.3% | 17 | 16870 | 21170 | 1874 | 1127 | 3001 | 100.0% | 100.0% | 0.2 |
 
 ## Cases
 
-| profile | provider | case | risk | ok | firstEventMs | finalLatencyMs | model | inTok | outTok | tokens | evidence | tools | actions | keywords | error |
-|---|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|
-| AS_CHAT_FAST | openai | gpu-thermal-frame-drop | medium | yes | 15 | 9183 | gpt-5.5 | 1228 | 563 | 1791 | 2 | 3 | 2 | 2/3 |  |
-| AS_CHAT_FAST | openai | driver-crash-event-log | medium | yes | 5 | 7152 | gpt-5.5 | 1219 | 531 | 1750 | 2 | 3 | 2 | 3/3 |  |
-| AS_CHAT_FAST | openai | memory-pressure | low | yes | 5 | 8149 | gpt-5.5 | 1237 | 549 | 1786 | 2 | 3 | 2 | 2/3 |  |
-| AS_CHAT_FAST | openai | storage-bottleneck | low | yes | 4 | 8243 | gpt-5.5 | 1237 | 531 | 1768 | 2 | 3 | 2 | 2/3 |  |
-| AS_CHAT_FAST | openai | power-instability | high | yes | 4 | 8925 | gpt-5.5 | 1266 | 646 | 1912 | 2 | 3 | 2 | 3/3 |  |
-| AS_CHAT_FAST | openai | mixed-thermal-driver | high | yes | 5 | 8338 | gpt-5.5 | 1223 | 641 | 1864 | 2 | 3 | 2 | 3/3 |  |
-| AS_CHAT_BALANCED | openai | gpu-thermal-frame-drop | medium | yes | 4 | 13344 | gpt-5.5 | 1345 | 1056 | 2401 | 3 | 3 | 3 | 3/3 |  |
-| AS_CHAT_BALANCED | openai | driver-crash-event-log | medium | yes | 28 | 10261 | gpt-5.5 | 1344 | 882 | 2226 | 3 | 3 | 3 | 3/3 |  |
-| AS_CHAT_BALANCED | openai | memory-pressure | low | yes | 3 | 12923 | gpt-5.5 | 1338 | 789 | 2127 | 3 | 3 | 3 | 3/3 |  |
-| AS_CHAT_BALANCED | openai | storage-bottleneck | low | yes | 27 | 9235 | gpt-5.5 | 1337 | 678 | 2015 | 3 | 3 | 3 | 3/3 |  |
-| AS_CHAT_BALANCED | openai | power-instability | high | yes | 4 | 11394 | gpt-5.5 | 1361 | 877 | 2238 | 3 | 3 | 3 | 3/3 |  |
-| AS_CHAT_BALANCED | openai | mixed-thermal-driver | high | yes | 4 | 11333 | gpt-5.5 | 1336 | 886 | 2222 | 3 | 3 | 3 | 3/3 |  |
-| AS_CHAT_HIGH_QUALITY | openai | gpu-thermal-frame-drop | medium | yes | 4 | 14063 | gpt-5.5 | 1886 | 1171 | 3057 | 5 | 3 | 3 | 3/3 |  |
-| AS_CHAT_HIGH_QUALITY | openai | driver-crash-event-log | medium | yes | 3 | 17572 | gpt-5.5 | 1887 | 1368 | 3255 | 5 | 3 | 3 | 3/3 |  |
-| AS_CHAT_HIGH_QUALITY | openai | memory-pressure | low | yes | 4 | 13069 | gpt-5.5 | 1914 | 1086 | 3000 | 5 | 3 | 3 | 3/3 |  |
-| AS_CHAT_HIGH_QUALITY | openai | storage-bottleneck | low | yes | 16 | 10171 | gpt-5.5 | 1867 | 917 | 2784 | 5 | 3 | 3 | 3/3 |  |
-| AS_CHAT_HIGH_QUALITY | openai | power-instability | high | yes | 3 | 17465 | gpt-5.5 | 1875 | 1229 | 3104 | 5 | 3 | 3 | 3/3 |  |
-| AS_CHAT_HIGH_QUALITY | openai | mixed-thermal-driver | high | yes | 4 | 13922 | gpt-5.5 | 1891 | 1119 | 3010 | 5 | 3 | 3 | 3/3 |  |
-| AS_CHAT_GEMINI_FAST | gemini | gpu-thermal-frame-drop | medium | no | - | 655 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_FAST | gemini | driver-crash-event-log | medium | no | - | 317 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_FAST | gemini | memory-pressure | low | no | - | 267 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_FAST | gemini | storage-bottleneck | low | no | - | 307 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_FAST | gemini | power-instability | high | no | - | 414 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_FAST | gemini | mixed-thermal-driver | high | no | - | 250 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_BALANCED | gemini | gpu-thermal-frame-drop | medium | no | - | 267 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_BALANCED | gemini | driver-crash-event-log | medium | no | - | 345 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_BALANCED | gemini | memory-pressure | low | no | - | 346 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_BALANCED | gemini | storage-bottleneck | low | no | - | 285 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_BALANCED | gemini | power-instability | high | no | - | 310 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
-| AS_CHAT_GEMINI_BALANCED | gemini | mixed-thermal-driver | high | no | - | 266 | - | - | - | - | 0 | 0 | 0 | 0/3 | POST /api/ai/as-chat/stream failed: {'type': 'ResponseStatusException', 'message': '502 BAD_GATEWAY "Gemini 호출 실패: HTTP 429 RESOURCE_EXHAUSTED"'} |
+| profile | provider | case | risk | ok | firstEventMs | finalLatencyMs | model | inTok | outTok | tokens | evidence | tools | actions | keywords | grounded | unsupported | failureType | error |
+|---|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| AS_CHAT_FAST | openai | gpu-thermal-frame-drop | medium | yes | 28 | 11485 | gpt-5.5 | 1252 | 538 | 1790 | 2 | 3 | 2 | 2/3 | 100% | 0 | - |  |
+| AS_CHAT_FAST | openai | driver-crash-event-log | medium | yes | 13 | 8333 | gpt-5.5 | 1265 | 630 | 1895 | 2 | 3 | 2 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_FAST | openai | memory-pressure | low | yes | 27 | 12838 | gpt-5.5 | 1239 | 585 | 1824 | 2 | 3 | 2 | 2/3 | 100% | 0 | - |  |
+| AS_CHAT_FAST | openai | storage-bottleneck | low | yes | 4 | 7434 | gpt-5.5 | 1231 | 538 | 1769 | 2 | 3 | 2 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_FAST | openai | power-instability | high | yes | 5 | 7212 | gpt-5.5 | 1250 | 587 | 1837 | 2 | 3 | 2 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_FAST | openai | mixed-thermal-driver | high | yes | 25 | 8420 | gpt-5.5 | 1251 | 634 | 1885 | 2 | 3 | 2 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_NANO_FAST | openai | gpu-thermal-frame-drop | medium | no | - | 5803 | - | - | - | - | 0 | 0 | 0 | 0/3 | 0% | 0 | schema | POST /api/ai/as-chat/stream failed: {'message': '502 BAD_GATEWAY "LLM이 JSON 계약을 지키지 않았습니다."', 'type': 'ResponseStatusException'} |
+| AS_CHAT_NANO_FAST | openai | driver-crash-event-log | medium | yes | 14 | 5150 | gpt-5.4-nano | 1243 | 694 | 1937 | 2 | 3 | 2 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_NANO_FAST | openai | memory-pressure | low | no | - | 5601 | - | - | - | - | 0 | 0 | 0 | 0/3 | 0% | 0 | schema | POST /api/ai/as-chat/stream failed: {'message': '502 BAD_GATEWAY "LLM이 JSON 계약을 지키지 않았습니다."', 'type': 'ResponseStatusException'} |
+| AS_CHAT_NANO_FAST | openai | storage-bottleneck | low | yes | 4 | 5018 | gpt-5.4-nano | 1235 | 657 | 1892 | 2 | 3 | 2 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_NANO_FAST | openai | power-instability | high | no | - | 6048 | - | - | - | - | 0 | 0 | 0 | 0/3 | 0% | 0 | schema | POST /api/ai/as-chat/stream failed: {'message': '502 BAD_GATEWAY "LLM이 JSON 계약을 지키지 않았습니다."', 'type': 'ResponseStatusException'} |
+| AS_CHAT_NANO_FAST | openai | mixed-thermal-driver | high | no | - | 6237 | - | - | - | - | 0 | 0 | 0 | 0/3 | 0% | 0 | schema | POST /api/ai/as-chat/stream failed: {'message': '502 BAD_GATEWAY "LLM이 JSON 계약을 지키지 않았습니다."', 'type': 'ResponseStatusException'} |
+| AS_CHAT_BALANCED | openai | gpu-thermal-frame-drop | medium | yes | 4 | 11708 | gpt-5.5 | 1351 | 821 | 2172 | 3 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_BALANCED | openai | driver-crash-event-log | medium | yes | 4 | 11795 | gpt-5.5 | 1382 | 878 | 2260 | 3 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_BALANCED | openai | memory-pressure | low | yes | 26 | 10036 | gpt-5.5 | 1387 | 765 | 2152 | 3 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_BALANCED | openai | storage-bottleneck | low | yes | 24 | 11182 | gpt-5.5 | 1366 | 728 | 2094 | 3 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_BALANCED | openai | power-instability | high | yes | 25 | 13784 | gpt-5.5 | 1350 | 934 | 2284 | 3 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_BALANCED | openai | mixed-thermal-driver | high | yes | 16 | 12505 | gpt-5.5 | 1340 | 893 | 2233 | 3 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_HIGH_QUALITY | openai | gpu-thermal-frame-drop | medium | yes | 13 | 14198 | gpt-5.5 | 1857 | 1091 | 2948 | 5 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_HIGH_QUALITY | openai | driver-crash-event-log | medium | yes | 24 | 21170 | gpt-5.5 | 1874 | 1346 | 3220 | 5 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_HIGH_QUALITY | openai | memory-pressure | low | no | 3 | 18715 | gpt-5.5 | 1905 | 992 | 2897 | 5 | 3 | 3 | 3/3 | 100% | 1 | - |  |
+| AS_CHAT_HIGH_QUALITY | openai | storage-bottleneck | low | yes | 15 | 11898 | gpt-5.5 | 1854 | 990 | 2844 | 5 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_HIGH_QUALITY | openai | power-instability | high | yes | 25 | 21168 | gpt-5.5 | 1889 | 1150 | 3039 | 5 | 3 | 3 | 3/3 | 100% | 0 | - |  |
+| AS_CHAT_HIGH_QUALITY | openai | mixed-thermal-driver | high | yes | 20 | 14070 | gpt-5.5 | 1864 | 1192 | 3056 | 5 | 3 | 3 | 3/3 | 100% | 0 | - |  |
 
 ## Selection Notes
 
 - 기본 profile 후보는 schema valid 100%, 성공률 95% 이상을 먼저 만족해야 한다.
+- 근거 없는 단정 카운트가 0인 profile을 우선한다.
+- cause candidate가 RAG evidence 또는 Tool invocation을 참조하는 비율을 grounded evidence rate로 본다.
 - 첫 진행 이벤트 평균이 1초 이하인 profile을 우선한다.
 - 평균 응답 시간이 10초 이하인 profile을 우선한다.
 - p95 응답 시간이 20초를 넘으면 사용자 체감상 감점한다.
 - 품질 차이가 작으면 더 빠른 profile을 선택한다.
+- benchmark 명령은 기본적으로 보고서 생성을 성공으로 본다. 전체 통과를 CI gate로 강제하려면 `--strict`를 사용한다.

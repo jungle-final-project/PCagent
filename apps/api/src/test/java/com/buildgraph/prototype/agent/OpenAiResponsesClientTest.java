@@ -60,7 +60,7 @@ class OpenAiResponsesClientTest {
         OpenAiResponsesClient client = new OpenAiResponsesClient(
                 "https://api.openai.com/v1",
                 "test-api-key",
-                "gpt-4.1-mini",
+                "legacy-chat-model",
                 "medium"
         );
 

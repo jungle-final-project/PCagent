@@ -218,6 +218,11 @@ AS_CHAT_FAST_MODEL=gpt-5.5
 AS_CHAT_FAST_REASONING_EFFORT=low
 AS_CHAT_FAST_RAG_TOP_K=2
 AS_CHAT_FAST_MAX_OUTPUT_TOKENS=900
+AS_CHAT_NANO_FAST_MODEL=gpt-5.4-nano
+AS_CHAT_NANO_FAST_REASONING_EFFORT=low
+AS_CHAT_NANO_FAST_RAG_TOP_K=2
+AS_CHAT_NANO_FAST_MAX_OUTPUT_TOKENS=700
+AS_CHAT_NANO_FAST_RECENT_MESSAGE_LIMIT=2
 AS_CHAT_BALANCED_MODEL=gpt-5.5
 AS_CHAT_BALANCED_REASONING_EFFORT=low
 AS_CHAT_BALANCED_RAG_TOP_K=3
@@ -243,6 +248,7 @@ AS Chat은 기본 요청에서 `AS_CHAT_DEFAULT_PROFILE` 하나만 실행한다.
 | profile | provider | 목적 | 기본 모델 | reasoning | RAG topK | max output |
 |---|---|---|---|---|---:|---:|
 | `AS_CHAT_FAST` | OpenAI | 기본 사용자 후보 | `gpt-5.5` | `low` | 2 | 900 |
+| `AS_CHAT_NANO_FAST` | OpenAI | 속도 개선 기본값 후보 | `gpt-5.4-nano` | `low` | 2 | 700 |
 | `AS_CHAT_BALANCED` | OpenAI | 고위험/품질 보강 후보 | `gpt-5.5` | `low` | 3 | 1100 |
 | `AS_CHAT_HIGH_QUALITY` | OpenAI | 관리자 검증/고품질 후보 | `gpt-5.5` | `medium` | 5 | 2600 |
 | `AS_CHAT_GEMINI_FAST` | Gemini | 속도 비교 후보 | `gemini-2.5-flash` | `none` | 2 | 900 |
