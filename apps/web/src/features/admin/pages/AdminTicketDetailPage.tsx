@@ -47,7 +47,7 @@ export function AdminTicketDetailPage() {
   if (isError || !ticket) {
     return (
       <AdminShell title="AS 티켓 상세">
-        <StateMessage type="warn" title="AS 티켓 조회 실패" body="GET /api/admin/as-tickets/{id} 응답을 불러오지 못했습니다." />
+        <StateMessage type="warn" title="AS 티켓 조회 실패" body="티켓 상세 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요." />
       </AdminShell>
     );
   }
@@ -55,11 +55,11 @@ export function AdminTicketDetailPage() {
   return (
     <AdminShell title="AS 티켓 상세">
       <div className="grid grid-cols-[1fr_440px] gap-5">
-        <Panel title="티켓 / 로그 / 진단 후보" subtitle={ticket.id}>
-          <DataTable columns={['field', 'value']} rows={ticketDetailRows(ticket)} />
+        <Panel title="AS 티켓 확인" subtitle={ticket.id}>
+          <DataTable columns={['항목', '내용']} rows={ticketDetailRows(ticket)} />
         </Panel>
-        <Panel title="관리자 조치" subtitle="PATCH /api/admin/as-tickets/{id}">
-          <StateMessage type="info" title={`현재 상태: ${ticket.status}`} body="이번 화면에서는 상태 변경만 실제 API로 저장합니다." />
+        <Panel title="처리 상태" subtitle="담당자가 티켓 처리 흐름을 갱신합니다.">
+          <StateMessage type="info" title={`현재 상태: ${ticket.status}`} body="티켓 처리 상태를 변경합니다." />
           <div className="mt-5">
             <label className="text-xs font-bold text-slate-600" htmlFor="ticket-status">상태</label>
             <select
@@ -82,7 +82,7 @@ export function AdminTicketDetailPage() {
           </button>
           {updateMutation.isError ? (
             <div className="mt-4">
-              <StateMessage type="warn" title="상태 변경 실패" body="PATCH /api/admin/as-tickets/{id} 응답을 저장하지 못했습니다." />
+              <StateMessage type="warn" title="상태 변경 실패" body="티켓 처리 상태를 저장하지 못했습니다. 잠시 후 다시 시도해 주세요." />
             </div>
           ) : null}
           {updateMutation.isSuccess ? (
@@ -101,16 +101,16 @@ export function AdminTicketDetailPage() {
 
 function ticketDetailRows(ticket: AdminAsTicket) {
   return [
-    { field: '상태', value: <StatusBadge status={ticket.status} /> },
-    { field: '제목/증상', value: ticket.title ?? ticket.symptom },
-    { field: '상세 설명', value: ticket.description ?? ticket.detailDescription ?? '상세 설명 응답 없음' },
-    { field: '로그 요약', value: logSummary(ticket) },
-    { field: '원인 후보', value: formatCandidates(ticket.causeCandidates) },
-    { field: '업그레이드 후보', value: formatCandidates(ticket.upgradeCandidates) },
-    { field: '담당자', value: ticket.assignedAdminId ?? '-' },
-    { field: '관리자 메모', value: ticket.adminNote ?? '-' },
-    { field: '생성일', value: formatDateTime(ticket.createdAt) },
-    { field: '해결일', value: formatDateTime(ticket.resolvedAt) }
+    { '항목': '상태', '내용': <StatusBadge status={ticket.status} /> },
+    { '항목': '제목/증상', '내용': ticket.title ?? ticket.symptom },
+    { '항목': '상세 설명', '내용': ticket.description ?? ticket.detailDescription ?? '상세 설명 응답 없음' },
+    { '항목': '로그 요약', '내용': logSummary(ticket) },
+    { '항목': '원인 후보', '내용': formatCandidates(ticket.causeCandidates) },
+    { '항목': '업그레이드 후보', '내용': formatCandidates(ticket.upgradeCandidates) },
+    { '항목': '담당자', '내용': ticket.assignedAdminId ?? '-' },
+    { '항목': '관리자 메모', '내용': ticket.adminNote ?? '-' },
+    { '항목': '생성일', '내용': formatDateTime(ticket.createdAt) },
+    { '항목': '해결일', '내용': formatDateTime(ticket.resolvedAt) }
   ];
 }
 
@@ -118,7 +118,7 @@ function logSummary(ticket: AdminAsTicket) {
   if (ticket.logSummary) {
     return ticket.logSummary;
   }
-  return ticket.logUploadId ? `로그 업로드 연결됨: ${shortId(ticket.logUploadId)}` : '연결된 로그 없음';
+  return ticket.logUploadId ? `업로드된 로그 있음: ${shortId(ticket.logUploadId)}` : '연결된 로그 없음';
 }
 
 function formatCandidates(candidates: Record<string, unknown>[]) {

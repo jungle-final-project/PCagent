@@ -12,23 +12,24 @@ export function AdminTicketsPage() {
 
   const tickets = data?.items ?? [];
   const ticketRows = tickets.map((ticket) => ({
-    id: <Link className="font-bold text-brand-blue" to={`/admin/as-tickets/${ticket.id}`}>{shortId(ticket.id)}</Link>,
-    status: <StatusBadge status={ticket.status} />,
-    symptom: <Link className="font-bold text-slate-800 hover:text-brand-blue" to={`/admin/as-tickets/${ticket.id}`}>{ticket.title ?? ticket.symptom}</Link>,
-    user: userLabel(ticket),
-    createdAt: formatDateTime(ticket.createdAt)
+    '티켓': <Link className="font-bold text-brand-blue" to={`/admin/as-tickets/${ticket.id}`}>{shortId(ticket.id)}</Link>,
+    '상태': <StatusBadge status={ticket.status} />,
+    '증상': <Link className="font-bold text-slate-800 hover:text-brand-blue" to={`/admin/as-tickets/${ticket.id}`}>{ticket.title ?? ticket.symptom}</Link>,
+    '사용자': userLabel(ticket),
+    '접수 시간': formatDateTime(ticket.createdAt),
+    '담당자': ticket.assignedAdminId ?? '-'
   }));
 
   return (
-    <AdminShell title="AS 티켓 관리자">
-      <Panel title="티켓 큐" subtitle="GET /api/admin/as-tickets">
+    <AdminShell title="AS 티켓 관리">
+      <Panel title="처리할 AS 티켓" subtitle="사용자 증상과 PC Agent 로그가 접수된 티켓을 확인합니다.">
         {isLoading ? <StateMessage type="info" title="AS 티켓 로딩 중" body="관리자 AS 티켓 목록을 불러오고 있습니다." /> : null}
-        {isError ? <StateMessage type="warn" title="AS 티켓 조회 실패" body="GET /api/admin/as-tickets 응답을 불러오지 못했습니다." /> : null}
+        {isError ? <StateMessage type="warn" title="AS 티켓 조회 실패" body="AS 티켓 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요." /> : null}
         {!isLoading && !isError && ticketRows.length === 0 ? (
           <StateMessage type="info" title="AS 티켓 없음" body="표시할 관리자 AS 티켓이 없습니다." />
         ) : null}
         {!isLoading && !isError && ticketRows.length > 0 ? (
-          <DataTable columns={['id', 'status', 'symptom', 'user', 'createdAt']} rows={ticketRows} />
+          <DataTable columns={['티켓', '상태', '증상', '사용자', '접수 시간', '담당자']} rows={ticketRows} />
         ) : null}
       </Panel>
     </AdminShell>
