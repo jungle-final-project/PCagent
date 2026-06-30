@@ -355,7 +355,7 @@ test('keeps shared header and navigation destinations unchanged', async ({ page 
   await expect(header.getByRole('link', { name: 'AS 접수' })).toHaveAttribute('href', '/support/new');
   await expect(nav.getByRole('link', { name: '홈' })).toHaveAttribute('href', '/');
   await expect(nav.getByRole('link', { name: '셀프 견적' })).toHaveAttribute('href', '/self-quote');
-  await expect(nav.getByRole('link', { name: '관리자' })).toHaveAttribute('href', '/admin');
+  await expect(nav.getByRole('link', { name: '관리자' })).toHaveCount(0);
 });
 
 test('keeps the unified home usable on mobile width', async ({ page }) => {
