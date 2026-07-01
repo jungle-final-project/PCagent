@@ -2,7 +2,9 @@ package com.buildgraph.prototype.part;
 
 import com.buildgraph.prototype.user.CurrentUserService;
 import java.util.Map;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,6 +22,7 @@ public class PartController {
     private final DanawaPriceSnapshotService danawaPriceSnapshotService;
     private final DanawaPriceTrendService danawaPriceTrendService;
     private final ManufacturerReleaseIntakeService manufacturerReleaseIntakeService;
+    private final PartAdminService partAdminService;
     private final CurrentUserService currentUserService;
 
     public PartController(
@@ -29,6 +32,7 @@ public class PartController {
             DanawaPriceSnapshotService danawaPriceSnapshotService,
             DanawaPriceTrendService danawaPriceTrendService,
             ManufacturerReleaseIntakeService manufacturerReleaseIntakeService,
+            PartAdminService partAdminService,
             CurrentUserService currentUserService
     ) {
         this.partQueryService = partQueryService;
@@ -37,6 +41,7 @@ public class PartController {
         this.danawaPriceSnapshotService = danawaPriceSnapshotService;
         this.danawaPriceTrendService = danawaPriceTrendService;
         this.manufacturerReleaseIntakeService = manufacturerReleaseIntakeService;
+        this.partAdminService = partAdminService;
         this.currentUserService = currentUserService;
     }
 
@@ -76,6 +81,90 @@ public class PartController {
     ) {
         currentUserService.requireUser(authorization);
         return partQueryService.priceHistory(id, days, source, limit);
+    }
+
+    @GetMapping("/admin/parts")
+    Map<String, Object> adminParts(
+            @RequestParam(value = "category", required = false) String category,
+            @RequestParam(value = "q", required = false) String query,
+            @RequestParam(value = "manufacturer", required = false) String manufacturer,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "minPrice", required = false) Integer minPrice,
+            @RequestParam(value = "maxPrice", required = false) Integer maxPrice,
+            @RequestParam(value = "includeDeleted", required = false) Boolean includeDeleted,
+            @RequestParam(value = "page", required = false) Integer page,
+            @RequestParam(value = "size", required = false) Integer size,
+            @RequestParam(value = "sort", required = false) String sort,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        currentUserService.requireAdmin(authorization);
+        return partAdminService.listParts(category, query, manufacturer, status, minPrice, maxPrice, includeDeleted, page, size, sort);
+    }
+
+    @PostMapping("/admin/parts")
+    Map<String, Object> createAdminPart(
+            @RequestBody Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return partAdminService.create(request, admin);
+    }
+
+    @GetMapping("/admin/parts/{id}")
+    Map<String, Object> adminPart(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        currentUserService.requireAdmin(authorization);
+        return partAdminService.detail(id);
+    }
+
+    @PatchMapping("/admin/parts/{id}")
+    Map<String, Object> updateAdminPart(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return partAdminService.update(id, request, admin);
+    }
+
+    @DeleteMapping("/admin/parts/{id}")
+    Map<String, Object> deleteAdminPart(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return partAdminService.softDelete(id, admin);
+    }
+
+    @PostMapping("/admin/parts/{id}/restore")
+    Map<String, Object> restoreAdminPart(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return partAdminService.restore(id, admin);
+    }
+
+    @PostMapping("/admin/parts/{id}/manual-price")
+    Map<String, Object> updateAdminPartManualPrice(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return partAdminService.manualPrice(id, request, admin);
+    }
+
+    @PatchMapping("/admin/parts/{id}/external-offer")
+    Map<String, Object> updateAdminPartExternalOffer(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return partAdminService.updateExternalOffer(id, request, admin);
     }
 
     @PostMapping("/admin/parts/external-offers/refresh")
@@ -127,10 +216,23 @@ public class PartController {
     @GetMapping("/admin/manufacturer-sources")
     Map<String, Object> manufacturerSources(
             @RequestParam(value = "enabled", required = false) Boolean enabled,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "category", required = false) String category,
+            @RequestParam(value = "includeDeleted", required = false) Boolean includeDeleted,
             @RequestHeader(value = "Authorization", required = false) String authorization
     ) {
         currentUserService.requireAdmin(authorization);
-        return manufacturerReleaseIntakeService.listSources(enabled);
+        return manufacturerReleaseIntakeService.listSources(enabled, status, category, includeDeleted);
+    }
+
+    @GetMapping("/admin/manufacturer-sources/{id}")
+    Map<String, Object> manufacturerSource(
+            @PathVariable String id,
+            @RequestParam(value = "includeDeleted", required = false) Boolean includeDeleted,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.getSource(id, includeDeleted);
     }
 
     @PostMapping("/admin/manufacturer-sources")
@@ -138,18 +240,36 @@ public class PartController {
             @RequestBody Map<String, Object> request,
             @RequestHeader(value = "Authorization", required = false) String authorization
     ) {
-        currentUserService.requireAdmin(authorization);
-        return manufacturerReleaseIntakeService.createSource(request);
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.createSource(request, admin);
     }
 
-    @org.springframework.web.bind.annotation.PatchMapping("/admin/manufacturer-sources/{id}")
+    @PatchMapping("/admin/manufacturer-sources/{id}")
     Map<String, Object> updateManufacturerSource(
             @PathVariable String id,
             @RequestBody Map<String, Object> request,
             @RequestHeader(value = "Authorization", required = false) String authorization
     ) {
-        currentUserService.requireAdmin(authorization);
-        return manufacturerReleaseIntakeService.updateSource(id, request);
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.updateSource(id, request, admin);
+    }
+
+    @DeleteMapping("/admin/manufacturer-sources/{id}")
+    Map<String, Object> deleteManufacturerSource(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.softDeleteSource(id, admin);
+    }
+
+    @PostMapping("/admin/manufacturer-sources/{id}/restore")
+    Map<String, Object> restoreManufacturerSource(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.restoreSource(id, admin);
     }
 
     @PostMapping("/admin/manufacturer-sources/{id}/scan")
@@ -179,10 +299,76 @@ public class PartController {
             @RequestParam(value = "category", required = false) String category,
             @RequestParam(value = "page", required = false) Integer page,
             @RequestParam(value = "size", required = false) Integer size,
+            @RequestParam(value = "includeDeleted", required = false) Boolean includeDeleted,
             @RequestHeader(value = "Authorization", required = false) String authorization
     ) {
         currentUserService.requireAdmin(authorization);
-        return manufacturerReleaseIntakeService.listPosts(status, category, page, size);
+        return manufacturerReleaseIntakeService.listPosts(status, category, page, size, includeDeleted);
+    }
+
+    @GetMapping("/admin/manufacturer-posts/{id}")
+    Map<String, Object> manufacturerPost(
+            @PathVariable String id,
+            @RequestParam(value = "includeDeleted", required = false) Boolean includeDeleted,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.getPost(id, includeDeleted);
+    }
+
+    @PostMapping("/admin/manufacturer-posts")
+    Map<String, Object> createManufacturerPost(
+            @RequestBody Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.createPost(request, admin);
+    }
+
+    @PatchMapping("/admin/manufacturer-posts/{id}")
+    Map<String, Object> updateManufacturerPost(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.updatePost(id, request, admin);
+    }
+
+    @DeleteMapping("/admin/manufacturer-posts/{id}")
+    Map<String, Object> deleteManufacturerPost(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.softDeletePost(id, admin);
+    }
+
+    @PostMapping("/admin/manufacturer-posts/{id}/restore")
+    Map<String, Object> restoreManufacturerPost(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.restorePost(id, admin);
+    }
+
+    @PostMapping("/admin/manufacturer-posts/{id}/create-candidate")
+    Map<String, Object> createCandidateForManufacturerPost(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.createCandidateForPost(id, admin);
+    }
+
+    @PostMapping("/admin/manufacturer-posts/{id}/ai-asset-draft")
+    Map<String, Object> createAiAssetDraftForManufacturerPost(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return manufacturerReleaseIntakeService.createAiAssetDraftForPost(id, admin);
     }
 
     @GetMapping("/admin/part-catalog-candidates")
@@ -192,10 +378,49 @@ public class PartController {
             @RequestParam(value = "source", required = false) String source,
             @RequestParam(value = "page", required = false) Integer page,
             @RequestParam(value = "size", required = false) Integer size,
+            @RequestParam(value = "includeDeleted", required = false) Boolean includeDeleted,
             @RequestHeader(value = "Authorization", required = false) String authorization
     ) {
         currentUserService.requireAdmin(authorization);
-        return manufacturerReleaseIntakeService.listCatalogCandidates(status, category, source, page, size);
+        return manufacturerReleaseIntakeService.listCatalogCandidates(status, category, source, page, size, includeDeleted);
+    }
+
+    @GetMapping("/admin/part-catalog-candidates/{id}")
+    Map<String, Object> partCatalogCandidate(
+            @PathVariable String id,
+            @RequestParam(value = "includeDeleted", required = false) Boolean includeDeleted,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        currentUserService.requireAdmin(authorization);
+        return naverShoppingOfferService.getCatalogCandidate(id, includeDeleted);
+    }
+
+    @PatchMapping("/admin/part-catalog-candidates/{id}")
+    Map<String, Object> updatePartCatalogCandidate(
+            @PathVariable String id,
+            @RequestBody Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return naverShoppingOfferService.updateCatalogCandidate(id, request, admin);
+    }
+
+    @DeleteMapping("/admin/part-catalog-candidates/{id}")
+    Map<String, Object> deletePartCatalogCandidate(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return naverShoppingOfferService.softDeleteCatalogCandidate(id, admin);
+    }
+
+    @PostMapping("/admin/part-catalog-candidates/{id}/restore")
+    Map<String, Object> restorePartCatalogCandidate(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        var admin = currentUserService.requireAdmin(authorization);
+        return naverShoppingOfferService.restoreCatalogCandidate(id, admin);
     }
 
     @PostMapping("/admin/part-catalog-candidates/{id}/approve")
@@ -203,8 +428,8 @@ public class PartController {
             @PathVariable String id,
             @RequestHeader(value = "Authorization", required = false) String authorization
     ) {
-        currentUserService.requireAdmin(authorization);
-        return naverShoppingOfferService.approveCatalogCandidateAsInactive(id);
+        var admin = currentUserService.requireAdmin(authorization);
+        return naverShoppingOfferService.approveCatalogCandidateAsInactive(id, admin);
     }
 
     @PostMapping("/admin/part-catalog-candidates/{id}/reject")
@@ -213,8 +438,8 @@ public class PartController {
             @RequestBody(required = false) Map<String, Object> request,
             @RequestHeader(value = "Authorization", required = false) String authorization
     ) {
-        currentUserService.requireAdmin(authorization);
-        return naverShoppingOfferService.rejectCatalogCandidate(id, request);
+        var admin = currentUserService.requireAdmin(authorization);
+        return naverShoppingOfferService.rejectCatalogCandidate(id, request, admin);
     }
 
     @PostMapping("/admin/part-catalog-candidates/{id}/refresh-offers")

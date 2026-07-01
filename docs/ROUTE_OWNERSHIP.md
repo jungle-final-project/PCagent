@@ -94,8 +94,10 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 | frontend files | `features/parts/**`, `features/admin/pages/AdminPartsPage.tsx`, `features/admin/pages/AdminPriceJobsPage.tsx` |
 | backend packages | `part`, `price`, `tool`, `quote` |
 | DB tables | `parts`, `price_snapshots`, `part_external_offers`, `part_catalog_refresh_jobs`, `part_catalog_candidates`, `manufacturer_sources`, `manufacturer_posts`, `quote_drafts`, `quote_draft_items`, `price_alerts`, `price_jobs`, `compatibility_rules`, `benchmark_summaries` |
-| API endpoints | `GET /api/parts`, `GET /api/parts/{id}`, `GET /api/parts/{id}/price-history`, `GET /api/quote-drafts/current`, `PUT /api/quote-drafts/current/apply-ai-build`, `PUT/PATCH/DELETE /api/quote-drafts/current/items/{partId}`, `GET /api/price-alerts`, `POST /api/price-alerts`, `GET /api/admin/price-jobs`, `POST /api/admin/price-jobs/run`, `POST /api/admin/parts/catalog/refresh`, `POST /api/admin/parts/external-offers/refresh`, `POST /api/admin/parts/danawa-price-snapshots/refresh`, `POST /api/admin/parts/danawa-price-trends/refresh`, `GET/POST/PATCH /api/admin/manufacturer-sources`, `POST /api/admin/manufacturer-sources/{id}/scan`, `POST /api/admin/manufacturer-sources/scan`, `GET /api/admin/manufacturer-posts`, `GET /api/admin/part-catalog-candidates`, `POST /api/admin/part-catalog-candidates/{id}/approve|reject|refresh-offers`, 5개 Tool API |
+| API endpoints | `GET /api/parts`, `GET /api/parts/{id}`, `GET /api/parts/{id}/price-history`, `GET /api/quote-drafts/current`, `PUT /api/quote-drafts/current/apply-ai-build`, `PUT/PATCH/DELETE /api/quote-drafts/current/items/{partId}`, `GET /api/price-alerts`, `POST /api/price-alerts`, `GET /api/admin/price-jobs`, `POST /api/admin/price-jobs/run`, `GET/POST /api/admin/parts`, `GET/PATCH/DELETE /api/admin/parts/{id}`, `POST /api/admin/parts/{id}/restore`, `POST /api/admin/parts/{id}/manual-price`, `PATCH /api/admin/parts/{id}/external-offer`, `POST /api/admin/parts/catalog/refresh`, `POST /api/admin/parts/external-offers/refresh`, `POST /api/admin/parts/danawa-price-snapshots/refresh`, `POST /api/admin/parts/danawa-price-trends/refresh`, source/post/candidate CRUD under `/api/admin/manufacturer-*`, `POST /api/admin/manufacturer-sources/{id}/scan`, `POST /api/admin/manufacturer-sources/scan`, `POST /api/admin/manufacturer-posts/{id}/ai-asset-draft`, `POST /api/admin/part-catalog-candidates/{id}/approve|reject|refresh-offers`, 5개 Tool API |
 | 협업자 | `price_jobs`, catalog refresh, external offer refresh, manufacturer release intake infra 실행 환경은 5번, build 연동은 1번, Agent Tool 이력과 AI 분류 고도화는 3번 |
+
+`part_catalog_candidates.source_product_key` 생성과 유지보수는 2번 Parts/Price 서버 책임이다. 관리자 UI와 후보 수정 API는 상품명, 검색어, 가격, 공급처, URL 같은 보정 필드만 다루고 내부 dedupe key를 입력받지 않는다.
 
 `price_jobs`의 주 owner는 2번이고 협업자는 5번이다.
 
@@ -150,7 +152,7 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 | `/support/ai-chat` | 3번 | 4번, 5번 | `GET /api/ai/as-chat`, `POST /api/ai/as-chat/stream`, `POST /api/ai/as-chat` |
 | `/support/:ticketId` | 4번 | - | `GET /api/as-tickets/{id}` |
 | `/admin` | 5번 | 2번, 3번, 4번 | `GET /api/admin/dashboard`, `GET /api/admin/audit-logs/recent` |
-| `/admin/parts` | 2번 | 5번, 3번 | `GET /api/parts`, `GET /api/parts/{id}/price-history`, `POST /api/admin/parts/catalog/refresh`, `POST /api/admin/parts/external-offers/refresh`, `POST /api/admin/parts/danawa-price-snapshots/refresh`, `POST /api/admin/parts/danawa-price-trends/refresh`, `GET/POST/PATCH /api/admin/manufacturer-sources`, `POST /api/admin/manufacturer-sources/{id}/scan`, `POST /api/admin/manufacturer-sources/scan`, `GET /api/admin/manufacturer-posts`, `GET /api/admin/part-catalog-candidates`, `POST /api/admin/part-catalog-candidates/{id}/approve|reject|refresh-offers` |
+| `/admin/parts` | 2번 | 5번, 3번 | `GET/POST /api/admin/parts`, `GET/PATCH/DELETE /api/admin/parts/{id}`, `POST /api/admin/parts/{id}/restore`, `POST /api/admin/parts/{id}/manual-price`, `PATCH /api/admin/parts/{id}/external-offer`, `GET /api/parts/{id}/price-history`, `POST /api/admin/parts/catalog/refresh`, `POST /api/admin/parts/external-offers/refresh`, `POST /api/admin/parts/danawa-price-snapshots/refresh`, `POST /api/admin/parts/danawa-price-trends/refresh`, source/post/candidate CRUD under `/api/admin/manufacturer-*`, `POST /api/admin/manufacturer-sources/{id}/scan`, `POST /api/admin/manufacturer-sources/scan`, `POST /api/admin/manufacturer-posts/{id}/ai-asset-draft`, `POST /api/admin/part-catalog-candidates/{id}/approve|reject|refresh-offers` |
 | `/admin/price-jobs` | 2번 | 5번 | `GET /api/admin/price-jobs`, `POST /api/admin/price-jobs/run` |
 | `/admin/load-tests` | 5번 | 2번, 3번, 4번 | k6 smoke/load report, `GET /api/health` smoke |
 | `/admin/agent-sessions/:id` | 3번 | 5번 | `GET /api/admin/agent-sessions/{id}` |
@@ -191,19 +193,36 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 | `POST /api/price-alerts` | 2번 | 1번 |
 | `GET /api/admin/price-jobs` | 2번 | 5번 |
 | `POST /api/admin/price-jobs/run` | 2번 | 5번 |
+| `GET /api/admin/parts` | 2번 | 5번 |
+| `POST /api/admin/parts` | 2번 | 5번 |
+| `GET /api/admin/parts/{id}` | 2번 | 5번 |
+| `PATCH /api/admin/parts/{id}` | 2번 | 5번 |
+| `DELETE /api/admin/parts/{id}` | 2번 | 5번 |
+| `POST /api/admin/parts/{id}/restore` | 2번 | 5번 |
+| `POST /api/admin/parts/{id}/manual-price` | 2번 | 5번 |
+| `PATCH /api/admin/parts/{id}/external-offer` | 2번 | 5번 |
 | `POST /api/admin/parts/catalog/refresh` | 2번 | 5번 |
 | `POST /api/admin/parts/external-offers/refresh` | 2번 | 5번 |
 | `POST /api/admin/parts/danawa-price-snapshots/refresh` | 2번 | 5번 |
 | `GET /api/admin/manufacturer-sources` | 2번 | 5번 |
 | `POST /api/admin/manufacturer-sources` | 2번 | 5번 |
-| `PATCH /api/admin/manufacturer-sources/{id}` | 2번 | 5번 |
+| `GET/PATCH/DELETE /api/admin/manufacturer-sources/{id}` | 2번 | 5번 |
+| `POST /api/admin/manufacturer-sources/{id}/restore` | 2번 | 5번 |
 | `POST /api/admin/manufacturer-sources/{id}/scan` | 2번 | 3번, 5번 |
 | `POST /api/admin/manufacturer-sources/scan` | 2번 | 3번, 5번 |
 | `GET /api/admin/manufacturer-posts` | 2번 | 3번, 5번 |
+| `POST /api/admin/manufacturer-posts` | 2번 | 5번 |
+| `GET/PATCH/DELETE /api/admin/manufacturer-posts/{id}` | 2번 | 5번 |
+| `POST /api/admin/manufacturer-posts/{id}/restore` | 2번 | 5번 |
+| `POST /api/admin/manufacturer-posts/{id}/create-candidate` | 2번 | 5번, 3번 |
+| `POST /api/admin/manufacturer-posts/{id}/ai-asset-draft` | 2번 | 3번, 5번 |
 | `GET /api/admin/part-catalog-candidates` | 2번 | 5번 |
+| `GET/PATCH/DELETE /api/admin/part-catalog-candidates/{id}` | 2번 | 5번 |
+| `POST /api/admin/part-catalog-candidates/{id}/restore` | 2번 | 5번 |
 | `POST /api/admin/part-catalog-candidates/{id}/approve` | 2번 | 5번 |
 | `POST /api/admin/part-catalog-candidates/{id}/reject` | 2번 | 5번 |
 | `POST /api/admin/part-catalog-candidates/{id}/refresh-offers` | 2번 | 5번 |
+| `GET /api/demo/manufacturer-release-feed.xml` | 2번 | 5번 |
 | `POST /api/tools/compatibility/check` | 2번 | 3번 |
 | `POST /api/tools/power/check` | 2번 | 3번 |
 | `POST /api/tools/size/check` | 2번 | 3번 |

@@ -25,6 +25,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+  /api/demo/manufacturer-release-feed.xml:
+    get:
+      summary: 로컬 제조사 신제품 감지 데모 RSS
+      description: 운영 source가 아니라 관리자 신제품 감지 데모용 read-only RSS feed다. scan을 누르면 manufacturer_posts에 게시글이 기록되고, 네이버 API가 설정된 경우 part_catalog_candidates 후보 생성까지 이어진다.
+      security: []
+      responses:
+        "200":
+          description: 데모 RSS feed
+          content:
+            application/xml:
+              schema:
+                type: string
   /api/users:
     post:
       summary: 회원가입
@@ -507,6 +519,190 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PriceJobDto"
+  /api/admin/parts:
+    get:
+      summary: 관리자 부품 목록 조회
+      description: ACTIVE/INACTIVE/DISCONTINUED/DELETED를 포함해 내부 자산 운영 목록을 조회한다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: category
+          schema:
+            $ref: "#/components/schemas/PartCategory"
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [ACTIVE, INACTIVE, DISCONTINUED, DELETED]
+        - in: query
+          name: q
+          schema:
+            type: string
+        - in: query
+          name: manufacturer
+          schema:
+            type: string
+        - in: query
+          name: minPrice
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: maxPrice
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: includeDeleted
+          schema:
+            type: boolean
+            default: false
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 0
+        - in: query
+          name: size
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [category, updated_desc, price_asc, price_desc, name]
+      responses:
+        "200":
+          description: 관리자 부품 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartPage"
+    post:
+      summary: 관리자 부품 수동 생성
+      description: 새 부품을 INACTIVE 초안으로 생성한다.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminPartUpsertRequest"
+      responses:
+        "200":
+          description: 생성된 부품
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDto"
+  /api/admin/parts/{id}:
+    get:
+      summary: 관리자 부품 상세 조회
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 관리자 부품 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDto"
+    patch:
+      summary: 관리자 부품 수정
+      description: 기본 정보, 상태, 카테고리별 스펙 JSON을 수정한다. ACTIVE 전환은 필수 스펙 validator를 통과해야 한다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminPartUpsertRequest"
+      responses:
+        "200":
+          description: 수정된 부품
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDto"
+    delete:
+      summary: 관리자 부품 soft delete
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 삭제 처리 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDeleteResponse"
+  /api/admin/parts/{id}/restore:
+    post:
+      summary: 관리자 부품 복구
+      description: soft delete를 해제하고 INACTIVE 초안으로 복구한다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 복구된 부품
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDto"
+  /api/admin/parts/{id}/manual-price:
+    post:
+      summary: 관리자 대표가 수동 보정
+      description: parts.price를 수정하고 price_snapshots.source=ADMIN_MANUAL 이력을 남긴다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminManualPriceRequest"
+      responses:
+        "200":
+          description: 가격 보정 후 부품
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDto"
+  /api/admin/parts/{id}/external-offer:
+    patch:
+      summary: 관리자 대표 offer 수동 보정
+      description: part_external_offers.source=ADMIN_MANUAL row를 upsert한다. parts.price는 직접 변경하지 않는다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminExternalOfferRequest"
+      responses:
+        "200":
+          description: offer 보정 후 부품
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDto"
   /api/admin/parts/external-offers/refresh:
     post:
       summary: 외부 상품 캐시 갱신
@@ -649,6 +845,22 @@ paths:
           name: enabled
           schema:
             type: boolean
+        - in: query
+          name: status
+          schema:
+            $ref: "#/components/schemas/ManufacturerSourceStatus"
+        - in: query
+          name: category
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/PartCategory"
+              - type: string
+                enum: [ALL]
+        - in: query
+          name: includeDeleted
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: 제조사 source 목록
@@ -674,6 +886,24 @@ paths:
               schema:
                 $ref: "#/components/schemas/ManufacturerSourceDto"
   /api/admin/manufacturer-sources/{id}:
+    get:
+      summary: 제조사 신제품 감지 source 상세
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+        - in: query
+          name: includeDeleted
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: 제조사 source 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManufacturerSourceDto"
     patch:
       summary: 제조사 신제품 감지 source 수정
       security:
@@ -689,6 +919,33 @@ paths:
       responses:
         "200":
           description: 수정된 제조사 source
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManufacturerSourceDto"
+    delete:
+      summary: 제조사 신제품 감지 source soft delete
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 삭제 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDeleteResponse"
+  /api/admin/manufacturer-sources/{id}/restore:
+    post:
+      summary: 제조사 신제품 감지 source 복구
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 복구된 제조사 source
           content:
             application/json:
               schema:
@@ -758,6 +1015,11 @@ paths:
           name: category
           schema:
             $ref: "#/components/schemas/PartCategory"
+        - in: query
+          name: includeDeleted
+          schema:
+            type: boolean
+            default: false
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/Size"
       responses:
@@ -767,6 +1029,130 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ManufacturerPostListResponse"
+    post:
+      summary: 제조사 공식 게시글 수동 등록
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManufacturerPostRequest"
+      responses:
+        "200":
+          description: 등록된 제조사 게시글
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManufacturerPostDto"
+  /api/admin/manufacturer-posts/{id}:
+    get:
+      summary: 제조사 공식 게시글 상세
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+        - in: query
+          name: includeDeleted
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: 제조사 게시글 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManufacturerPostDto"
+    patch:
+      summary: 제조사 공식 게시글 분류 수정
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManufacturerPostRequest"
+      responses:
+        "200":
+          description: 수정된 제조사 게시글
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManufacturerPostDto"
+    delete:
+      summary: 제조사 공식 게시글 soft delete
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 삭제 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDeleteResponse"
+  /api/admin/manufacturer-posts/{id}/restore:
+    post:
+      summary: 제조사 공식 게시글 복구
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 복구된 제조사 게시글
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManufacturerPostDto"
+  /api/admin/manufacturer-posts/{id}/create-candidate:
+    post:
+      summary: 제조사 게시글에서 내부 자산 후보 재생성
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 후보 생성 결과
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/admin/manufacturer-posts/{id}/ai-asset-draft:
+    post:
+      summary: 제조사 게시글 AI 후보 생성 및 INACTIVE 자산 초안화
+      description: AI가 공식 게시글 본문을 구조화해 신제품 여부, 검색어, 카테고리별 specAttributes 초안을 추출하고 네이버 검색 후보를 만든 뒤, 가능하면 INACTIVE 내부 자산 초안까지 연결한다. 추출 스펙은 후보 raw_payload를 거쳐 parts.attributes에 반영되며, ACTIVE 게시는 별도 관리자 검수로만 수행한다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: AI 자산 초안화 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManufacturerPostAiAssetDraftResponse"
+        "428":
+          description: OPENAI_API_KEY 등 AI 선행 설정 누락
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: AI JSON 계약 위반 또는 외부 LLM 호출 실패
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/admin/part-catalog-candidates:
     get:
       summary: 내부 자산 후보 목록
@@ -786,6 +1172,11 @@ paths:
           name: source
           schema:
             type: string
+        - in: query
+          name: includeDeleted
+          schema:
+            type: boolean
+            default: false
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/Size"
       responses:
@@ -795,6 +1186,71 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PartCatalogCandidateListResponse"
+  /api/admin/part-catalog-candidates/{id}:
+    get:
+      summary: 내부 자산 후보 상세
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+        - in: query
+          name: includeDeleted
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: 내부 자산 후보 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartCatalogCandidateDto"
+    patch:
+      summary: 내부 자산 후보 수정
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PartCatalogCandidateUpdateRequest"
+      responses:
+        "200":
+          description: 수정된 내부 자산 후보
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartCatalogCandidateDto"
+    delete:
+      summary: 내부 자산 후보 soft delete
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 삭제 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPartDeleteResponse"
+  /api/admin/part-catalog-candidates/{id}/restore:
+    post:
+      summary: 내부 자산 후보 복구
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 복구된 내부 자산 후보
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartCatalogCandidateDto"
   /api/admin/part-catalog-candidates/{id}/approve:
     post:
       summary: 후보를 INACTIVE 내부 자산 초안으로 승인
@@ -2121,6 +2577,122 @@ components:
           type: string
           format: date-time
           nullable: true
+    AdminPartDto:
+      type: object
+      required: [id, category, name, price, status, attributes, toolReady, missingRequiredFields]
+      properties:
+        id:
+          type: string
+          format: uuid
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        name:
+          type: string
+        manufacturer:
+          type: string
+          nullable: true
+        price:
+          type: integer
+        status:
+          $ref: "#/components/schemas/GenericStatus"
+        attributes:
+          type: object
+          additionalProperties: true
+        toolReady:
+          type: boolean
+        missingRequiredFields:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        externalOffer:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PartExternalOfferDto"
+    AdminPartPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminPartDto"
+        page:
+          type: integer
+        size:
+          type: integer
+        total:
+          type: integer
+    AdminPartUpsertRequest:
+      type: object
+      properties:
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        name:
+          type: string
+        manufacturer:
+          type: string
+          nullable: true
+        price:
+          type: integer
+          minimum: 0
+        status:
+          $ref: "#/components/schemas/GenericStatus"
+        attributes:
+          type: object
+          additionalProperties: true
+    AdminPartDeleteResponse:
+      type: object
+      required: [id, deleted]
+      properties:
+        id:
+          type: string
+          format: uuid
+        deleted:
+          type: boolean
+    AdminManualPriceRequest:
+      type: object
+      required: [price]
+      properties:
+        price:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          nullable: true
+    AdminExternalOfferRequest:
+      type: object
+      properties:
+        searchQuery:
+          type: string
+          nullable: true
+        title:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          nullable: true
+        supplierName:
+          type: string
+          nullable: true
+        offerUrl:
+          type: string
+          nullable: true
+        lowPrice:
+          type: integer
+          minimum: 0
+          nullable: true
     QuoteDraftItemUpsertRequest:
       type: object
       description: CPU/GPU/MOTHERBOARD/PSU/CASE/COOLER are single-item categories. RAM and STORAGE can hold multiple distinct parts.
@@ -2487,10 +3059,25 @@ components:
           type: string
           format: date-time
           nullable: true
+        parserConfig:
+          type: object
+          additionalProperties: true
         status:
           $ref: "#/components/schemas/ManufacturerSourceStatus"
         errorSummary:
           type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        deletedAt:
+          type: string
+          format: date-time
           nullable: true
     ManufacturerSourceListResponse:
       type: object
@@ -2507,6 +3094,12 @@ components:
           format: uuid
         manufacturer:
           type: string
+        failed:
+          type: boolean
+          description: 외부 제조사 source fetch 또는 parsing 실패 여부. true면 source는 ERROR 상태로 기록되고 다른 source scan은 계속 진행된다.
+        errorSummary:
+          type: string
+          nullable: true
         unchanged:
           type: boolean
         parsedPosts:
@@ -2535,16 +3128,54 @@ components:
           type: integer
         createdCandidates:
           type: integer
+        failedSources:
+          type: integer
         results:
           type: array
           items:
             $ref: "#/components/schemas/ManufacturerSourceScanResponse"
+    ManufacturerPostRequest:
+      type: object
+      properties:
+        sourceId:
+          type: string
+          format: uuid
+        externalUrl:
+          type: string
+        title:
+          type: string
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        excerpt:
+          type: string
+          nullable: true
+        classificationStatus:
+          $ref: "#/components/schemas/ManufacturerPostClassificationStatus"
+        detectedCategory:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PartCategory"
+        detectedProductName:
+          type: string
+          nullable: true
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          nullable: true
     ManufacturerPostDto:
       type: object
       properties:
         id:
           type: string
           format: uuid
+        sourceId:
+          type: string
+          format: uuid
+          nullable: true
         manufacturer:
           type: string
         sourceUrl:
@@ -2553,18 +3184,41 @@ components:
           type: string
         title:
           type: string
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        excerpt:
+          type: string
+          nullable: true
         classificationStatus:
           $ref: "#/components/schemas/ManufacturerPostClassificationStatus"
         detectedCategory:
-          $ref: "#/components/schemas/PartCategory"
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PartCategory"
         detectedProductName:
           type: string
+          nullable: true
         confidence:
           type: number
           format: double
+          nullable: true
         catalogCandidateId:
           type: string
           format: uuid
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        deletedAt:
+          type: string
+          format: date-time
           nullable: true
     ManufacturerPostListResponse:
       type: object
@@ -2579,6 +3233,70 @@ components:
           type: integer
         total:
           type: integer
+    ManufacturerPostAiAssetDraftResponse:
+      type: object
+      properties:
+        postId:
+          type: string
+          format: uuid
+        aiUsed:
+          type: boolean
+        classificationStatus:
+          $ref: "#/components/schemas/ManufacturerPostClassificationStatus"
+        detectedCategory:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PartCategory"
+        detectedProductName:
+          type: string
+          nullable: true
+        confidence:
+          type: number
+          format: double
+          nullable: true
+        candidateId:
+          type: string
+          format: uuid
+          nullable: true
+        candidateStatus:
+          type: string
+          nullable: true
+        partId:
+          type: string
+          format: uuid
+          nullable: true
+        partStatus:
+          type: string
+          nullable: true
+        messages:
+          type: array
+          items:
+            type: string
+    PartCatalogCandidateUpdateRequest:
+      type: object
+      properties:
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        searchQuery:
+          type: string
+        title:
+          type: string
+        manufacturerGuess:
+          type: string
+          nullable: true
+        imageUrl:
+          type: string
+          nullable: true
+        supplierName:
+          type: string
+          nullable: true
+        offerUrl:
+          type: string
+          nullable: true
+        lowPrice:
+          type: integer
+          minimum: 0
+          nullable: true
     PartCatalogCandidateDto:
       type: object
       properties:
@@ -2589,6 +3307,10 @@ components:
           type: string
         category:
           $ref: "#/components/schemas/PartCategory"
+        sourceProductKey:
+          type: string
+          readOnly: true
+          description: 서버가 생성하고 유지하는 외부 후보 중복 방지용 내부 식별키다. 관리자 수정 request에는 포함하지 않는다.
         searchQuery:
           type: string
         title:
@@ -2612,6 +3334,26 @@ components:
           nullable: true
         publishedPartStatus:
           type: string
+          nullable: true
+        rawPayload:
+          type: object
+          additionalProperties: true
+          nullable: true
+        discoveredAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastSeenAt:
+          type: string
+          format: date-time
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        deletedAt:
+          type: string
+          format: date-time
           nullable: true
     PartCatalogCandidateListResponse:
       type: object

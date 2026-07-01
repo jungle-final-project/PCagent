@@ -430,6 +430,14 @@ Index:
 - index: `parts.name`
 - index: `parts.deleted_at`
 
+관리자 운영 규칙:
+
+- `/api/admin/parts` 수동 생성은 기본 `INACTIVE` 초안이다.
+- `ACTIVE` 전환은 카테고리별 Tool 필수 스펙이 있을 때만 가능하다. 서버는 `attributes.toolReady`를 validator 결과로 계산하며 관리자가 직접 토글하지 않는다.
+- 필수 스펙이 부족하면 `ACTIVE` 전환은 `400 VALIDATION_ERROR`로 실패하고, `missingRequiredFields`를 관리자 DTO에 표시한다.
+- `DELETE /api/admin/parts/{id}`는 `deleted_at`만 채우는 soft delete다. soft delete된 row는 사용자 `/api/parts`, 추천, Tool 대상에서 제외한다.
+- `POST /api/admin/parts/{id}/restore`는 `deleted_at = NULL`, `status = 'INACTIVE'`로 복구한다.
+
 ### price_snapshots
 
 목적: 부품 가격 수집 이력을 저장한다.
@@ -441,7 +449,7 @@ Owner: 2번
 | `id` | `BIGINT` | no | - | 내부 PK |
 | `part_id` | `BIGINT` | no | `parts.id` | 부품 |
 | `price` | `INTEGER` | no | - | 수집 가격 |
-| `source` | `VARCHAR(100)` | no | - | 출처. 예: `NAVER_SHOPPING_SEARCH`, `DANAWA_BACKUP`, `DANAWA_PRICE_TREND`, `MANUAL_CURRENT_LINEUP` |
+| `source` | `VARCHAR(100)` | no | - | 출처. 예: `NAVER_SHOPPING_SEARCH`, `DANAWA_BACKUP`, `DANAWA_PRICE_TREND`, `MANUAL_CURRENT_LINEUP`, `ADMIN_MANUAL` |
 | `collected_at` | `TIMESTAMPTZ` | no | - | 수집 시각 |
 | `raw_payload` | `JSONB` | yes | - | 수집 원문 요약. `DANAWA_PRICE_TREND`는 `range`, `pointType`, `label`, `sourceUrl`, `productCode`, `selectorVersion`, `capturedAt`을 저장 |
 
@@ -451,6 +459,8 @@ Index:
 - index: `(part_id, collected_at)`
 - index: `(part_id, source, collected_at)`
 - partial unique: `source = 'DANAWA_PRICE_TREND'`인 row는 `(part_id, source, collected_at)` 중복을 허용하지 않는다.
+
+`ADMIN_MANUAL` source는 관리자가 대표 가격을 보정할 때만 저장한다. 이 작업은 같은 transaction에서 `parts.price`를 함께 갱신하며, 보정 사유와 이전/이후 가격은 `raw_payload`에 남긴다.
 
 ### part_external_offers
 
@@ -464,7 +474,7 @@ Index:
 |---|---|---:|---|---|
 | `id` | `BIGINT` | no | - | 내부 PK |
 | `part_id` | `BIGINT` | no | `parts.id` | 대상 부품 |
-| `source` | `VARCHAR(100)` | no | - | `NAVER_SHOPPING_SEARCH`, `DANAWA_BACKUP` 등 외부 출처 |
+| `source` | `VARCHAR(100)` | no | - | `NAVER_SHOPPING_SEARCH`, `DANAWA_BACKUP`, `ADMIN_MANUAL` 등 출처 |
 | `search_query` | `VARCHAR(255)` | no | - | 갱신에 사용한 검색어 |
 | `title` | `VARCHAR(500)` | yes | - | 외부 상품명 |
 | `image_url` | `TEXT` | yes | - | 상품 이미지 URL |
@@ -476,6 +486,8 @@ Index:
 | `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
 | `updated_at` | `TIMESTAMPTZ` | yes | - | 수정 시각 |
 | `deleted_at` | `TIMESTAMPTZ` | yes | - | soft delete |
+
+`ADMIN_MANUAL` offer는 이미지, 공급처, 구매 URL, 외부 후보가를 관리자가 보정할 때 사용한다. 이 값은 대표 offer 후보이며 `parts.price`를 직접 바꾸지 않는다. 대표 가격 변경은 `price_snapshots.source = 'ADMIN_MANUAL'`을 동반하는 별도 API만 허용한다.
 
 Index:
 
@@ -534,7 +546,7 @@ Index:
 | `published_part_id` | `BIGINT` | yes | `parts.id` | 게시된 내부 자산 |
 | `source` | `VARCHAR(100)` | no | - | 외부 출처 |
 | `category` | `VARCHAR(50)` | no | - | 후보 category |
-| `source_product_key` | `VARCHAR(500)` | no | - | 외부 검색 결과 중복 제거 키 |
+| `source_product_key` | `VARCHAR(500)` | no | - | 서버 생성 외부 후보 중복 제거 키. 관리자 입력 대상이 아니며 후보 생성, offer 재검색, legacy 보정 시 서버가 유지/생성한다. |
 | `search_query` | `VARCHAR(255)` | no | - | 후보를 발견한 검색어 |
 | `title` | `VARCHAR(500)` | no | - | 외부 상품명 |
 | `manufacturer_guess` | `VARCHAR(100)` | yes | - | 외부 결과 기반 제조사 후보 |
@@ -552,7 +564,7 @@ Index:
 
 Index:
 
-- unique: active 상태에서는 `(source, category, source_product_key)` 중복을 허용하지 않는다.
+- unique: active 상태에서는 `(source, category, source_product_key)` 중복을 허용하지 않는다. 이 키는 서버 책임이며 관리자 후보 보정 API는 값을 받지 않는다.
 - index: `part_catalog_candidates.category`
 - index: `part_catalog_candidates.candidate_status`
 - index: `part_catalog_candidates.refresh_job_id`
@@ -1141,6 +1153,18 @@ Index:
 
 `target_id`에는 내부 BIGINT PK를 저장하지 않는다. public_id 또는 사람이 재현 가능한 stable key만 저장한다.
 
+부품/가격 관리자 CRUD는 다음 action을 기록한다.
+
+- `PART_CREATED`
+- `PART_UPDATED`
+- `PART_STATUS_CHANGED`
+- `PART_PRICE_MANUALLY_UPDATED`
+- `PART_EXTERNAL_OFFER_UPDATED`
+- `PART_SOFT_DELETED`
+- `PART_RESTORED`
+
+각 action의 `target_type`은 `parts`, `target_id`는 `parts.public_id` 문자열이다. 가격 보정 metadata에는 이전 가격, 이후 가격, 보정 사유를 포함한다.
+
 ## JSONB 사용 기준
 
 JSONB 허용 대상:
@@ -1303,7 +1327,21 @@ JSONB 금지 대상:
 
 `/api/parts`와 `/api/parts/{id}`는 외부 검색 API를 직접 호출하지 않는다. 내부 자산 최신화는 `part_catalog_refresh_jobs` 작업이 외부 API를 호출해 `part_catalog_candidates`를 채운 뒤, 게시된 후보를 `parts`에 반영하는 방식으로 수행한다. 사용자 화면은 마지막으로 저장된 `parts`와 `part_external_offers` row만 읽는다.
 
-제조사 신제품 감지는 `manufacturer_sources`와 `manufacturer_posts`가 담당한다. source scan은 공식 제조사 페이지 diff와 게시글 분류만 수행하며 `parts`를 직접 수정하지 않는다. 제품 후보로 판정된 게시글은 네이버 쇼핑 검색을 거쳐 `part_catalog_candidates.source = 'MANUFACTURER_RELEASE_NAVER_SEARCH'`로 저장한다. 관리자 승인 전 후보는 사용자 화면, 추천, Tool 입력 자산에 포함하지 않는다. 승인 API는 후보를 `parts.status = 'INACTIVE'` 초안으로 생성하고 `part_external_offers`, `price_snapshots`에 현재 외부 검색 근거를 저장한다. 최종 `ACTIVE` 전환은 관리자 스펙 검수 후 별도 작업이다.
+제조사 신제품 감지는 `manufacturer_sources`와 `manufacturer_posts`가 담당한다. source scan은 공식 제조사 페이지 diff와 게시글 분류만 수행하며 `parts`를 직접 수정하지 않는다. 제품 후보로 판정된 게시글은 네이버 쇼핑 검색을 거쳐 `part_catalog_candidates.source = 'MANUFACTURER_RELEASE_NAVER_SEARCH'`로 저장한다. 관리자 승인 전 후보는 사용자 화면, 추천, Tool 입력 자산에 포함하지 않는다. 승인 API와 AI 자산 초안화 API는 후보를 `parts.status = 'INACTIVE'` 초안으로 생성하고 `part_external_offers`, `price_snapshots`에 현재 외부 검색 근거를 저장한다. 최종 `ACTIVE` 전환은 관리자 스펙 검수 후 별도 작업이다.
+
+`POST /api/admin/manufacturer-posts/{id}/ai-asset-draft`는 `manufacturer_posts.raw_payload.aiAssetDraft`에 AI 분류 결과, 검색어, 사유, 원본 structured output, 카테고리별 `specAttributes` 초안을 저장한다. 네이버 검색 후보가 생성되면 `part_catalog_candidates.raw_payload.naverCandidate`와 `part_catalog_candidates.raw_payload.manufacturerRelease.aiSpecAttributes`를 이어서 남긴다. 후보 승인 또는 이미 승인된 후보 재초안화 시 서버는 이 `aiSpecAttributes`를 연결된 `parts.attributes`에 반영하되, 결과 part는 계속 `INACTIVE` 초안이다. OpenAI 키가 없거나 AI JSON 계약을 해석할 수 없으면 가짜 후보를 만들지 않는다.
+
+`manufacturer_sources`에는 로컬 시연용 `BuildGraph Demo` RSS source가 1개 seed된다. 이 row는 `enabled = false`라 전체 자동 scan 대상이 아니며, `/admin/parts`에서 수동 scan을 눌렀을 때만 `/api/demo/manufacturer-release-feed.xml`을 읽는다. 데모 source도 일반 source와 같은 저장 정책을 사용하므로 scan은 `parts`를 직접 수정하지 않고, 승인 전 후보는 사용자 API에 노출되지 않는다. `parser_config.searchQuery`는 데모 feed의 공식 게시글 제목과 실제 네이버 검색어를 분리하기 위한 보조 설정이다.
+
+공식 제조사 감시 source는 `manufacturer_sources`에 seed된다. 1차 등록 대상은 ASUS, MSI, GIGABYTE, ASRock, ZOTAC, CORSAIR, Cooler Master, LIAN LI, Fractal Design의 공식 뉴스/제품 발표 페이지이며, 이 row들은 `enabled = true`, `status = 'ACTIVE'`, `parser_config.sourceRole = 'OFFICIAL_MANUFACTURER_NEWS'`로 등록된다. 관리자는 `/admin/parts`에서 source URL 확인, 개별 scan, `enabled = true`이고 `status <> 'PAUSED'`인 source 전체 scan, 후보 offer 재검색, 후보 승인/거절을 처리한다. 전체 scan도 `manufacturer_posts`와 `part_catalog_candidates`만 갱신하며 `parts` 직접 생성은 승인 API 이후로 제한된다.
+
+공식 제조사 페이지가 403, timeout, 빈 응답 등으로 scan에 실패하면 해당 row는 `manufacturer_sources.status = 'ERROR'`, `error_summary`에 실패 사유를 저장한다. 실패는 다른 source scan을 중단시키지 않으며, 관리자는 source URL 또는 개별 scan으로 재검증한다. 차단/캡차/비공개 API 우회는 하지 않는다.
+
+제조사 신제품 감지 운영 CRUD는 모두 soft delete 기준이다. `manufacturer_sources.deleted_at`이 있거나 `enabled = false`, `status = 'PAUSED'`인 source는 전체 scan 대상에서 제외한다. source 복구는 `deleted_at`을 해제하되 안전을 위해 `enabled = false`, `status = 'PAUSED'`로 되돌린다. 공식 제조사 source의 `source_url`은 해당 제조사 공식 도메인의 `https` URL만 허용하며, 로컬 `BuildGraph Demo` source만 `parser_config.demo = true` 조건으로 예외 처리한다.
+
+`manufacturer_posts` 삭제는 감지 게시글을 운영 목록에서 숨기는 soft delete이며, 이미 생성된 `part_catalog_candidates`나 `parts`를 삭제하지 않는다. 수동 post 등록은 source에 연결되어야 하고, 같은 공식 게시글 URL은 중복 저장하지 않는다. post 복구도 후보나 part 상태를 자동 변경하지 않는다.
+
+`part_catalog_candidates` 삭제와 거절은 후보 운영 상태만 바꾼다. 삭제/거절된 후보는 사용자 화면, 추천, Tool 대상에 노출되지 않는다. candidate 복구는 후보 row만 되살리며, 이미 승인되어 연결된 `parts` 상태를 자동 변경하지 않는다. candidate 승인만 `parts`를 만들 수 있고, 이 경우에도 기본 `status = 'INACTIVE'` 초안으로만 생성한다.
 
 카테고리별 대량 갱신은 query pack을 사용한다. GPU, MOTHERBOARD, PSU, COOLER처럼 제조사와 라인업이 많은 category는 한 검색어에 의존하지 않고 여러 모델/제조사 검색어를 나눠 후보를 수십 개 이상 확보한다.
 
