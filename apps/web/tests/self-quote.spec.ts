@@ -376,7 +376,11 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
                 manufacturer: 'NVIDIA',
                 price: 990000,
                 status: 'ACTIVE',
-                attributes: { wattage: 285, lengthMm: 310 }
+                attributes: {
+                  wattage: 285,
+                  lengthMm: 310,
+                  imageUrl: 'https://example.test/graph-candidate-rtx5070ti.png'
+                }
               },
               status: 'PASS',
               statusLabel: '여유 있음',
@@ -463,6 +467,7 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
   await expect(candidatePanel).toContainText('선택한 부품 상세');
   await expect(candidatePanel).toContainText('선택한 그래픽카드');
   await expect(candidatePanel).toContainText('RTX 5070 Ti 그래프 호환 후보');
+  await expect(candidatePanel.getByRole('button', { name: 'RTX 5070 Ti 그래프 호환 후보 사진 확대' })).toBeVisible();
   await expect.poll(() => compatibleCandidateRequests.length).toBe(1);
   expect((compatibleCandidateRequests[0] as { source?: string; category?: string }).source).toBe('QUOTE_DRAFT_CURRENT');
   expect((compatibleCandidateRequests[0] as { category?: string }).category).toBe('GPU');

@@ -176,7 +176,14 @@ async function mockCompatibleCandidatesApi(page: Page) {
               manufacturer: 'NVIDIA',
               price: 990000,
               status: 'ACTIVE',
-              attributes: { wattage: 285, lengthMm: 310 }
+              attributes: { wattage: 285, lengthMm: 310 },
+              externalOffer: {
+                imageUrl: 'https://example.test/candidate-rtx5070ti.png',
+                supplierName: '후보테스트몰',
+                offerUrl: null,
+                lowPrice: 990000,
+                source: 'NAVER_SHOPPING_SEARCH'
+              }
             },
             status: 'PASS',
             statusLabel: '여유 있음',
@@ -627,6 +634,15 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   await expect(candidatePanel).toContainText('RTX 5070 Ti 호환 후보');
   await expect(candidatePanel).toContainText('읽기 전용');
   await expect(candidatePanel).not.toContainText('담기/교체');
+  await expect(candidatePanel.getByRole('img', { name: 'RTX 5070 Ti 호환 후보 제품 사진' })).toBeVisible();
+  await expect(candidatePanel.getByRole('img', { name: 'RTX 5080 Compact 호환 후보 사진 없음' })).toBeVisible();
+  await candidatePanel.getByRole('button', { name: 'RTX 5070 Ti 호환 후보 사진 확대' }).click();
+  const imageDialog = page.getByRole('dialog', { name: 'RTX 5070 Ti 호환 후보 사진 확대' });
+  await expect(imageDialog).toBeVisible();
+  await expect(imageDialog.getByRole('img', { name: 'RTX 5070 Ti 호환 후보 확대 이미지' })).toBeVisible();
+  await expect(imageDialog).toContainText('NVIDIA · 990,000원');
+  await page.keyboard.press('Escape');
+  await expect(imageDialog).toHaveCount(0);
   await expect.poll(() => compatibleCandidateRequests.length).toBe(1);
   expect(compatibleCandidateRequests[0].source).toBe('AI_BUILD');
   expect(compatibleCandidateRequests[0].category).toBe('GPU');

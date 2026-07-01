@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Background,
@@ -10,7 +10,7 @@ import {
   type Node
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { AlertTriangle, CheckCircle2, GitBranch, Info, Maximize2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, GitBranch, Info, Maximize2, X } from 'lucide-react';
 import {
   PART_CATEGORY_LABELS,
   type BuildGraphNode,
@@ -399,6 +399,19 @@ function CompatibleCandidatesPanel({
   selectedPartIds?: Set<string>;
   onSelectPart?: (part: PartRow) => void;
 }) {
+  const [previewPart, setPreviewPart] = useState<PartRow | null>(null);
+
+  useEffect(() => {
+    if (!previewPart) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPreviewPart(null);
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [previewPart]);
+
   return (
     <div className="mb-4 rounded-lg border border-commerce-line bg-white p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -422,40 +435,123 @@ function CompatibleCandidatesPanel({
           const alreadySelected = Boolean(selectedPartIds?.has(candidate.part.id));
           return (
             <article key={candidate.part.id} className="rounded-md border border-commerce-line bg-slate-50 p-3">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="line-clamp-2 text-xs font-black leading-5 text-commerce-ink">{candidate.part.name}</div>
-                  <div className="mt-1 text-[11px] font-bold text-slate-500">
-                    {(candidate.part.manufacturer ?? '제조사 미상')} · {candidate.part.price.toLocaleString()}원
+              <div className="flex items-start gap-3">
+                <CandidateThumbnail part={candidate.part} onPreview={setPreviewPart} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="line-clamp-2 text-xs font-black leading-5 text-commerce-ink">{candidate.part.name}</div>
+                      <div className="mt-1 text-[11px] font-bold text-slate-500">
+                        {(candidate.part.manufacturer ?? '제조사 미상')} · {candidate.part.price.toLocaleString()}원
+                      </div>
+                    </div>
+                    <span className={`shrink-0 rounded px-2 py-1 text-[10px] font-black ${statusBadgeTone(candidate.status)}`}>
+                      {candidate.statusLabel || statusLabel(candidate.status)}
+                    </span>
+                  </div>
+                  <p className="mt-2 break-keep text-[11px] leading-5 text-slate-600">{candidate.summary}</p>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">{candidate.checkedTools.join(' · ') || 'ACTIVE'}</span>
+                    {readOnly ? (
+                      <span className="rounded bg-slate-200 px-2 py-1 text-[11px] font-black text-slate-600">읽기 전용</span>
+                    ) : (
+                      <button
+                        type="button"
+                        aria-label={`${candidate.part.name} 담기/교체`}
+                        disabled={alreadySelected}
+                        onClick={() => onSelectPart?.(candidate.part)}
+                        className="rounded bg-commerce-ink px-3 py-1.5 text-[11px] font-black text-white hover:bg-slate-700 disabled:bg-slate-300"
+                      >
+                        {alreadySelected ? '담김' : '담기/교체'}
+                      </button>
+                    )}
                   </div>
                 </div>
-                <span className={`shrink-0 rounded px-2 py-1 text-[10px] font-black ${statusBadgeTone(candidate.status)}`}>
-                  {candidate.statusLabel || statusLabel(candidate.status)}
-                </span>
-              </div>
-              <p className="mt-2 break-keep text-[11px] leading-5 text-slate-600">{candidate.summary}</p>
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">{candidate.checkedTools.join(' · ') || 'ACTIVE'}</span>
-                {readOnly ? (
-                  <span className="rounded bg-slate-200 px-2 py-1 text-[11px] font-black text-slate-600">읽기 전용</span>
-                ) : (
-                  <button
-                    type="button"
-                    aria-label={`${candidate.part.name} 담기/교체`}
-                    disabled={alreadySelected}
-                    onClick={() => onSelectPart?.(candidate.part)}
-                    className="rounded bg-commerce-ink px-3 py-1.5 text-[11px] font-black text-white hover:bg-slate-700 disabled:bg-slate-300"
-                  >
-                    {alreadySelected ? '담김' : '담기/교체'}
-                  </button>
-                )}
               </div>
             </article>
           );
         })}
       </div>
+      {previewPart ? <PartImagePreviewDialog part={previewPart} onClose={() => setPreviewPart(null)} /> : null}
     </div>
   );
+}
+
+function CandidateThumbnail({ part, onPreview }: { part: PartRow; onPreview: (part: PartRow) => void }) {
+  const imageUrl = partPhotoUrl(part);
+  const categoryLabel = part.category === 'STORAGE' ? 'SSD' : part.category;
+  if (!imageUrl) {
+    return (
+      <div
+        role="img"
+        aria-label={`${part.name} 사진 없음`}
+        className="grid h-16 w-16 shrink-0 place-items-center rounded-md border border-dashed border-slate-300 bg-white text-[11px] font-black text-slate-400"
+      >
+        {categoryLabel}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      aria-label={`${part.name} 사진 확대`}
+      onClick={() => onPreview(part)}
+      className="h-16 w-16 shrink-0 overflow-hidden rounded-md border border-commerce-line bg-white p-1 transition hover:border-brand-blue hover:shadow-product focus:outline-none focus:ring-2 focus:ring-brand-blue"
+    >
+      <img src={imageUrl} alt={`${part.name} 제품 사진`} className="h-full w-full object-contain" />
+    </button>
+  );
+}
+
+function PartImagePreviewDialog({ part, onClose }: { part: PartRow; onClose: () => void }) {
+  const imageUrl = partPhotoUrl(part);
+  if (!imageUrl) return null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${part.name} 사진 확대`}
+      className="fixed inset-0 z-[80] grid place-items-center bg-slate-950/70 p-4"
+      onMouseDown={onClose}
+    >
+      <div
+        className="w-full max-w-3xl rounded-xl border border-white/10 bg-white p-4 shadow-2xl"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="line-clamp-2 text-base font-black text-commerce-ink">{part.name}</div>
+            <div className="mt-1 text-sm font-bold text-slate-500">
+              {(part.manufacturer ?? '제조사 미상')} · {part.price.toLocaleString()}원
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="사진 확대 닫기"
+            onClick={onClose}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-commerce-line bg-white text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-blue"
+          >
+            <X size={17} />
+          </button>
+        </div>
+        <div className="grid max-h-[72vh] place-items-center rounded-lg border border-commerce-line bg-slate-50 p-4">
+          <img src={imageUrl} alt={`${part.name} 확대 이미지`} className="max-h-[65vh] w-full object-contain" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function partPhotoUrl(part: PartRow) {
+  const externalImageUrl = part.externalOffer?.imageUrl;
+  if (typeof externalImageUrl === 'string' && externalImageUrl.trim()) {
+    return externalImageUrl;
+  }
+  const attributeImageUrl = part.attributes?.imageUrl;
+  if (typeof attributeImageUrl === 'string' && attributeImageUrl.trim()) {
+    return attributeImageUrl;
+  }
+  return null;
 }
 
 function GraphStat({ label, value, tone = 'default' }: { label: string; value: number; tone?: 'default' | 'warn' }) {
