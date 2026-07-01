@@ -623,8 +623,10 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   await expect.poll(() => buildGraphRequests.length).toBeGreaterThan(0);
   expect((buildGraphRequests[0] as { source?: string; items?: unknown[] }).source).toBe('AI_BUILD');
   expect((buildGraphRequests[0] as { items?: unknown[] }).items?.length).toBe(8);
-  await main.getByTestId('build-dependency-graph').getByText('RTX 5070', { exact: true }).click();
   const graphCanvas = main.getByTestId('graph-flow-canvas');
+  await graphCanvas.scrollIntoViewIfNeeded();
+  await expect(page.getByTestId('floating-dependency-graph')).toHaveCount(0);
+  await graphCanvas.getByText('RTX 5070', { exact: true }).click();
   const graphPaneBox = await graphCanvas.locator('.react-flow').boundingBox();
   expect(graphPaneBox?.height).toBeGreaterThanOrEqual(680);
   const candidatePanel = graphCanvas.getByTestId('graph-node-candidate-panel');
@@ -647,6 +649,16 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   expect(compatibleCandidateRequests[0].source).toBe('AI_BUILD');
   expect(compatibleCandidateRequests[0].category).toBe('GPU');
   expect(compatibleCandidateRequests[0].items?.length).toBe(8);
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const floatingGraph = page.getByTestId('floating-dependency-graph');
+  await expect(floatingGraph).toBeVisible();
+  await floatingGraph.getByText('RTX 5070', { exact: true }).click();
+  const floatingCandidatePanel = page.getByTestId('floating-graph-candidate-panel');
+  await expect(floatingCandidatePanel).toContainText('호환 후보');
+  await expect(floatingCandidatePanel).toContainText('RTX 5070 Ti 호환 후보');
+  await expect(floatingCandidatePanel.getByRole('img', { name: 'RTX 5070 Ti 호환 후보 제품 사진' })).toBeVisible();
+  await expect(floatingCandidatePanel).toContainText('읽기 전용');
+  await expect(floatingCandidatePanel).not.toContainText('담기/교체');
   await expect(page.getByTestId('ai-chat-messages')).toContainText('200만원 예산 기준');
 
   await page.getByRole('textbox', { name: 'AI 챗봇에게 PC 사양 질문' }).fill('300만원 PC 추천');
@@ -871,6 +883,8 @@ test('keeps the unified home usable on mobile width', async ({ page }) => {
   await expect(main.getByTestId('build-dependency-graph')).toContainText('견적 관계도');
   await main.getByTestId('build-dependency-graph').getByText('RTX 5070', { exact: true }).click();
   await expect(main.getByTestId('graph-flow-canvas').getByTestId('graph-node-candidate-panel')).toContainText('호환 후보');
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await expect(page.getByTestId('floating-dependency-graph')).toHaveCount(0);
 
   const hasBodyOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   expect(hasBodyOverflow).toBe(false);

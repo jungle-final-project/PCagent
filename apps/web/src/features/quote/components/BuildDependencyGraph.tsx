@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Background,
@@ -63,6 +63,10 @@ export function BuildDependencyGraph({
 }: BuildDependencyGraphProps) {
   const [activeEdge, setActiveEdge] = useState<BuildGraphEdge | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
+  const [isDesktopViewport, setIsDesktopViewport] = useState(false);
+  const [showFloatingGraph, setShowFloatingGraph] = useState(false);
+  const graphCanvasRef = useRef<HTMLDivElement | null>(null);
+  const hasSeenGraphRef = useRef(false);
   const activeNode = graph?.nodes.find((node) => node.id === activeNodeId) ?? null;
   const activeNodeCategory = activeNode && typeof activeNode.category === 'string' && isPartCategory(activeNode.category)
     ? activeNode.category
@@ -85,6 +89,57 @@ export function BuildDependencyGraph({
     enabled: Boolean(candidateContext && activeNodeCategory)
   });
   const { nodes, edges } = useMemo(() => toFlowElements(graph), [graph]);
+  const canShowFloatingGraph = Boolean(graph && graph.nodes.length > 0 && !isLoading && !isError);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(min-width: 1024px)');
+    const syncViewport = () => setIsDesktopViewport(mediaQuery.matches);
+    syncViewport();
+    mediaQuery.addEventListener('change', syncViewport);
+    return () => mediaQuery.removeEventListener('change', syncViewport);
+  }, []);
+
+  useEffect(() => {
+    const graphElement = graphCanvasRef.current;
+    if (!graphElement || !canShowFloatingGraph || !isDesktopViewport) {
+      hasSeenGraphRef.current = false;
+      setShowFloatingGraph(false);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.intersectionRatio >= 0.18) {
+          hasSeenGraphRef.current = true;
+          setShowFloatingGraph(false);
+          return;
+        }
+        setShowFloatingGraph(hasSeenGraphRef.current);
+      },
+      { threshold: [0, 0.18, 0.5, 1] }
+    );
+    observer.observe(graphElement);
+    return () => observer.disconnect();
+  }, [canShowFloatingGraph, isDesktopViewport]);
+
+  const handleNodeClick = (node: Node) => {
+    setActiveNodeId(String(node.id));
+    setActiveEdge(null);
+    const category = node.data.category;
+    if (typeof category === 'string' && isPartCategory(category)) {
+      onCategorySelect?.(category);
+    }
+  };
+
+  const handleEdgeClick = (edge: Edge) => {
+    const graphEdge = graph?.edges.find((item) => item.id === edge.id);
+    setActiveNodeId(null);
+    setActiveEdge(graphEdge ?? null);
+  };
+
+  const scrollToMainGraph = () => {
+    graphCanvasRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   return (
     <section data-testid="build-dependency-graph" className="panel overflow-hidden">
@@ -125,6 +180,7 @@ export function BuildDependencyGraph({
       ) : (
         <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div
+            ref={graphCanvasRef}
             data-testid="graph-flow-canvas"
             className="relative min-w-0 border-b border-commerce-line bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] lg:border-b-0 lg:border-r"
           >
@@ -137,19 +193,8 @@ export function BuildDependencyGraph({
                 minZoom={0.45}
                 maxZoom={1.35}
                 proOptions={{ hideAttribution: true }}
-                onNodeClick={(_, node: Node) => {
-                  setActiveNodeId(String(node.id));
-                  setActiveEdge(null);
-                  const category = node.data.category;
-                  if (typeof category === 'string' && isPartCategory(category)) {
-                    onCategorySelect?.(category);
-                  }
-                }}
-                onEdgeClick={(_, edge: Edge) => {
-                  const graphEdge = graph.edges.find((item) => item.id === edge.id);
-                  setActiveNodeId(null);
-                  setActiveEdge(graphEdge ?? null);
-                }}
+                onNodeClick={(_, node: Node) => handleNodeClick(node)}
+                onEdgeClick={(_, edge: Edge) => handleEdgeClick(edge)}
               >
                 <Background color="#dbe4f0" gap={18} />
                 <MiniMap pannable zoomable nodeColor={(node) => statusColor(String(node.data.status ?? 'PASS'))} />
@@ -229,7 +274,106 @@ export function BuildDependencyGraph({
           </aside>
         </div>
       )}
+      {showFloatingGraph && canShowFloatingGraph ? (
+        <FloatingDependencyGraph
+          nodes={nodes}
+          edges={edges}
+          activeNode={activeNode}
+          activeNodeCategory={activeNodeCategory}
+          candidateContext={candidateContext}
+          candidates={candidateQuery.data?.items ?? []}
+          isLoading={candidateQuery.isLoading}
+          isError={candidateQuery.isError}
+          rejectedCount={candidateQuery.data?.rejectedCount ?? 0}
+          onNodeClick={handleNodeClick}
+          onEdgeClick={handleEdgeClick}
+          onScrollToMainGraph={scrollToMainGraph}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function FloatingDependencyGraph({
+  nodes,
+  edges,
+  activeNode,
+  activeNodeCategory,
+  candidateContext,
+  candidates,
+  isLoading,
+  isError,
+  rejectedCount,
+  onNodeClick,
+  onEdgeClick,
+  onScrollToMainGraph
+}: {
+  nodes: Node[];
+  edges: Edge[];
+  activeNode: BuildGraphNode | null;
+  activeNodeCategory: PartCategory | null;
+  candidateContext?: CandidateContext;
+  candidates: CompatiblePartCandidate[];
+  isLoading: boolean;
+  isError: boolean;
+  rejectedCount: number;
+  onNodeClick: (node: Node) => void;
+  onEdgeClick: (edge: Edge) => void;
+  onScrollToMainGraph: () => void;
+}) {
+  return (
+    <div className="fixed bottom-5 left-5 z-40 hidden max-w-[calc(100vw-2.5rem)] items-end gap-3 lg:flex">
+      <div
+        data-testid="floating-dependency-graph"
+        className="w-[360px] overflow-hidden rounded-xl border border-commerce-line bg-white shadow-2xl"
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-commerce-line px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-[11px] font-black text-brand-blue">Dependency graph</div>
+            <div className="truncate text-xs font-black text-commerce-ink">미니 관계도</div>
+          </div>
+          <button
+            type="button"
+            onClick={onScrollToMainGraph}
+            className="shrink-0 rounded-md border border-commerce-line bg-white px-2 py-1 text-[11px] font-black text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-blue"
+          >
+            원래 그래프로 이동
+          </button>
+        </div>
+        <div className="h-[240px] bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)]">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            fitView
+            fitViewOptions={{ padding: 0.18 }}
+            minZoom={0.18}
+            maxZoom={1.15}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            proOptions={{ hideAttribution: true }}
+            onNodeClick={(_, node: Node) => onNodeClick(node)}
+            onEdgeClick={(_, edge: Edge) => onEdgeClick(edge)}
+          >
+            <Background color="#dbe4f0" gap={14} />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+        </div>
+      </div>
+      {activeNode ? (
+        <div data-testid="floating-graph-candidate-panel" className="max-h-[72vh] w-[360px] overflow-y-auto">
+          <GraphNodeCandidatePanel
+            variant="floating"
+            activeNode={activeNode}
+            activeNodeCategory={activeNodeCategory}
+            candidateContext={candidateContext}
+            candidates={candidates}
+            isLoading={isLoading}
+            isError={isError}
+            rejectedCount={rejectedCount}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -342,6 +486,7 @@ function SelectedNodePanel({ node }: { node: BuildGraphNode }) {
 }
 
 function GraphNodeCandidatePanel({
+  variant = 'inline',
   activeNode,
   activeNodeCategory,
   candidateContext,
@@ -350,6 +495,7 @@ function GraphNodeCandidatePanel({
   isError,
   rejectedCount
 }: {
+  variant?: 'inline' | 'floating';
   activeNode: BuildGraphNode;
   activeNodeCategory: PartCategory | null;
   candidateContext?: CandidateContext;
@@ -358,10 +504,14 @@ function GraphNodeCandidatePanel({
   isError: boolean;
   rejectedCount: number;
 }) {
+  const panelClassName = variant === 'floating'
+    ? 'rounded-xl border border-commerce-line bg-white p-4 shadow-2xl'
+    : 'border-t border-commerce-line bg-white p-4 shadow-[0_-10px_30px_rgba(15,23,42,0.06)] lg:absolute lg:right-4 lg:top-4 lg:z-10 lg:max-h-[calc(100%-2rem)] lg:w-[330px] lg:overflow-y-auto lg:rounded-xl lg:border lg:shadow-2xl';
+
   return (
     <div
       data-testid="graph-node-candidate-panel"
-      className="border-t border-commerce-line bg-white p-4 shadow-[0_-10px_30px_rgba(15,23,42,0.06)] lg:absolute lg:right-4 lg:top-4 lg:z-10 lg:max-h-[calc(100%-2rem)] lg:w-[330px] lg:overflow-y-auto lg:rounded-xl lg:border lg:shadow-2xl"
+      className={panelClassName}
     >
       <SelectedNodePanel node={activeNode} />
       {activeNodeCategory && candidateContext ? (

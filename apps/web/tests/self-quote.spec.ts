@@ -472,9 +472,15 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
   expect((compatibleCandidateRequests[0] as { source?: string; category?: string }).source).toBe('QUOTE_DRAFT_CURRENT');
   expect((compatibleCandidateRequests[0] as { category?: string }).category).toBe('GPU');
 
-  await candidatePanel.getByRole('button', { name: 'RTX 5070 Ti 그래프 호환 후보 담기/교체' }).click();
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const floatingGraph = page.getByTestId('floating-dependency-graph');
+  await expect(floatingGraph).toBeVisible();
+  await floatingGraph.getByText('RTX 5070', { exact: true }).click();
+  const floatingCandidatePanel = page.getByTestId('floating-graph-candidate-panel');
+  await expect(floatingCandidatePanel).toContainText('RTX 5070 Ti 그래프 호환 후보');
+
+  await floatingCandidatePanel.getByRole('button', { name: 'RTX 5070 Ti 그래프 호환 후보 담기/교체' }).click();
   await expect.poll(() => candidateApplyRequests.length).toBe(1);
-  await expect(page.getByText('RTX 5070 Ti 그래프 호환 후보')).toBeVisible();
 });
 
 test('opens checkout from self quote purchase CTA without using the build result route', async ({ page }) => {
