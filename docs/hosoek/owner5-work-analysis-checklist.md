@@ -765,6 +765,12 @@ AdminShell nav 분석 결과:
 - [x] `/private/tmp/buildgraph-openapi-check/bin/python -m unittest tools.test_validate_openapi` 통과.
 - [x] `/private/tmp/buildgraph-openapi-check/bin/python tools/validate_openapi.py` 통과. 52 paths.
 
+#### 2026-07-01 AS 접수 업로드 샘플 생성 기록
+
+- [x] AS 접수 화면에서 업로드 테스트에 사용할 JSONL 샘플 [as-upload-sample.jsonl](/Users/juhoseok/Desktop/prototype/docs/hosoek/as-upload-sample.jsonl)을 추가했다.
+- [x] 샘플 내용은 게임 중 GPU 온도 상승, 드라이버 경고, 프레임 드랍 증상을 재현하는 12개 timestamp 관측치로 구성했다.
+- [x] `python3` JSONL 파싱 검증 통과. 12 rows.
+
 #### 2026-07-01 1번/4번 완료도 재감사 기록
 
 결론: **1번과 4번은 모두 부분완료다.** 현재 테스트와 OpenAPI 검증은 통과하지만, 계약서 기준의 소유권, OAuth, 파일 검증, 관리자 화면/API 상태 전이까지 완전히 닫히지는 않았다.
