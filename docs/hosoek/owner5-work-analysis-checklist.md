@@ -735,7 +735,7 @@ AdminShell nav 분석 결과:
 - [x] 계약 문서 동기화 여부를 확인했다. `docs/API_CONTRACT.md`, `docs/ROUTE_OWNERSHIP.md`, `docs/openapi.yaml`에는 새 API와 route owner 변경이 반영되어 있다.
 - [x] 공동계약서 위반 가능성이 있는 항목을 구분했다.
   - [ ] 5번 단독 PR이라면 owner 범위 위반 가능성이 있다. 이 브랜치는 1번 owner 영역인 `build`, `features/quote`, 홈 화면과 2번 owner 영역인 `quote`, `features/parts`, 셀프 견적 화면을 직접 수정한다. 1번/2번 작업 또는 명시적 리뷰가 있으면 허용 가능하고, 5번 단독 작업이면 계약 위반이다.
-  - [ ] 새 API 2개가 `docs/openapi.yaml`에는 들어갔지만 `tools/validate_openapi.py`의 `REQUIRED_PATHS`와 request schema 검사 목록에는 포함되지 않았다. CI의 OpenAPI 검증이 새 API 누락을 잡지 못하므로 검증 계약 보강이 필요하다.
+  - [x] 새 API 2개가 `docs/openapi.yaml`에는 들어갔지만 `tools/validate_openapi.py`의 `REQUIRED_PATHS`와 request schema 검사 목록에는 포함되지 않았다. 2026-07-01 `POST /api/ai/build-chat`, `PUT /api/quote-drafts/current/apply-ai-build`를 CI 필수 path/request schema 검사에 추가했다.
   - [ ] `HomePage.tsx` 안에 `featuredBuilds`, `popularPartDeals` 같은 domain mock/static 데이터가 직접 들어 있다. 유지하려면 "홈 마케팅용 정적 데이터"로 합의해야 하고, mock 데이터라면 `features/quote/mocks`로 옮기는 것이 계약에 맞다.
 - [x] 위반으로 보지 않는 항목을 확인했다.
   - [x] 페이지 컴포넌트가 공통 `api()`를 직접 호출하지 않고 `quoteApi.ts`, `partsApi.ts` wrapper를 사용한다.
@@ -754,6 +754,16 @@ AdminShell nav 분석 결과:
 - [x] `origin/main` 병합 후 현재 브랜치가 `feat/aiChatImprove`이고, 마지막 커밋이 `fix: 로그인 후 헤더 사용자 표시를 유지`임을 확인했다.
 - [x] 현재 unstaged 변경은 `docs/hosoek/owner5-work-analysis-checklist.md` 1개뿐이며, 코드/API/OpenAPI 추가 변경은 없다.
 - [x] 이번 커밋 메시지는 구매 상담 기능 구현이 아니라 공동계약서 감사와 커밋 메시지 요청 전 점검 기록을 남기는 문서 커밋으로 분리한다.
+
+#### 2026-07-01 OpenAPI CI 필수 API 보강 기록
+
+- [x] `POST /api/ai/build-chat`를 `tools/validate_openapi.py`의 `REQUIRED_PATHS`와 `POST_JSON_REQUEST_SCHEMAS`에 추가했다.
+- [x] `PUT /api/quote-drafts/current/apply-ai-build`를 `tools/validate_openapi.py`의 `REQUIRED_PATHS`와 `PUT_JSON_REQUEST_SCHEMAS`에 추가했다.
+- [x] `AiBuildChatRequest`, `AiBuildChatResponse`, `AiBuildApplyRequest`, `QuoteDraftDto`를 필수 schema 목록에 추가했다.
+- [x] `POST` 전용 검사에 머물러 있던 request schema 검증을 `PUT`도 검사할 수 있게 보강했다.
+- [x] GitHub Actions의 OpenAPI 검증 단계에서 `python -m unittest tools.test_validate_openapi`도 실행하도록 추가했다.
+- [x] `/private/tmp/buildgraph-openapi-check/bin/python -m unittest tools.test_validate_openapi` 통과.
+- [x] `/private/tmp/buildgraph-openapi-check/bin/python tools/validate_openapi.py` 통과. 52 paths.
 
 #### 2026-07-01 1번/4번 완료도 재감사 기록
 

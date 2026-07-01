@@ -3,6 +3,9 @@
 #### 작성일: 2026-07-01  
 #### 최신커밋: 6a055824fa1fc88c4d71e9927d8b41f2367593a1
 
+- 공통 API Client 완료 : 커밋 807429c
+- dashboard 지표가 실제 도메인 데이터 변화와 맞는지 최종 smoke 완료 : 실제 db 확인
+
 기준 문서: 
 ```
 docs/API_CONTRACT.md 
@@ -61,7 +64,7 @@ MVP 완료 기준:
 | 관리자 AS | 미완료 | `/admin/as-tickets`, `/admin/as-tickets/:ticketId` mock/static 제거, 실제 API 연결, 담당자 배정, 상태 저장 구현 | 목록/상세/update가 실제 API로 동작하고 no-op 버튼이 없음 | 4번, 5번 |
 | AS 상태 전이/audit | 미완료 | `PATCH /api/admin/as-tickets/{id}` 허용 전이, 금지 전이 409, `resolvedAt`, `assignedAdminId`, `admin_audit_logs` 기록 구현 | 상태 전이 성공/실패/audit log 테스트 통과 | 4번, 5번 |
 | AdminShell | 부분완료 | 8개 메뉴와 route는 있으나 owner별 list/detail 정책 공유 필요 | nav label/order/route가 2/3/4번 담당 화면과 충돌 없음 | 5번, 2/3/4번 |
-| AdminDashboard | 부분완료 | dashboard 지표가 실제 도메인 데이터 변화와 맞는지 최종 smoke | `agentRunning`, `openTickets`, `priceJobsRunning`, `degraded`가 실제 DB 기준 표시됨 | 5번 |
+| AdminDashboard | 완료 | dashboard 지표가 실제 도메인 데이터 변화와 맞는지 최종 smoke | `agentRunning`, `openTickets`, `priceJobsRunning`, `degraded`가 실제 DB 기준 표시됨 | 5번 |
 | Redis/RabbitMQ/Mailpit | smoke 완료 | 실제 기능이 붙으면 connection smoke에서 기능 smoke로 승격 | OAuth code, queue job, email 중 실제 사용 기능 기준 smoke 통과 | 5번, 관련 owner |
 | CI/OpenAPI | 부분완료 | 새 API가 생길 때 `tools/validate_openapi.py` 필수 path/schema에 즉시 반영 | OpenAPI 검증이 누락 API를 잡고 CI에서 실패시킴 | 5번 |
 | 최종 E2E | 미완료 | 실제 서버+DB로 MVP 전체 흐름을 한 번에 검증 | 로그인부터 관리자 확인까지 1회 이상 성공하고 결과 문서화 | 전체, 5번 검증 |
