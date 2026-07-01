@@ -69,9 +69,14 @@ public class BuildController {
     @PostMapping("/ai/build-chat")
     Map<String, Object> buildChat(
             @RequestBody(required = false) Map<String, Object> request,
-            @RequestHeader(value = "Authorization", required = false) String authorization
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestHeader(value = "X-BuildGraph-AI-Profile", required = false) String aiProfile
     ) {
         currentUserService.requireUser(authorization);
-        return buildChatService.chat(request == null ? Map.of() : request);
+        Map<String, Object> body = request == null ? Map.of() : request;
+        if (aiProfile == null || aiProfile.isBlank()) {
+            return buildChatService.chat(body);
+        }
+        return buildChatService.chat(body, aiProfile);
     }
 }
