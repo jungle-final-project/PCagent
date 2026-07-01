@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const checkoutDraft = {
   id: 'draft-checkout-test',
@@ -124,6 +124,20 @@ function buildGraphResponse(mode = 'ISSUE_PATH') {
       { tool: 'power', status: 'WARN', confidence: 'MEDIUM', summary: 'PSU 정격 출력 여유를 확인해야 합니다.' }
     ]
   };
+}
+
+async function dragFloatingGraphResizeHandle(page: Page, deltaX: number, deltaY: number) {
+  const handle = page.getByTestId('floating-graph-resize-handle');
+  const box = await handle.boundingBox();
+  if (!box) {
+    throw new Error('floating graph resize handle is not visible');
+  }
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + deltaX, startY + deltaY, { steps: 8 });
+  await page.mouse.up();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -642,11 +656,45 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   const floatingGraph = page.getByTestId('floating-dependency-graph');
   await expect(floatingGraph).toBeVisible();
+  await expect(page.getByTestId('floating-graph-resize-handle')).toBeVisible();
+
+  const defaultFloatingBox = await floatingGraph.boundingBox();
+  expect(defaultFloatingBox).not.toBeNull();
+  expect(defaultFloatingBox?.width).toBeGreaterThanOrEqual(350);
+  expect(defaultFloatingBox?.height).toBeGreaterThanOrEqual(270);
+
+  await dragFloatingGraphResizeHandle(page, 180, -110);
+  const expandedFloatingBox = await floatingGraph.boundingBox();
+  expect(expandedFloatingBox).not.toBeNull();
+  expect(expandedFloatingBox?.width).toBeGreaterThan((defaultFloatingBox?.width ?? 0) + 100);
+  expect(expandedFloatingBox?.height).toBeGreaterThan((defaultFloatingBox?.height ?? 0) + 70);
+  await expect(floatingGraph.locator('.react-flow')).toBeVisible();
+
+  await dragFloatingGraphResizeHandle(page, -420, 260);
+  const compactFloatingBox = await floatingGraph.boundingBox();
+  expect(compactFloatingBox).not.toBeNull();
+  expect(compactFloatingBox?.width).toBeLessThan((expandedFloatingBox?.width ?? 0) - 120);
+  expect(compactFloatingBox?.height).toBeLessThan((expandedFloatingBox?.height ?? 0) - 90);
+
+  await dragFloatingGraphResizeHandle(page, 2000, -2000);
+  const clampedFloatingBox = await floatingGraph.boundingBox();
+  const viewport = page.viewportSize();
+  expect(clampedFloatingBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect((clampedFloatingBox?.x ?? 0) + (clampedFloatingBox?.width ?? 0)).toBeLessThanOrEqual((viewport?.width ?? 0) - 12);
+
   await floatingGraph.getByText('RTX 5070', { exact: true }).click();
   const floatingCandidatePanel = page.getByTestId('floating-graph-candidate-panel');
   await expect(floatingCandidatePanel).toContainText('RTX 5070 Ti 그래프 호환 후보');
 
-  await floatingCandidatePanel.getByRole('button', { name: 'RTX 5070 Ti 그래프 호환 후보 담기/교체' }).click();
+  await floatingCandidatePanel.getByRole('button', { name: '선택한 부품 상세 닫기' }).click();
+  await expect(page.getByTestId('floating-graph-candidate-panel')).toHaveCount(0);
+
+  await floatingGraph.getByText('RTX 5070', { exact: true }).click();
+  const reopenedFloatingCandidatePanel = page.getByTestId('floating-graph-candidate-panel');
+  await expect(reopenedFloatingCandidatePanel).toContainText('RTX 5070 Ti 그래프 호환 후보');
+
+  await reopenedFloatingCandidatePanel.getByRole('button', { name: 'RTX 5070 Ti 그래프 호환 후보 담기/교체' }).click();
   await expect.poll(() => candidateApplyRequests.length).toBe(1);
 });
 

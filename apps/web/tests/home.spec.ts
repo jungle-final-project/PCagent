@@ -214,6 +214,20 @@ async function mockCompatibleCandidatesApi(page: Page) {
   return requests;
 }
 
+async function dragFloatingGraphResizeHandle(page: Page, deltaX: number, deltaY: number) {
+  const handle = page.getByTestId('floating-graph-resize-handle');
+  const box = await handle.boundingBox();
+  if (!box) {
+    throw new Error('floating graph resize handle is not visible');
+  }
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + deltaX, startY + deltaY, { steps: 8 });
+  await page.mouse.up();
+}
+
 function budgetBuilds(budgetWon: number, appliedPartCategories: PartCategory[] = []) {
   return (['budget', 'balanced', 'performance'] as AiTier[]).map((tier) => build(tier, budgetWon, appliedPartCategories));
 }
@@ -665,6 +679,16 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   const floatingGraph = page.getByTestId('floating-dependency-graph');
   await expect(floatingGraph).toBeVisible();
+  await expect(page.getByTestId('floating-graph-resize-handle')).toBeVisible();
+  const defaultFloatingBox = await floatingGraph.boundingBox();
+  expect(defaultFloatingBox).not.toBeNull();
+  await dragFloatingGraphResizeHandle(page, 160, -100);
+  const expandedFloatingBox = await floatingGraph.boundingBox();
+  expect(expandedFloatingBox).not.toBeNull();
+  expect(expandedFloatingBox?.width).toBeGreaterThan((defaultFloatingBox?.width ?? 0) + 90);
+  expect(expandedFloatingBox?.height).toBeGreaterThan((defaultFloatingBox?.height ?? 0) + 60);
+  await expect(floatingGraph.locator('.react-flow')).toBeVisible();
+
   await floatingGraph.getByText('RTX 5070', { exact: true }).click();
   const floatingCandidatePanel = page.getByTestId('floating-graph-candidate-panel');
   await expect(floatingCandidatePanel).toContainText('호환 후보');
@@ -672,6 +696,10 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   await expect(floatingCandidatePanel.getByRole('img', { name: 'RTX 5070 Ti 호환 후보 제품 사진' })).toBeVisible();
   await expect(floatingCandidatePanel).toContainText('읽기 전용');
   await expect(floatingCandidatePanel).not.toContainText('담기/교체');
+  await floatingCandidatePanel.getByRole('button', { name: '선택한 부품 상세 닫기' }).click();
+  await expect(page.getByTestId('floating-graph-candidate-panel')).toHaveCount(0);
+  await floatingGraph.getByText('RTX 5070', { exact: true }).click();
+  await expect(page.getByTestId('floating-graph-candidate-panel')).toContainText('RTX 5070 Ti 호환 후보');
   await expect(page.getByTestId('ai-chat-messages')).toContainText('200만원 예산 기준');
 
   await page.getByRole('textbox', { name: 'AI 챗봇에게 PC 사양 질문' }).fill('300만원 PC 추천');
