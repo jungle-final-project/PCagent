@@ -52,7 +52,7 @@ rag:
 
 ai:
   as-chat:
-    default-profile: ${AS_CHAT_DEFAULT_PROFILE:AS_CHAT_FAST}
+    default-profile: ${AS_CHAT_DEFAULT_PROFILE:AS_CHAT_54_MINI_FAST}
     fast:
       model: ${AS_CHAT_FAST_MODEL:gpt-5.5}
       reasoning-effort: ${AS_CHAT_FAST_REASONING_EFFORT:low}
@@ -108,7 +108,7 @@ ai:
       include-tool-result-payload: ${AS_CHAT_HIGH_QUALITY_INCLUDE_TOOL_RESULT_PAYLOAD:false}
       use-compact-prompt: ${AS_CHAT_HIGH_QUALITY_USE_COMPACT_PROMPT:true}
   build-chat:
-    default-profile: ${BUILD_CHAT_DEFAULT_PROFILE:BUILD_CHAT_FAST}
+    default-profile: ${BUILD_CHAT_DEFAULT_PROFILE:BUILD_CHAT_54_MINI_FAST}
     fast:
       model: ${BUILD_CHAT_FAST_MODEL:gpt-5.5}
       reasoning-effort: ${BUILD_CHAT_FAST_REASONING_EFFORT:low}

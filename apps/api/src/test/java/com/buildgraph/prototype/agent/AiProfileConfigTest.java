@@ -7,18 +7,18 @@ import org.junit.jupiter.api.Test;
 
 class AiProfileConfigTest {
     @Test
-    void defaultAsChatProfileCanUseFastProfile() {
-        AiProfileConfig config = config("AS_CHAT_FAST", "BUILD_CHAT_FAST");
+    void defaultAsChatProfileUsesMeasuredGpt54MiniProfile() {
+        AiProfileConfig config = config("AS_CHAT_54_MINI_FAST", "BUILD_CHAT_54_MINI_FAST");
 
         AiProfileDefinition profile = config.defaultAsChatProfile();
 
-        assertThat(profile.profile()).isEqualTo(AiProfile.AS_CHAT_FAST);
+        assertThat(profile.profile()).isEqualTo(AiProfile.AS_CHAT_54_MINI_FAST);
         assertThat(profile.provider()).isEqualTo(LlmProvider.OPENAI);
-        assertThat(profile.model()).isEqualTo("gpt-5.5");
+        assertThat(profile.model()).isEqualTo("gpt-5.4-mini");
         assertThat(profile.reasoningEffort()).isEqualTo("low");
         assertThat(profile.ragTopK()).isEqualTo(2);
-        assertThat(profile.promptVersion()).isEqualTo("as-chat-v3-fast-compact");
-        assertThat(profile.maxOutputTokens()).isEqualTo(900);
+        assertThat(profile.promptVersion()).isEqualTo("as-chat-v5-gpt54-mini-fast-compact");
+        assertThat(profile.maxOutputTokens()).isEqualTo(850);
         assertThat(profile.recentMessageLimit()).isEqualTo(3);
         assertThat(profile.includeEvidenceChunkText()).isFalse();
         assertThat(profile.includeToolResultPayload()).isFalse();
@@ -67,6 +67,22 @@ class AiProfileConfigTest {
         assertThatThrownBy(() -> config.asChatProfile("BUILD_CHAT_FAST"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("AS Chat profile이 아닙니다");
+    }
+
+    @Test
+    void defaultBuildChatProfileUsesMeasuredGpt54MiniProfile() {
+        AiProfileConfig config = config("AS_CHAT_54_MINI_FAST", "BUILD_CHAT_54_MINI_FAST");
+
+        AiProfileDefinition profile = config.buildChatProfile(null);
+
+        assertThat(profile.profile()).isEqualTo(AiProfile.BUILD_CHAT_54_MINI_FAST);
+        assertThat(profile.provider()).isEqualTo(LlmProvider.OPENAI);
+        assertThat(profile.model()).isEqualTo("gpt-5.4-mini");
+        assertThat(profile.reasoningEffort()).isEqualTo("low");
+        assertThat(profile.ragTopK()).isEqualTo(3);
+        assertThat(profile.promptVersion()).isEqualTo("build-chat-v1-gpt54-mini-fast");
+        assertThat(profile.maxOutputTokens()).isEqualTo(850);
+        assertThat(profile.recentMessageLimit()).isEqualTo(0);
     }
 
     @Test

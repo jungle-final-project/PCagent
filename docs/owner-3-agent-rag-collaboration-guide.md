@@ -212,11 +212,20 @@ AGENT_RUNNER_MODE=llm
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.5
 OPENAI_REASONING_EFFORT=medium
-AS_CHAT_DEFAULT_PROFILE=AS_CHAT_FAST
+AS_CHAT_DEFAULT_PROFILE=AS_CHAT_54_MINI_FAST
 AS_CHAT_FAST_MODEL=gpt-5.5
 AS_CHAT_FAST_REASONING_EFFORT=low
 AS_CHAT_FAST_RAG_TOP_K=2
 AS_CHAT_FAST_MAX_OUTPUT_TOKENS=900
+AS_CHAT_54_MINI_FAST_MODEL=gpt-5.4-mini
+AS_CHAT_54_MINI_FAST_REASONING_EFFORT=low
+AS_CHAT_54_MINI_FAST_RAG_TOP_K=2
+AS_CHAT_54_MINI_FAST_MAX_OUTPUT_TOKENS=850
+BUILD_CHAT_DEFAULT_PROFILE=BUILD_CHAT_54_MINI_FAST
+BUILD_CHAT_54_MINI_FAST_MODEL=gpt-5.4-mini
+BUILD_CHAT_54_MINI_FAST_REASONING_EFFORT=low
+BUILD_CHAT_54_MINI_FAST_RAG_TOP_K=3
+BUILD_CHAT_54_MINI_FAST_MAX_OUTPUT_TOKENS=850
 AS_CHAT_NANO_FAST_MODEL=gpt-5.4-nano
 AS_CHAT_NANO_FAST_REASONING_EFFORT=low
 AS_CHAT_NANO_FAST_RAG_TOP_K=2
@@ -239,8 +248,9 @@ AS Chat은 기본 요청에서 `AS_CHAT_DEFAULT_PROFILE` 하나만 실행한다.
 
 | profile | provider | 목적 | 기본 모델 | reasoning | RAG topK | max output |
 |---|---|---|---|---|---:|---:|
-| `AS_CHAT_FAST` | OpenAI | 기본 사용자 후보 | `gpt-5.5` | `low` | 2 | 900 |
-| `AS_CHAT_NANO_FAST` | OpenAI | 속도 개선 기본값 후보 | `gpt-5.4-nano` | `low` | 2 | 700 |
+| `AS_CHAT_54_MINI_FAST` | OpenAI | 기본 사용자 profile | `gpt-5.4-mini` | `low` | 2 | 850 |
+| `AS_CHAT_FAST` | OpenAI | 이전 기본값 / rollback 후보 | `gpt-5.5` | `low` | 2 | 900 |
+| `AS_CHAT_NANO_FAST` | OpenAI | 실험/실패 추적 profile | `gpt-5.4-nano` | `low` | 2 | 700 |
 | `AS_CHAT_BALANCED` | OpenAI | 고위험/품질 보강 후보 | `gpt-5.5` | `low` | 3 | 1100 |
 | `AS_CHAT_HIGH_QUALITY` | OpenAI | 관리자 검증/고품질 후보 | `gpt-5.5` | `medium` | 5 | 2600 |
 
