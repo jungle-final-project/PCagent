@@ -81,7 +81,7 @@ MVP 기준 결정값:
 | frontend files | `features/quote/**`, `features/auth/pages/**` |
 | backend packages | `build`, `requirement`, `user`, `auth` |
 | DB tables | `requirements`, `builds`, `build_items`, `users`, `user_auth_providers`, `refresh_tokens` |
-| API endpoints | `POST /api/requirements/parse`, `POST /api/builds/recommend`, `GET /api/builds/{id}`, `GET /api/builds/history`, `POST /api/builds/{id}/change-part`, `POST /api/users`, `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/auth/google/start`, `GET /api/auth/google/callback`, `POST /api/auth/exchange` |
+| API endpoints | `POST /api/requirements/parse`, `POST /api/builds/recommend`, `POST /api/build-graphs/resolve`, `GET /api/builds/{id}`, `GET /api/builds/history`, `POST /api/builds/{id}/change-part`, `POST /api/users`, `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/auth/google/start`, `GET /api/auth/google/callback`, `POST /api/auth/exchange` |
 | 협업자 | Auth 공통/token/guard/security는 5번, Tool/RAG 근거는 3번, parts 데이터는 2번 |
 
 Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/src/lib/api.ts`, `RequireAdmin`, admin guard, security allowlist, migration 순서 관점에서 협업한다.
@@ -136,12 +136,12 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 
 | Route | 주 owner | 협업자 | 연결 API |
 |---|---|---|---|
-| `/` | 1번 | 2번 | `POST /api/ai/build-chat`, `PUT /api/quote-drafts/current/apply-ai-build` |
+| `/` | 1번 | 2번 | `POST /api/ai/build-chat`, `POST /api/build-graphs/resolve`, `PUT /api/quote-drafts/current/apply-ai-build` |
 | `/requirements/new` | 1번 | 3번 | `POST /api/requirements/parse`, `POST /api/builds/recommend` |
 | `/builds/:buildId` | 1번 | 2번, 3번 | `GET /api/builds/{id}`, `GET /api/rag/evidence/{id}` |
 | `/builds/:buildId/change-part` | 1번 | 2번 | `POST /api/builds/{id}/change-part`, `GET /api/parts` |
 | `/my/quotes` | 1번 | 2번 | `GET /api/builds/history`, `GET /api/price-alerts`, `POST /api/price-alerts` |
-| `/self-quote` | 2번 | 1번, 5번 | `GET /api/parts`, `GET /api/parts/{id}/price-history`, `GET /api/quote-drafts/current`, `PUT /api/quote-drafts/current/apply-ai-build`, `PUT/PATCH/DELETE /api/quote-drafts/current/items/{partId}`, 5개 Tool API |
+| `/self-quote` | 2번 | 1번, 5번 | `GET /api/parts`, `GET /api/parts/{id}/price-history`, `GET /api/quote-drafts/current`, `POST /api/build-graphs/resolve`, `PUT /api/quote-drafts/current/apply-ai-build`, `PUT/PATCH/DELETE /api/quote-drafts/current/items/{partId}`, 5개 Tool API |
 | `/checkout` | 2번 | 1번, 5번 | `GET /api/quote-drafts/current` |
 | `/checkout/complete` | 2번 | 1번, 5번 | 프론트 `sessionStorage` 데모 상태 |
 | `/parts/:partId` | 2번 | 5번 | `GET /api/parts/{id}`, `PUT /api/quote-drafts/current/items/{partId}` |
@@ -178,6 +178,7 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 | `POST /api/requirements/parse` | 1번 | - |
 | `POST /api/builds/recommend` | 1번 | 2번, 3번 |
 | `POST /api/ai/build-chat` | 3번 | 1번, 2번 |
+| `POST /api/build-graphs/resolve` | 1번 | 2번, 3번 |
 | `GET /api/builds/{id}` | 1번 | 2번, 3번 |
 | `GET /api/builds/history` | 1번 | - |
 | `POST /api/builds/{id}/change-part` | 1번 | 2번 |
