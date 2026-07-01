@@ -85,10 +85,21 @@ public class PartQueryService {
                           ORDER BY snapshot.collected_at DESC, snapshot.id DESC
                           LIMIT 1
                         ) ps ON true
-                        LEFT JOIN part_external_offers peo
-                          ON peo.part_id = p.id
-                         AND peo.source = 'NAVER_SHOPPING_SEARCH'
-                         AND peo.deleted_at IS NULL
+                        LEFT JOIN LATERAL (
+                          SELECT offer.*
+                          FROM part_external_offers offer
+                          WHERE offer.part_id = p.id
+                            AND offer.deleted_at IS NULL
+                          ORDER BY
+                            CASE offer.source
+                              WHEN 'NAVER_SHOPPING_SEARCH' THEN 1
+                              WHEN 'ADMIN_MANUAL' THEN 2
+                              ELSE 9
+                            END,
+                            offer.refreshed_at DESC,
+                            offer.id DESC
+                          LIMIT 1
+                        ) peo ON true
                         WHERE p.public_id = ?::uuid
                           AND p.deleted_at IS NULL
                         """, id)
@@ -207,10 +218,21 @@ public class PartQueryService {
                           ORDER BY snapshot.collected_at DESC, snapshot.id DESC
                           LIMIT 1
                         ) ps ON true
-                        LEFT JOIN part_external_offers peo
-                          ON peo.part_id = p.id
-                         AND peo.source = 'NAVER_SHOPPING_SEARCH'
-                         AND peo.deleted_at IS NULL
+                        LEFT JOIN LATERAL (
+                          SELECT offer.*
+                          FROM part_external_offers offer
+                          WHERE offer.part_id = p.id
+                            AND offer.deleted_at IS NULL
+                          ORDER BY
+                            CASE offer.source
+                              WHEN 'NAVER_SHOPPING_SEARCH' THEN 1
+                              WHEN 'ADMIN_MANUAL' THEN 2
+                              ELSE 9
+                            END,
+                            offer.refreshed_at DESC,
+                            offer.id DESC
+                          LIMIT 1
+                        ) peo ON true
                         """ + where.sql() + " ORDER BY " + orderBy(search.sort()) + " LIMIT ? OFFSET ?",
                         params.toArray())
                 .stream()

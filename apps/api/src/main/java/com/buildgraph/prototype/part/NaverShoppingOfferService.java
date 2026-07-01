@@ -1,7 +1,10 @@
 package com.buildgraph.prototype.part;
 
 import com.buildgraph.prototype.common.MockData;
+import com.buildgraph.prototype.user.CurrentUserService;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -170,13 +173,19 @@ public class NaverShoppingOfferService {
     }
 
     public Map<String, Object> approveCatalogCandidateAsInactive(String candidateId) {
+        return approveCatalogCandidateAsInactive(candidateId, null);
+    }
+
+    public Map<String, Object> approveCatalogCandidateAsInactive(String candidateId, CurrentUserService.CurrentUser admin) {
         Map<String, Object> candidate = catalogCandidate(candidateId);
         Long publishedPartId = longValue(candidate.get("published_part_id"));
         if (publishedPartId != null) {
+            syncLinkedInactivePartFromCandidate(candidate, publishedPartId, admin);
             return MockData.map(
                     "candidateId", candidate.get("public_id"),
                     "publishedPartId", candidate.get("published_part_public_id"),
                     "created", false,
+                    "partStatus", candidate.get("published_part_status"),
                     "status", "PUBLISHED",
                     "message", "이미 parts에 연결된 후보입니다."
             );
@@ -194,6 +203,9 @@ public class NaverShoppingOfferService {
         long partId = existingPartId == null
                 ? insertPartWithStatus(category, title, stringValue(candidate.get("manufacturer_guess")), lowPrice, query, offer, "INACTIVE")
                 : existingPartId;
+        if (existingPartId != null) {
+            syncLinkedInactivePartFromCandidate(candidate, partId, admin);
+        }
         jdbcTemplate.update("""
                 UPDATE part_catalog_candidates
                 SET candidate_status = 'PUBLISHED',
@@ -207,6 +219,10 @@ public class NaverShoppingOfferService {
                 String.class,
                 partId
         );
+        audit(admin, "PART_CATALOG_CANDIDATE_APPROVED", "part_catalog_candidates", candidateId, MockData.map(
+                "publishedPartId", publicPartId,
+                "partStatus", existingPartId == null ? "INACTIVE" : candidate.get("published_part_status")
+        ));
         return MockData.map(
                 "candidateId", candidate.get("public_id"),
                 "publishedPartId", publicPartId,
@@ -216,7 +232,124 @@ public class NaverShoppingOfferService {
         );
     }
 
+    public Map<String, Object> getCatalogCandidate(String candidateId, Boolean includeDeleted) {
+        return catalogCandidateMap(catalogCandidate(candidateId, Boolean.TRUE.equals(includeDeleted)));
+    }
+
+    public Map<String, Object> updateCatalogCandidate(String candidateId, Map<String, Object> request, CurrentUserService.CurrentUser admin) {
+        Map<String, Object> existing = catalogCandidate(candidateId);
+        String category = request.containsKey("category")
+                ? requireCategory(stringValue(request.get("category")))
+                : stringValue(existing.get("category"));
+        String searchQuery = request.containsKey("searchQuery")
+                ? requireText(stringValue(request.get("searchQuery")), "searchQuery")
+                : stringValue(existing.get("search_query"));
+        String title = request.containsKey("title")
+                ? requireText(stringValue(request.get("title")), "title")
+                : stringValue(existing.get("title"));
+        String sourceProductKey = stableCandidateSourceProductKey(
+                stringValue(existing.get("source_product_key")),
+                stringValue(existing.get("source")),
+                category,
+                title,
+                request.containsKey("offerUrl") ? stringValue(request.get("offerUrl")) : stringValue(existing.get("offer_url")),
+                searchQuery
+        );
+        Integer lowPrice = request.containsKey("lowPrice")
+                ? integerValue(request.get("lowPrice"))
+                : integerValue(existing.get("low_price"));
+        if (lowPrice != null && lowPrice < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "lowPrice는 0 이상이어야 합니다.");
+        }
+        String manufacturerGuess = request.containsKey("manufacturerGuess")
+                ? stringValue(request.get("manufacturerGuess"))
+                : stringValue(existing.get("manufacturer_guess"));
+        String imageUrl = request.containsKey("imageUrl")
+                ? stringValue(request.get("imageUrl"))
+                : stringValue(existing.get("image_url"));
+        String supplierName = request.containsKey("supplierName")
+                ? stringValue(request.get("supplierName"))
+                : stringValue(existing.get("supplier_name"));
+        String offerUrl = request.containsKey("offerUrl")
+                ? stringValue(request.get("offerUrl"))
+                : stringValue(existing.get("offer_url"));
+
+        jdbcTemplate.update("""
+                UPDATE part_catalog_candidates
+                SET category = ?,
+                    source_product_key = ?,
+                    search_query = ?,
+                    title = ?,
+                    manufacturer_guess = ?,
+                    image_url = ?,
+                    supplier_name = ?,
+                    offer_url = ?,
+                    low_price = ?,
+                    raw_payload = coalesce(raw_payload, '{}'::jsonb) || ?::jsonb,
+                    updated_at = now()
+                WHERE public_id = ?::uuid
+                  AND deleted_at IS NULL
+                """,
+                category,
+                limited(sourceProductKey, 500),
+                limited(searchQuery, 255),
+                limited(title, 500),
+                limited(manufacturerGuess, 100),
+                imageUrl,
+                limited(supplierName, 255),
+                offerUrl,
+                lowPrice,
+                json(MockData.map(
+                        "adminEdit", MockData.map(
+                                "updatedBy", admin == null ? null : admin.email(),
+                                "updatedAt", MockData.now()
+                        )
+                )),
+                candidateId
+        );
+        audit(admin, "PART_CATALOG_CANDIDATE_UPDATED", "part_catalog_candidates", candidateId, MockData.map(
+                "category", category,
+                "title", title,
+                "lowPrice", lowPrice
+        ));
+        Map<String, Object> updatedCandidate = catalogCandidate(candidateId);
+        Long linkedPartId = longValue(updatedCandidate.get("published_part_id"));
+        if (linkedPartId != null) {
+            syncLinkedInactivePartFromCandidate(updatedCandidate, linkedPartId, admin);
+        }
+        return getCatalogCandidate(candidateId, false);
+    }
+
+    public Map<String, Object> softDeleteCatalogCandidate(String candidateId, CurrentUserService.CurrentUser admin) {
+        catalogCandidate(candidateId);
+        jdbcTemplate.update("""
+                UPDATE part_catalog_candidates
+                SET deleted_at = now(),
+                    updated_at = now()
+                WHERE public_id = ?::uuid
+                  AND deleted_at IS NULL
+                """, candidateId);
+        audit(admin, "PART_CATALOG_CANDIDATE_SOFT_DELETED", "part_catalog_candidates", candidateId, Map.of());
+        return MockData.map("id", candidateId, "deleted", true);
+    }
+
+    public Map<String, Object> restoreCatalogCandidate(String candidateId, CurrentUserService.CurrentUser admin) {
+        catalogCandidate(candidateId, true);
+        jdbcTemplate.update("""
+                UPDATE part_catalog_candidates
+                SET deleted_at = NULL,
+                    updated_at = now()
+                WHERE public_id = ?::uuid
+                """, candidateId);
+        audit(admin, "PART_CATALOG_CANDIDATE_RESTORED", "part_catalog_candidates", candidateId, Map.of());
+        return getCatalogCandidate(candidateId, false);
+    }
+
     public Map<String, Object> rejectCatalogCandidate(String candidateId, Map<String, Object> request) {
+        return rejectCatalogCandidate(candidateId, request, null);
+    }
+
+    public Map<String, Object> rejectCatalogCandidate(String candidateId, Map<String, Object> request, CurrentUserService.CurrentUser admin) {
         String reason = request == null ? null : stringValue(request.get("reason"));
         Map<String, Object> candidate = catalogCandidate(candidateId);
         jdbcTemplate.update("""
@@ -236,6 +369,7 @@ public class NaverShoppingOfferService {
                 )),
                 candidateId
         );
+        audit(admin, "PART_CATALOG_CANDIDATE_REJECTED", "part_catalog_candidates", candidateId, MockData.map("reason", reason));
         return MockData.map(
                 "candidateId", candidate.get("public_id"),
                 "status", "REJECTED",
@@ -262,6 +396,14 @@ public class NaverShoppingOfferService {
                 continue;
             }
             Map<String, Object> enrichedOffer = withReleaseContext(offer, releaseContextFromCandidate(candidate));
+            String sourceProductKey = stableCandidateSourceProductKey(
+                    stringValue(enrichedOffer.get("sourceProductKey")),
+                    stringValue(candidate.get("source")),
+                    category,
+                    stringValue(enrichedOffer.get("title")),
+                    stringValue(enrichedOffer.get("offerUrl")),
+                    searchQuery
+            );
             jdbcTemplate.update("""
                     UPDATE part_catalog_candidates
                     SET source_product_key = ?,
@@ -277,7 +419,7 @@ public class NaverShoppingOfferService {
                     WHERE public_id = ?::uuid
                       AND deleted_at IS NULL
                     """,
-                    limited(stringValue(enrichedOffer.get("sourceProductKey")), 500),
+                    sourceProductKey,
                     limited(stringValue(enrichedOffer.get("title")), 500),
                     limited(stringValue(enrichedOffer.get("manufacturerGuess")), 100),
                     enrichedOffer.get("imageUrl"),
@@ -548,7 +690,14 @@ public class NaverShoppingOfferService {
 
     private CatalogCandidate upsertCandidate(long jobId, String source, String category, String query, Map<String, Object> offer) {
         String title = limited(stringValue(offer.get("title")), 500);
-        String sourceProductKey = limited(stringValue(offer.get("sourceProductKey")), 500);
+        String sourceProductKey = stableCandidateSourceProductKey(
+                stringValue(offer.get("sourceProductKey")),
+                source,
+                category,
+                title,
+                stringValue(offer.get("offerUrl")),
+                query
+        );
         Map<String, Object> row = jdbcTemplate.queryForMap("""
                 INSERT INTO part_catalog_candidates (
                   refresh_job_id,
@@ -602,7 +751,12 @@ public class NaverShoppingOfferService {
     }
 
     private Map<String, Object> catalogCandidate(String candidateId) {
+        return catalogCandidate(candidateId, false);
+    }
+
+    private Map<String, Object> catalogCandidate(String candidateId, boolean includeDeleted) {
         requireUuid(candidateId, "candidateId");
+        String deletedClause = includeDeleted ? "" : " AND c.deleted_at IS NULL\n";
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT c.id,
                        c.public_id::text AS public_id,
@@ -620,17 +774,47 @@ public class NaverShoppingOfferService {
                        c.offer_url,
                        c.low_price,
                        c.candidate_status,
-                       c.raw_payload
+                       c.raw_payload,
+                       c.discovered_at,
+                       c.last_seen_at,
+                       c.created_at,
+                       c.updated_at,
+                       c.deleted_at
                 FROM part_catalog_candidates c
                 LEFT JOIN parts p ON p.id = c.published_part_id
                 WHERE c.public_id = ?::uuid
-                  AND c.deleted_at IS NULL
+                """ + deletedClause + """
                 LIMIT 1
                 """, candidateId);
         if (rows.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "카탈로그 후보를 찾을 수 없습니다.");
         }
         return rows.get(0);
+    }
+
+    private Map<String, Object> catalogCandidateMap(Map<String, Object> row) {
+        return MockData.map(
+                "id", row.get("public_id"),
+                "source", row.get("source"),
+                "category", row.get("category"),
+                "sourceProductKey", row.get("source_product_key"),
+                "searchQuery", row.get("search_query"),
+                "title", row.get("title"),
+                "manufacturerGuess", row.get("manufacturer_guess"),
+                "imageUrl", row.get("image_url"),
+                "supplierName", row.get("supplier_name"),
+                "offerUrl", row.get("offer_url"),
+                "lowPrice", row.get("low_price"),
+                "candidateStatus", row.get("candidate_status"),
+                "publishedPartId", row.get("published_part_public_id"),
+                "publishedPartStatus", row.get("published_part_status"),
+                "rawPayload", row.get("raw_payload"),
+                "discoveredAt", row.get("discovered_at"),
+                "lastSeenAt", row.get("last_seen_at"),
+                "createdAt", row.get("created_at"),
+                "updatedAt", row.get("updated_at"),
+                "deletedAt", row.get("deleted_at")
+        );
     }
 
     private boolean publishCandidate(CatalogCandidate candidate, String category, String query, Map<String, Object> offer) {
@@ -699,6 +883,53 @@ public class NaverShoppingOfferService {
                 json(attributes)
         );
         return ((Number) row.get("id")).longValue();
+    }
+
+    private void syncLinkedInactivePartFromCandidate(Map<String, Object> candidate, long partId, CurrentUserService.CurrentUser admin) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT public_id::text AS public_id, status
+                FROM parts
+                WHERE id = ?
+                  AND deleted_at IS NULL
+                LIMIT 1
+                """, partId);
+        if (rows.isEmpty() || !"INACTIVE".equals(stringValue(rows.get(0).get("status")))) {
+            return;
+        }
+
+        String category = requireCategory(stringValue(candidate.get("category")));
+        String title = requireText(stringValue(candidate.get("title")), "title");
+        String query = stringValue(candidate.get("search_query"));
+        String manufacturer = stringValue(candidate.get("manufacturer_guess"));
+        Integer lowPrice = integerValue(candidate.get("low_price"));
+        Map<String, Object> offer = offerFromCandidate(candidate);
+        Map<String, Object> attributes = attributesFor(category, title, query, offer);
+        attributes.put("catalogApprovalStatus", "ADMIN_SPEC_REVIEW_REQUIRED");
+        jdbcTemplate.update("""
+                UPDATE parts
+                SET category = ?,
+                    name = ?,
+                    manufacturer = ?,
+                    price = coalesce(?, price),
+                    attributes = ?::jsonb,
+                    updated_at = now()
+                WHERE id = ?
+                  AND status = 'INACTIVE'
+                  AND deleted_at IS NULL
+                """,
+                category,
+                limited(title, 255),
+                blankToNull(limited(manufacturer, 100)),
+                lowPrice,
+                json(attributes),
+                partId
+        );
+        audit(admin, "PART_CATALOG_CANDIDATE_PART_SYNCED", "parts", stringValue(rows.get(0).get("public_id")), MockData.map(
+                "candidateId", candidate.get("public_id"),
+                "category", category,
+                "title", title,
+                "toolReady", attributes.get("toolReady")
+        ));
     }
 
     private void upsertOffer(long partId, String query, Map<String, Object> offer) {
@@ -898,6 +1129,7 @@ public class NaverShoppingOfferService {
             }
         }
         applyManualSpecOverrides(category, attributes, upperTitle);
+        applyAiSpecAttributes(attributes, offer);
         attributes.put("toolReady", toolReadyFor(category, attributes));
         return attributes;
     }
@@ -1293,6 +1525,74 @@ public class NaverShoppingOfferService {
         attributes.put("specReferenceUrl", referenceUrl);
     }
 
+    private static void applyAiSpecAttributes(Map<String, Object> attributes, Map<String, Object> offer) {
+        Map<String, Object> rawPayload = jsonMap(offer.get("rawPayload"));
+        Map<String, Object> release = mapValue(rawPayload.get("manufacturerRelease"));
+        Map<String, Object> aiSpecs = mapValue(release.get("aiSpecAttributes"));
+        if (aiSpecs.isEmpty()) {
+            return;
+        }
+        Set<String> allowedKeys = Set.of(
+                "socket", "architecture", "coreCount", "threadCount", "tdpW",
+                "gpuClass", "series", "vramGb", "memoryType", "lengthMm", "widthMm", "heightMm", "depthMm", "slotWidth",
+                "wattage", "requiredSystemPowerW", "powerConnector",
+                "chipset", "formFactor", "capacityGb", "moduleCount", "speedMhz",
+                "interface", "generation", "readMbps", "writeMbps",
+                "capacityW", "efficiency", "atxSpec", "pcieSpec", "gpuConnector", "modular",
+                "maxGpuLengthMm", "maxCpuCoolerHeightMm", "maxPsuLengthMm", "radiatorSupportMm",
+                "coolerType", "socketSupport", "radiatorLengthMm", "radiatorWidthMm", "radiatorThicknessMm", "coolerHeightMm",
+                "specReferenceUrl"
+        );
+        int applied = 0;
+        for (Map.Entry<String, Object> entry : aiSpecs.entrySet()) {
+            if (!allowedKeys.contains(entry.getKey())) {
+                continue;
+            }
+            Object value = normalizedSpecValue(entry.getValue());
+            if (value == null) {
+                continue;
+            }
+            attributes.put(entry.getKey(), value);
+            applied += 1;
+        }
+        if (applied == 0) {
+            return;
+        }
+        attributes.put("specSource", "AI_OFFICIAL_RELEASE_EXTRACTION");
+        attributes.put("specConfidence", "AI_EXTRACTED_FROM_OFFICIAL_POST");
+        String officialUrl = stringValue(release.get("officialUrl"));
+        if (StringUtils.hasText(officialUrl)) {
+            attributes.put("specReferenceUrl", officialUrl);
+        }
+        attributes.put("aiSpecExtraction", MockData.map(
+                "officialUrl", officialUrl,
+                "officialTitle", release.get("officialTitle"),
+                "reason", release.get("aiSpecReason"),
+                "missingSpecFields", release.get("missingSpecFields")
+        ));
+        attributes.put("metadataVersion", 6);
+    }
+
+    private static Object normalizedSpecValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String text) {
+            return StringUtils.hasText(text) ? text.trim() : null;
+        }
+        if (value instanceof Number || value instanceof Boolean) {
+            return value;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> filtered = list.stream()
+                    .map(NaverShoppingOfferService::normalizedSpecValue)
+                    .filter(item -> item != null)
+                    .toList();
+            return filtered.isEmpty() ? null : filtered;
+        }
+        return null;
+    }
+
     private static void applyCpuCoreAndPower(Map<String, Object> attributes, String upperTitle) {
         if (upperTitle.contains("9950")) {
             attributes.put("coreCount", 16);
@@ -1583,6 +1883,33 @@ public class NaverShoppingOfferService {
         return limited(cleanText(stringValue(item.get("title"))) + "::" + stringValue(item.get("mallName")), 500);
     }
 
+    private static String stableCandidateSourceProductKey(
+            String existingKey,
+            String source,
+            String category,
+            String title,
+            String offerUrl,
+            String searchQuery
+    ) {
+        if (StringUtils.hasText(existingKey)) {
+            return limited(existingKey.trim(), 500);
+        }
+        String raw = String.join("::",
+                fallbackToken(source, "UNKNOWN_SOURCE"),
+                fallbackToken(category, "UNKNOWN_CATEGORY"),
+                fallbackToken(title, "UNTITLED"),
+                fallbackToken(offerUrl, ""),
+                fallbackToken(searchQuery, "")
+        );
+        String uuid = UUID.nameUUIDFromBytes(raw.getBytes(StandardCharsets.UTF_8)).toString();
+        return limited("SERVER:" + uuid, 500);
+    }
+
+    private static String fallbackToken(String value, String fallback) {
+        String cleaned = cleanText(value);
+        return StringUtils.hasText(cleaned) ? cleaned : fallback;
+    }
+
     private static String joinQueries(List<String> queries) {
         String joined = String.join(" | ", queries);
         return joined.length() <= 255 ? joined : joined.substring(0, 255);
@@ -1605,10 +1932,74 @@ public class NaverShoppingOfferService {
 
     private static String json(Object value) {
         try {
+            if (value != null && value.getClass().getName().equals("org.postgresql.util.PGobject")) {
+                String text = String.valueOf(value);
+                if (StringUtils.hasText(text)) {
+                    OBJECT_MAPPER.readTree(text);
+                    return text;
+                }
+            }
+            if (value instanceof String text) {
+                if (!StringUtils.hasText(text)) {
+                    return "{}";
+                }
+                try {
+                    OBJECT_MAPPER.readTree(text);
+                    return text;
+                } catch (Exception ignored) {
+                    return OBJECT_MAPPER.writeValueAsString(text);
+                }
+            }
             return OBJECT_MAPPER.writeValueAsString(value == null ? Map.of() : value);
         } catch (Exception ignored) {
             return "{}";
         }
+    }
+
+    private static Map<String, Object> jsonMap(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            map.forEach((key, mapValue) -> result.put(String.valueOf(key), mapValue));
+            return result;
+        }
+        if (value == null) {
+            return Map.of();
+        }
+        try {
+            String text = String.valueOf(value);
+            if (!StringUtils.hasText(text)) {
+                return Map.of();
+            }
+            return OBJECT_MAPPER.readValue(text, new TypeReference<>() {
+            });
+        } catch (Exception ignored) {
+            return Map.of();
+        }
+    }
+
+    private static Map<String, Object> mapValue(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            map.forEach((key, mapValue) -> result.put(String.valueOf(key), mapValue));
+            return result;
+        }
+        return Map.of();
+    }
+
+    private void audit(CurrentUserService.CurrentUser admin, String action, String targetType, String targetId, Object metadata) {
+        if (admin == null || admin.internalId() == null) {
+            return;
+        }
+        jdbcTemplate.update("""
+                INSERT INTO admin_audit_logs (actor_user_id, action, target_type, target_id, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?::jsonb, now())
+                """,
+                admin.internalId(),
+                action,
+                targetType,
+                targetId,
+                json(metadata == null ? Map.of() : metadata)
+        );
     }
 
     private static String cleanText(String value) {

@@ -80,12 +80,302 @@ export type RagEvidenceDetail = {
   metadata?: Record<string, unknown>;
 };
 
+export type ManufacturerSource = {
+  id: string;
+  manufacturer: string;
+  categoryScope: string;
+  sourceType: string;
+  sourceUrl: string;
+  enabled: boolean;
+  pollIntervalMinutes: number;
+  lastCheckedAt?: string | null;
+  parserConfig?: Record<string, unknown> | string | null;
+  status: string;
+  errorSummary?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  deletedAt?: string | null;
+};
+
+export type ManufacturerSourcesResponse = {
+  items: ManufacturerSource[];
+};
+
+export type ManufacturerPost = {
+  id: string;
+  sourceId?: string;
+  manufacturer: string;
+  sourceUrl?: string;
+  externalUrl: string;
+  title: string;
+  publishedAt?: string | null;
+  excerpt?: string | null;
+  classificationStatus: string;
+  detectedCategory?: string | null;
+  detectedProductName?: string | null;
+  confidence?: number | string | null;
+  catalogCandidateId?: string | null;
+  updatedAt?: string | null;
+  createdAt?: string;
+  deletedAt?: string | null;
+};
+
+export type ManufacturerPostsResponse = {
+  items: ManufacturerPost[];
+  page: number;
+  size: number;
+  total: number;
+};
+
+export type PartCatalogCandidate = {
+  id: string;
+  source: string;
+  category: string;
+  sourceProductKey?: string;
+  searchQuery: string;
+  title: string;
+  manufacturerGuess?: string | null;
+  imageUrl?: string | null;
+  supplierName?: string | null;
+  offerUrl?: string | null;
+  lowPrice?: number | null;
+  candidateStatus: string;
+  publishedPartId?: string | null;
+  publishedPartStatus?: string | null;
+  rawPayload?: Record<string, unknown> | string | null;
+  discoveredAt?: string;
+  lastSeenAt?: string;
+  updatedAt?: string | null;
+  deletedAt?: string | null;
+};
+
+export type PartCatalogCandidatesResponse = {
+  items: PartCatalogCandidate[];
+  page: number;
+  size: number;
+  total: number;
+};
+
+export type ManufacturerSourceScanResponse = {
+  sourceId: string;
+  manufacturer?: string;
+  failed?: boolean;
+  errorSummary?: string | null;
+  unchanged?: boolean;
+  parsedPosts?: number;
+  newPosts?: number;
+  updatedPosts?: number;
+  ignoredPosts?: number;
+  productPosts?: number;
+  createdCandidates?: number;
+  posts?: Array<Record<string, unknown>>;
+};
+
+export type ManufacturerSourcesScanResponse = {
+  scannedSources: number;
+  newPosts: number;
+  createdCandidates: number;
+  failedSources?: number;
+  results: ManufacturerSourceScanResponse[];
+};
+
+export type CandidateDecisionResponse = {
+  candidateId: string;
+  publishedPartId?: string;
+  created?: boolean;
+  partStatus?: string;
+  status: string;
+  message?: string;
+};
+
+export type CandidateOfferRefreshResponse = {
+  configured: boolean;
+  candidateId: string;
+  updated: boolean;
+  attempted: number;
+  title?: string;
+  lowPrice?: number | null;
+  message?: string;
+};
+
+export type ManufacturerPostAiAssetDraftResponse = {
+  postId: string;
+  aiUsed?: boolean;
+  classificationStatus: string;
+  detectedCategory?: string | null;
+  detectedProductName?: string | null;
+  confidence?: number | string | null;
+  candidateId?: string | null;
+  candidateStatus?: string | null;
+  partId?: string | null;
+  partStatus?: string | null;
+  messages?: string[];
+};
+
+export type ManufacturerSourcePayload = {
+  manufacturer: string;
+  categoryScope: string;
+  sourceType: string;
+  sourceUrl: string;
+  enabled: boolean;
+  pollIntervalMinutes: number;
+  status: string;
+  parserConfig?: Record<string, unknown>;
+};
+
+export type ManufacturerPostPayload = {
+  sourceId: string;
+  externalUrl: string;
+  title: string;
+  publishedAt?: string | null;
+  excerpt?: string | null;
+  classificationStatus: string;
+  detectedCategory?: string | null;
+  detectedProductName?: string | null;
+  confidence?: number | null;
+};
+
+export type CandidatePayload = {
+  category?: string;
+  searchQuery?: string;
+  title?: string;
+  manufacturerGuess?: string | null;
+  imageUrl?: string | null;
+  supplierName?: string | null;
+  offerUrl?: string | null;
+  lowPrice?: number | null;
+};
+
+export type AdminPartExternalOffer = {
+  title?: string | null;
+  imageUrl?: string | null;
+  supplierName?: string | null;
+  offerUrl?: string | null;
+  lowPrice?: number | null;
+  source?: string | null;
+  refreshedAt?: string | null;
+};
+
+export type AdminPart = {
+  id: string;
+  category: string;
+  name: string;
+  manufacturer?: string | null;
+  price: number;
+  status: string;
+  attributes: Record<string, unknown>;
+  toolReady?: boolean;
+  missingRequiredFields?: string[];
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  deletedAt?: string | null;
+  externalOffer?: AdminPartExternalOffer | null;
+};
+
+export type AdminPartsResponse = {
+  items: AdminPart[];
+  page: number;
+  size: number;
+  total: number;
+};
+
+export type AdminPartsParams = {
+  category?: string;
+  q?: string;
+  manufacturer?: string;
+  status?: string;
+  minPrice?: number;
+  maxPrice?: number;
+  includeDeleted?: boolean;
+  page?: number;
+  size?: number;
+  sort?: string;
+};
+
+export type AdminPartPayload = {
+  category?: string;
+  name?: string;
+  manufacturer?: string | null;
+  price?: number;
+  status?: string;
+  attributes?: Record<string, unknown>;
+};
+
+export type AdminManualPricePayload = {
+  price: number;
+  reason?: string;
+};
+
+export type AdminExternalOfferPayload = {
+  searchQuery?: string | null;
+  title?: string | null;
+  imageUrl?: string | null;
+  supplierName?: string | null;
+  offerUrl?: string | null;
+  lowPrice?: number | null;
+};
+
 export function getAdminDashboard() {
   return api<AdminDashboard>('/api/admin/dashboard');
 }
 
 export function getRecentAdminAuditLogs() {
   return api<AdminAuditLogsResponse>('/api/admin/audit-logs/recent');
+}
+
+export function listAdminParts(params: AdminPartsParams = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      query.set(key, String(value));
+    }
+  });
+  const suffix = query.toString() ? `?${query}` : '';
+  return api<AdminPartsResponse>(`/api/admin/parts${suffix}`);
+}
+
+export function createAdminPart(payload: AdminPartPayload) {
+  return api<AdminPart>('/api/admin/parts', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getAdminPart(partId: string) {
+  return api<AdminPart>(`/api/admin/parts/${partId}`);
+}
+
+export function updateAdminPart(partId: string, payload: AdminPartPayload) {
+  return api<AdminPart>(`/api/admin/parts/${partId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteAdminPart(partId: string) {
+  return api<{ id: string; deleted: boolean }>(`/api/admin/parts/${partId}`, {
+    method: 'DELETE'
+  });
+}
+
+export function restoreAdminPart(partId: string) {
+  return api<AdminPart>(`/api/admin/parts/${partId}/restore`, {
+    method: 'POST'
+  });
+}
+
+export function updateAdminPartManualPrice(partId: string, payload: AdminManualPricePayload) {
+  return api<AdminPart>(`/api/admin/parts/${partId}/manual-price`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateAdminPartExternalOffer(partId: string, payload: AdminExternalOfferPayload) {
+  return api<AdminPart>(`/api/admin/parts/${partId}/external-offer`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  });
 }
 
 export function getAgentSession(sessionId: string) {
@@ -106,4 +396,131 @@ export function getAdminTicket(ticketId: string) {
 
 export function runPriceJob() {
   return api('/api/admin/price-jobs/run', { method: 'POST' });
+}
+
+export function listManufacturerSources(includeDeleted = false) {
+  const suffix = includeDeleted ? '?includeDeleted=true' : '';
+  return api<ManufacturerSourcesResponse>(`/api/admin/manufacturer-sources${suffix}`);
+}
+
+export function createManufacturerSource(payload: ManufacturerSourcePayload) {
+  return api<ManufacturerSource>('/api/admin/manufacturer-sources', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateManufacturerSource(sourceId: string, payload: ManufacturerSourcePayload) {
+  return api<ManufacturerSource>(`/api/admin/manufacturer-sources/${sourceId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteManufacturerSource(sourceId: string) {
+  return api<{ id: string; deleted: boolean }>(`/api/admin/manufacturer-sources/${sourceId}`, {
+    method: 'DELETE'
+  });
+}
+
+export function restoreManufacturerSource(sourceId: string) {
+  return api<ManufacturerSource>(`/api/admin/manufacturer-sources/${sourceId}/restore`, {
+    method: 'POST'
+  });
+}
+
+export function scanManufacturerSource(sourceId: string) {
+  return api<ManufacturerSourceScanResponse>(`/api/admin/manufacturer-sources/${sourceId}/scan?limit=20&createCandidates=true`, {
+    method: 'POST'
+  });
+}
+
+export function scanAllManufacturerSources() {
+  return api<ManufacturerSourcesScanResponse>('/api/admin/manufacturer-sources/scan?limitPerSource=20&createCandidates=true', {
+    method: 'POST'
+  });
+}
+
+export function listManufacturerPosts() {
+  return api<ManufacturerPostsResponse>('/api/admin/manufacturer-posts?page=0&size=10&includeDeleted=true');
+}
+
+export function createManufacturerPost(payload: ManufacturerPostPayload) {
+  return api<ManufacturerPost>('/api/admin/manufacturer-posts', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateManufacturerPost(postId: string, payload: ManufacturerPostPayload) {
+  return api<ManufacturerPost>(`/api/admin/manufacturer-posts/${postId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteManufacturerPost(postId: string) {
+  return api<{ id: string; deleted: boolean }>(`/api/admin/manufacturer-posts/${postId}`, {
+    method: 'DELETE'
+  });
+}
+
+export function restoreManufacturerPost(postId: string) {
+  return api<ManufacturerPost>(`/api/admin/manufacturer-posts/${postId}/restore`, {
+    method: 'POST'
+  });
+}
+
+export function createCandidateFromManufacturerPost(postId: string) {
+  return api<{ configured?: boolean; created?: boolean; candidateId?: string; title?: string; lowPrice?: number | null; message?: string }>(`/api/admin/manufacturer-posts/${postId}/create-candidate`, {
+    method: 'POST'
+  });
+}
+
+export function createAiAssetDraftFromManufacturerPost(postId: string) {
+  return api<ManufacturerPostAiAssetDraftResponse>(`/api/admin/manufacturer-posts/${postId}/ai-asset-draft`, {
+    method: 'POST'
+  });
+}
+
+export function listManufacturerReleaseCandidates() {
+  return api<PartCatalogCandidatesResponse>('/api/admin/part-catalog-candidates?source=MANUFACTURER_RELEASE_NAVER_SEARCH&page=0&size=10&includeDeleted=true');
+}
+
+export function updatePartCatalogCandidate(candidateId: string, payload: CandidatePayload) {
+  return api<PartCatalogCandidate>(`/api/admin/part-catalog-candidates/${candidateId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deletePartCatalogCandidate(candidateId: string) {
+  return api<{ id: string; deleted: boolean }>(`/api/admin/part-catalog-candidates/${candidateId}`, {
+    method: 'DELETE'
+  });
+}
+
+export function restorePartCatalogCandidate(candidateId: string) {
+  return api<PartCatalogCandidate>(`/api/admin/part-catalog-candidates/${candidateId}/restore`, {
+    method: 'POST'
+  });
+}
+
+export function approvePartCatalogCandidate(candidateId: string) {
+  return api<CandidateDecisionResponse>(`/api/admin/part-catalog-candidates/${candidateId}/approve`, {
+    method: 'POST'
+  });
+}
+
+export function rejectPartCatalogCandidate(candidateId: string) {
+  return api<CandidateDecisionResponse>(`/api/admin/part-catalog-candidates/${candidateId}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ reason: '관리자 데모 후보 검토에서 제외' })
+  });
+}
+
+export function refreshPartCatalogCandidateOffers(candidateId: string) {
+  return api<CandidateOfferRefreshResponse>(`/api/admin/part-catalog-candidates/${candidateId}/refresh-offers`, {
+    method: 'POST'
+  });
 }

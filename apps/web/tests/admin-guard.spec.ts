@@ -174,6 +174,260 @@ test('renders admin page when auth/me returns ADMIN role', async ({ page }) => {
   expect(authMeCalls).toBeGreaterThan(0);
 });
 
+test('renders manufacturer release demo intake on admin parts page', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'jwt-admin-token');
+  });
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'admin-001', email: 'admin@example.com', role: 'ADMIN' })
+    });
+  });
+  await page.route('**/api/admin/parts?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: '00000000-0000-4000-8000-000000009701',
+            category: 'GPU',
+            name: 'ASUS ROG Astral GeForce RTX 5090 OC 32GB',
+            manufacturer: 'ASUS',
+            price: 4980000,
+            status: 'INACTIVE',
+            attributes: { gpuClass: 'RTX_5090', toolReady: false },
+            toolReady: false,
+            missingRequiredFields: ['vramGb', 'lengthMm'],
+            updatedAt: '2026-07-01T09:00:00+09:00',
+            externalOffer: null
+          }
+        ],
+        page: 0,
+        size: 100,
+        total: 1
+      })
+    });
+  });
+  await page.route('**/api/admin/manufacturer-sources?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: '00000000-0000-4000-8000-000000009501',
+            manufacturer: 'BuildGraph Demo',
+            categoryScope: 'GPU',
+            sourceType: 'RSS',
+            sourceUrl: 'http://localhost:8080/api/demo/manufacturer-release-feed.xml',
+            enabled: false,
+            pollIntervalMinutes: 1440,
+            lastCheckedAt: null,
+            status: 'ACTIVE'
+          }
+        ]
+      })
+    });
+  });
+  await page.route('**/api/admin/manufacturer-posts?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: '00000000-0000-4000-8000-000000009511',
+            manufacturer: 'BuildGraph Demo',
+            externalUrl: 'http://localhost:8080/api/demo/manufacturer-release-post/rtx-5090-oc-32gb',
+            title: 'ASUS launches ROG Astral GeForce RTX 5090 OC 32GB graphics card',
+            classificationStatus: 'PRODUCT_CANDIDATE',
+            detectedCategory: 'GPU',
+            detectedProductName: 'ROG Astral GeForce RTX 5090 OC 32GB',
+            confidence: 0.95,
+            catalogCandidateId: '00000000-0000-4000-8000-000000009601',
+            createdAt: '2026-07-01T09:00:00+09:00'
+          }
+        ],
+        page: 0,
+        size: 10,
+        total: 1
+      })
+    });
+  });
+  await page.route('**/api/admin/part-catalog-candidates?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: '00000000-0000-4000-8000-000000009602',
+            source: 'MANUFACTURER_RELEASE_NAVER_SEARCH',
+            category: 'CASE',
+            searchQuery: 'LIAN LI LIAN LI O11 VISION-M',
+            title: '리안리 O11 VISION-M 화이트',
+            manufacturerGuess: '리안리',
+            supplierName: '네이버',
+            lowPrice: 129740,
+            candidateStatus: 'PUBLISHED',
+            publishedPartId: '00000000-0000-4000-8000-000000009701',
+            publishedPartStatus: 'INACTIVE'
+          },
+          {
+            id: '00000000-0000-4000-8000-000000009601',
+            source: 'MANUFACTURER_RELEASE_NAVER_SEARCH',
+            category: 'GPU',
+            searchQuery: 'ASUS ROG Astral GeForce RTX 5090 OC 32GB',
+            title: 'ASUS ROG Astral GeForce RTX 5090 OC 32GB',
+            manufacturerGuess: 'ASUS',
+            supplierName: 'Naver Store',
+            lowPrice: 4980000,
+            candidateStatus: 'DISCOVERED',
+            publishedPartId: null,
+            publishedPartStatus: null
+          }
+        ],
+        page: 0,
+        size: 10,
+        total: 1
+      })
+    });
+  });
+  let scanAllCalls = 0;
+  await page.route('**/api/admin/manufacturer-sources/scan?**', async (route) => {
+    scanAllCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        scannedSources: 1,
+        newPosts: 1,
+        createdCandidates: 1,
+        failedSources: 0,
+        results: []
+      })
+    });
+  });
+  let scanCalls = 0;
+  await page.route('**/api/admin/manufacturer-sources/*/scan?**', async (route) => {
+    scanCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sourceId: '00000000-0000-4000-8000-000000009501',
+        failed: false,
+        parsedPosts: 1,
+        newPosts: 1,
+        productPosts: 1,
+        createdCandidates: 1
+      })
+    });
+  });
+  let approveCalls = 0;
+  await page.route('**/api/admin/part-catalog-candidates/*/approve', async (route) => {
+    approveCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        candidateId: '00000000-0000-4000-8000-000000009601',
+        publishedPartId: '00000000-0000-4000-8000-000000009701',
+        created: true,
+        partStatus: 'INACTIVE',
+        status: 'PUBLISHED'
+      })
+    });
+  });
+  let aiAssetDraftCalls = 0;
+  await page.route('**/api/admin/manufacturer-posts/*/ai-asset-draft', async (route) => {
+    aiAssetDraftCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        postId: '00000000-0000-4000-8000-000000009511',
+        aiUsed: true,
+        classificationStatus: 'PRODUCT_CANDIDATE',
+        detectedCategory: 'GPU',
+        detectedProductName: 'ROG Astral GeForce RTX 5090 OC 32GB',
+        confidence: 0.95,
+        candidateId: '00000000-0000-4000-8000-000000009601',
+        candidateStatus: 'PUBLISHED',
+        partId: '00000000-0000-4000-8000-000000009701',
+        partStatus: 'INACTIVE',
+        messages: ['AI가 제조사 게시글을 신제품 후보로 구조화했습니다.', '후보를 INACTIVE 내부 자산 초안으로 연결했습니다.']
+      })
+    });
+  });
+  let refreshOfferCalls = 0;
+  await page.route('**/api/admin/part-catalog-candidates/*/refresh-offers', async (route) => {
+    refreshOfferCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        configured: true,
+        candidateId: '00000000-0000-4000-8000-000000009601',
+        updated: true,
+        attempted: 1,
+        title: 'ASUS ROG Astral GeForce RTX 5090 OC 32GB',
+        lowPrice: 4980000
+      })
+    });
+  });
+
+  await page.goto('/admin/parts');
+
+  await expect(page.locator('body')).toContainText('부품 / 가격 관리자');
+  await expect(page.locator('main')).toContainText('부품 DB 관리');
+  await expect(page.locator('main')).toContainText('ASUS ROG Astral GeForce RTX 5090 OC 32GB');
+  await page.getByRole('button', { name: '부품 DB 관리 접기' }).click();
+  await expect(page.locator('main')).not.toContainText('ASUS ROG Astral GeForce RTX 5090 OC 32GB');
+  await expect(page.locator('main')).not.toContainText('부품 상세 패널');
+  await page.getByRole('button', { name: '부품 DB 관리 펼치기' }).click();
+  await expect(page.locator('main')).toContainText('ASUS ROG Astral GeForce RTX 5090 OC 32GB');
+  await expect(page.locator('main')).toContainText('부품 상세 패널');
+  await expect(page.locator('main')).toContainText('제조사 신제품 감지');
+  await expect(page.locator('main')).not.toContainText('BuildGraph Demo');
+  await page.getByRole('button', { name: '제조사 신제품 감지 운영 펼치기' }).click();
+  await expect(page.locator('main')).toContainText('BuildGraph Demo');
+  await expect(page.locator('main')).toContainText('활성 source 전체 scan');
+  await expect(page.getByRole('link', { name: '열기' })).toHaveAttribute('href', 'http://localhost:8080/api/demo/manufacturer-release-feed.xml');
+  await page.getByRole('button', { name: 'BuildGraph Demo' }).click();
+  await expect(page.locator('main')).toContainText('Source 수정');
+
+  await page.getByRole('button', { name: '전체 scan' }).click();
+  expect(scanAllCalls).toBe(1);
+  await expect(page.locator('main')).toContainText('전체 scan 완료');
+
+  await page.getByRole('button', { name: 'scan', exact: true }).click();
+  expect(scanCalls).toBe(1);
+  await expect(page.locator('main')).toContainText('scan 완료');
+
+  await page.getByRole('button', { name: '감지 게시글' }).click();
+  await expect(page.locator('main')).toContainText('ASUS launches ROG Astral GeForce RTX 5090 OC 32GB graphics card');
+  await page.getByRole('button', { name: 'AI 초안화' }).click();
+  expect(aiAssetDraftCalls).toBe(1);
+  await expect(page.locator('main')).toContainText('AI INACTIVE 초안 생성');
+  await page.getByRole('button', { name: '신제품 후보함' }).click();
+  await expect(page.locator('main')).toContainText('ASUS ROG Astral GeForce RTX 5090 OC 32GB');
+  await expect(page.locator('main')).toContainText('리안리 O11 VISION-M 화이트');
+  await expect(page.locator('main')).toContainText('초안 열기');
+  await expect(page.locator('main')).not.toContainText('source product key');
+
+  await page.locator('button:has-text("offer 재검색"):not([disabled])').first().click();
+  expect(refreshOfferCalls).toBe(1);
+  await expect(page.locator('main')).toContainText('offer 재검색 완료');
+
+  await page.getByRole('button', { name: '승인', exact: true }).click();
+  expect(approveCalls).toBe(1);
+  await expect(page.locator('main')).toContainText('INACTIVE 초안 생성');
+});
+
 test('renders eight admin shell navigation entries for ADMIN role', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('buildgraph.token', 'jwt-admin-token');
