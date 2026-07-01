@@ -25,6 +25,7 @@ class AgentAsJpaMappingTest {
         assertTable(AgentUploadJobEntity.class, "agent_upload_jobs");
         assertTable(AgentLogBundleEntity.class, "agent_log_bundles");
         assertTable(AgentDeleteRequestEntity.class, "agent_delete_requests");
+        assertTable(AgentIdempotencyRecordEntity.class, "agent_idempotency_records");
         assertTable(AgentLogUploadEntity.class, "agent_log_uploads");
         assertTable(AsTicketEntity.class, "as_tickets");
         assertTable(RemoteSupportSessionEntity.class, "remote_support_sessions");
@@ -40,6 +41,7 @@ class AgentAsJpaMappingTest {
         assertEnumColumn(AgentUploadJobEntity.class, "status", AgentUploadJobStatus.class, false);
         assertEnumColumn(AgentDeleteRequestEntity.class, "scope", AgentDeleteRequestScope.class, false);
         assertEnumColumn(AgentDeleteRequestEntity.class, "status", AgentDeleteRequestStatus.class, false);
+        assertEnumColumn(AgentIdempotencyRecordEntity.class, "status", AgentIdempotencyStatus.class, false);
         assertEnumColumn(AgentLogUploadEntity.class, "status", LogUploadStatus.class, false);
         assertEnumColumn(AsTicketEntity.class, "status", AsTicketStatus.class, false);
         assertEnumColumn(AsTicketEntity.class, "analysisStatus", AsAnalysisStatus.class, false);
@@ -61,6 +63,7 @@ class AgentAsJpaMappingTest {
         assertEnumValues(AgentUploadJobStatus.class, "QUEUED", "UPLOADING", "UPLOADED", "FAILED_RETRYABLE", "FAILED_FINAL", "CANCELLED", "EXPIRED");
         assertEnumValues(AgentDeleteRequestScope.class, "LOCAL_LOGS", "SERVER_LOGS", "ALL");
         assertEnumValues(AgentDeleteRequestStatus.class, "REQUESTED", "PROCESSING", "COMPLETED", "FAILED");
+        assertEnumValues(AgentIdempotencyStatus.class, "IN_PROGRESS", "COMPLETED");
         assertEnumValues(LogUploadStatus.class, "UPLOADED", "PROCESSING", "FAILED");
         assertEnumValues(AsTicketStatus.class, "OPEN", "ASSIGNED", "IN_PROGRESS", "RESOLVED", "CLOSED", "CANCELLED");
         assertEnumValues(AsAnalysisStatus.class, "NOT_STARTED", "QUEUED", "ANALYZING", "RULE_READY", "LLM_READY", "FAILED");
@@ -84,6 +87,7 @@ class AgentAsJpaMappingTest {
         assertJpaRepository(AgentUploadJobRepository.class, AgentUploadJobEntity.class);
         assertJpaRepository(AgentLogBundleRepository.class, AgentLogBundleEntity.class);
         assertJpaRepository(AgentDeleteRequestRepository.class, AgentDeleteRequestEntity.class);
+        assertJpaRepository(AgentIdempotencyRecordRepository.class, AgentIdempotencyRecordEntity.class);
         assertJpaRepository(AgentLogUploadRepository.class, AgentLogUploadEntity.class);
         assertJpaRepository(AsTicketRepository.class, AsTicketEntity.class);
         assertJpaRepository(RemoteSupportSessionRepository.class, RemoteSupportSessionEntity.class);

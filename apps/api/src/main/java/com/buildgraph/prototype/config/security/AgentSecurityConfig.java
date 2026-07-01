@@ -22,8 +22,24 @@ public class AgentSecurityConfig {
     }
 
     @Bean
+    AgentIdempotencyFilter agentIdempotencyFilter(
+            AgentIdempotencyService idempotencyService,
+            SecurityErrorResponseWriter errorResponseWriter
+    ) {
+        return new AgentIdempotencyFilter(
+                new AgentIdempotencyKeyExtractor(),
+                idempotencyService,
+                errorResponseWriter
+        );
+    }
+
+    @Bean
     @Order(1)
-    SecurityFilterChain securityFilterChain(HttpSecurity http, AgentAccessTokenFilter agentAccessTokenFilter) throws Exception {
+    SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            AgentAccessTokenFilter agentAccessTokenFilter,
+            AgentIdempotencyFilter agentIdempotencyFilter
+    ) throws Exception {
         return http
                 .securityMatcher("/api/agent/**")
                 .csrf(AbstractHttpConfigurer::disable)
@@ -35,6 +51,7 @@ public class AgentSecurityConfig {
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(agentAccessTokenFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(agentIdempotencyFilter, AgentAccessTokenFilter.class)
                 .build();
     }
 }

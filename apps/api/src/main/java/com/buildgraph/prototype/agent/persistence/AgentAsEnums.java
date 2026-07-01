@@ -48,6 +48,11 @@ enum AgentDeleteRequestStatus {
     FAILED
 }
 
+enum AgentIdempotencyStatus {
+    IN_PROGRESS,
+    COMPLETED
+}
+
 enum LogUploadStatus {
     UPLOADED,
     PROCESSING,
