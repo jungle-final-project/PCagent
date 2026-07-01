@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Background,
   Controls,
@@ -12,11 +13,14 @@ import '@xyflow/react/dist/style.css';
 import { AlertTriangle, CheckCircle2, GitBranch, Info, Maximize2 } from 'lucide-react';
 import {
   PART_CATEGORY_LABELS,
+  type BuildGraphNode,
   type BuildGraphEdge,
   type BuildGraphResolveResponse,
   type BuildGraphStatus,
   type PartCategory
 } from '../aiSelection';
+import { listCompatiblePartCandidates } from '../../parts/partsApi';
+import type { CompatiblePartCandidate, PartRow } from '../../parts/types';
 
 type BuildDependencyGraphProps = {
   graph?: BuildGraphResolveResponse | null;
@@ -25,6 +29,13 @@ type BuildDependencyGraphProps = {
   title?: string;
   subtitle?: string;
   onCategorySelect?: (category: PartCategory) => void;
+  candidateContext?: {
+    source: 'AI_BUILD' | 'QUOTE_DRAFT_CURRENT';
+    items?: Array<{ partId: string; category: string; quantity: number }>;
+    readOnly?: boolean;
+    selectedPartIds?: Set<string>;
+    onSelectPart?: (part: PartRow) => void;
+  };
 };
 
 const categoryOrder = ['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'PSU', 'CASE', 'COOLER', 'STORAGE', 'PRICE'];
@@ -46,10 +57,32 @@ export function BuildDependencyGraph({
   isError,
   title = '견적 관계도',
   subtitle = '선택한 부품이 전력, 규격, 호환성에 주는 영향을 시각화합니다.',
-  onCategorySelect
+  onCategorySelect,
+  candidateContext
 }: BuildDependencyGraphProps) {
   const [activeEdge, setActiveEdge] = useState<BuildGraphEdge | null>(null);
-  const activeInsight = graph?.insights.find((insight) => insight.status !== 'PASS') ?? graph?.insights[0] ?? null;
+  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
+  const activeNode = graph?.nodes.find((node) => node.id === activeNodeId) ?? null;
+  const activeNodeCategory = activeNode && typeof activeNode.category === 'string' && isPartCategory(activeNode.category)
+    ? activeNode.category
+    : null;
+  const candidateItems = candidateContext?.items ?? [];
+  const candidateQuery = useQuery({
+    queryKey: [
+      'parts',
+      'compatible-candidates',
+      candidateContext?.source,
+      activeNodeCategory,
+      candidateItems.map((item) => `${item.partId}:${item.category}:${item.quantity}`).sort().join('|')
+    ],
+    queryFn: () => listCompatiblePartCandidates({
+      source: candidateContext?.source ?? 'AI_BUILD',
+      category: activeNodeCategory ?? '',
+      items: candidateItems,
+      limit: 5
+    }),
+    enabled: Boolean(candidateContext && activeNodeCategory)
+  });
   const { nodes, edges } = useMemo(() => toFlowElements(graph), [graph]);
 
   return (
@@ -100,6 +133,8 @@ export function BuildDependencyGraph({
               maxZoom={1.35}
               proOptions={{ hideAttribution: true }}
               onNodeClick={(_, node: Node) => {
+                setActiveNodeId(String(node.id));
+                setActiveEdge(null);
                 const category = node.data.category;
                 if (typeof category === 'string' && isPartCategory(category)) {
                   onCategorySelect?.(category);
@@ -107,6 +142,7 @@ export function BuildDependencyGraph({
               }}
               onEdgeClick={(_, edge: Edge) => {
                 const graphEdge = graph.edges.find((item) => item.id === edge.id);
+                setActiveNodeId(null);
                 setActiveEdge(graphEdge ?? null);
               }}
             >
@@ -123,6 +159,29 @@ export function BuildDependencyGraph({
                 Focused
               </span>
             </div>
+
+            {activeNode ? (
+              <SelectedNodePanel node={activeNode} />
+            ) : (
+              <div className="mb-4 rounded-lg border border-dashed border-commerce-line bg-slate-50 p-3">
+                <div className="text-sm font-black text-commerce-ink">노드를 선택하세요</div>
+                <p className="mt-1 break-keep text-xs leading-5 text-slate-500">
+                  부품 노드를 누르면 상세 스펙과 현재 조합 기준 호환 후보를 확인할 수 있습니다.
+                </p>
+              </div>
+            )}
+
+            {activeNodeCategory && candidateContext ? (
+              <CompatibleCandidatesPanel
+                candidates={candidateQuery.data?.items ?? []}
+                isLoading={candidateQuery.isLoading}
+                isError={candidateQuery.isError}
+                rejectedCount={candidateQuery.data?.rejectedCount ?? 0}
+                readOnly={Boolean(candidateContext.readOnly)}
+                selectedPartIds={candidateContext.selectedPartIds}
+                onSelectPart={candidateContext.onSelectPart}
+              />
+            ) : null}
 
             {activeEdge ? (
               <div className={`mb-4 rounded-lg border p-3 ${statusPanelTone(activeEdge.status)}`}>
@@ -230,7 +289,6 @@ function nodeLabel(node: BuildGraphResolveResponse['nodes'][number]) {
         <span className={`rounded px-1.5 py-0.5 text-[10px] font-black ${statusBadgeTone(node.status)}`}>{statusLabel(node.status)}</span>
       </div>
       <div className="line-clamp-2 text-xs font-black leading-4 text-commerce-ink">{node.label}</div>
-      {node.detail ? <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500">{node.detail}</div> : null}
     </div>
   );
 }
@@ -256,6 +314,103 @@ function nodeStyle(status: BuildGraphStatus, constraint: boolean) {
     background: '#ffffff',
     borderColor: status === 'PASS' ? '#dbeafe' : status === 'WARN' ? '#f59e0b' : '#ef4444'
   };
+}
+
+function SelectedNodePanel({ node }: { node: BuildGraphNode }) {
+  const category = typeof node.category === 'string' && isPartCategory(node.category)
+    ? PART_CATEGORY_LABELS[node.category]
+    : node.category ?? node.type;
+  return (
+    <div data-testid="graph-selected-node-detail" className={`mb-4 rounded-lg border p-3 ${statusPanelTone(node.status)}`}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs font-black">
+          {statusIcon(node.status)}
+          선택한 부품 상세
+        </div>
+        <span className={`rounded px-2 py-1 text-[11px] font-black ${statusBadgeTone(node.status)}`}>{statusLabel(node.status)}</span>
+      </div>
+      <div className="text-[11px] font-black text-slate-500">{category}</div>
+      <div className="mt-1 break-keep text-sm font-black leading-5 text-commerce-ink">{node.label}</div>
+      {node.detail ? <p className="mt-2 break-keep text-xs leading-5 text-slate-600">{node.detail}</p> : null}
+      {typeof node.price === 'number' ? <div className="mt-2 text-sm font-black text-brand-blue">{node.price.toLocaleString()}원</div> : null}
+    </div>
+  );
+}
+
+function CompatibleCandidatesPanel({
+  candidates,
+  isLoading,
+  isError,
+  rejectedCount,
+  readOnly,
+  selectedPartIds,
+  onSelectPart
+}: {
+  candidates: CompatiblePartCandidate[];
+  isLoading: boolean;
+  isError: boolean;
+  rejectedCount: number;
+  readOnly: boolean;
+  selectedPartIds?: Set<string>;
+  onSelectPart?: (part: PartRow) => void;
+}) {
+  return (
+    <div className="mb-4 rounded-lg border border-commerce-line bg-white p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-black text-commerce-ink">호환 후보</div>
+          <div className="mt-1 text-[11px] font-bold text-slate-500">서버 Tool 검증 기준</div>
+        </div>
+        {rejectedCount > 0 ? (
+          <span className="rounded bg-red-50 px-2 py-1 text-[11px] font-black text-red-700">제외 {rejectedCount}</span>
+        ) : null}
+      </div>
+      {isLoading ? <div className="rounded-md bg-slate-50 p-3 text-xs font-bold text-slate-500">호환 후보를 계산하는 중입니다.</div> : null}
+      {isError ? <div className="rounded-md border border-orange-200 bg-orange-50 p-3 text-xs font-bold text-orange-700">호환 후보 API를 불러오지 못했습니다.</div> : null}
+      {!isLoading && !isError && candidates.length === 0 ? (
+        <div className="rounded-md border border-dashed border-slate-300 p-3 text-xs leading-5 text-slate-500">
+          현재 조합 기준으로 보여줄 호환 후보가 없습니다.
+        </div>
+      ) : null}
+      <div className="space-y-2">
+        {candidates.map((candidate) => {
+          const alreadySelected = Boolean(selectedPartIds?.has(candidate.part.id));
+          return (
+            <article key={candidate.part.id} className="rounded-md border border-commerce-line bg-slate-50 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="line-clamp-2 text-xs font-black leading-5 text-commerce-ink">{candidate.part.name}</div>
+                  <div className="mt-1 text-[11px] font-bold text-slate-500">
+                    {(candidate.part.manufacturer ?? '제조사 미상')} · {candidate.part.price.toLocaleString()}원
+                  </div>
+                </div>
+                <span className={`shrink-0 rounded px-2 py-1 text-[10px] font-black ${statusBadgeTone(candidate.status)}`}>
+                  {candidate.statusLabel || statusLabel(candidate.status)}
+                </span>
+              </div>
+              <p className="mt-2 break-keep text-[11px] leading-5 text-slate-600">{candidate.summary}</p>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">{candidate.checkedTools.join(' · ') || 'ACTIVE'}</span>
+                {readOnly ? (
+                  <span className="rounded bg-slate-200 px-2 py-1 text-[11px] font-black text-slate-600">읽기 전용</span>
+                ) : (
+                  <button
+                    type="button"
+                    aria-label={`${candidate.part.name} 담기/교체`}
+                    disabled={alreadySelected}
+                    onClick={() => onSelectPart?.(candidate.part)}
+                    className="rounded bg-commerce-ink px-3 py-1.5 text-[11px] font-black text-white hover:bg-slate-700 disabled:bg-slate-300"
+                  >
+                    {alreadySelected ? '담김' : '담기/교체'}
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function GraphStat({ label, value, tone = 'default' }: { label: string; value: number; tone?: 'default' | 'warn' }) {
@@ -294,7 +449,7 @@ function statusBadgeTone(status: BuildGraphStatus) {
 function statusLabel(status: BuildGraphStatus) {
   if (status === 'FAIL') return '장착 불가';
   if (status === 'WARN') return '간섭 주의';
-  return '여유 있음';
+  return '호환됨';
 }
 
 function isPartCategory(value: string): value is PartCategory {

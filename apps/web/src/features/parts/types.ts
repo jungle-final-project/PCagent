@@ -43,6 +43,32 @@ export type PartSearchParams = {
   sort?: 'category' | 'price_asc' | 'price_desc' | 'name';
 };
 
+export type CompatiblePartCandidateRequest = {
+  source: 'AI_BUILD' | 'QUOTE_DRAFT_CURRENT';
+  category: string;
+  items?: Array<{
+    partId: string;
+    category: string;
+    quantity: number;
+  }>;
+  limit?: number;
+};
+
+export type CompatiblePartCandidate = {
+  part: PartRow;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  statusLabel: string;
+  summary: string;
+  checkedTools: string[];
+};
+
+export type CompatiblePartCandidateResponse = {
+  category: string;
+  items: CompatiblePartCandidate[];
+  rejectedCount: number;
+  warnings: string[];
+};
+
 export type PartPriceHistoryPoint = {
   price: number;
   source: string;

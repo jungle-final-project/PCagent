@@ -272,6 +272,8 @@ test('filters internal assets by sidebar category on self quote page', async ({ 
 
 test('updates quote dependency graph after self quote cart changes', async ({ page }) => {
   const graphRequests: unknown[] = [];
+  const compatibleCandidateRequests: unknown[] = [];
+  const candidateApplyRequests: unknown[] = [];
   const emptyDraft = {
     id: 'draft-graph-test',
     status: 'ACTIVE',
@@ -301,6 +303,27 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
     totalPrice: 890000,
     itemCount: 1
   };
+  const compatibleDraft = {
+    id: 'draft-graph-test',
+    status: 'ACTIVE',
+    name: '셀프 견적',
+    items: [
+      {
+        id: 'draft-item-compatible-gpu',
+        partId: 'part-gpu-compatible',
+        category: 'GPU',
+        name: 'RTX 5070 Ti 그래프 호환 후보',
+        manufacturer: 'NVIDIA',
+        quantity: 1,
+        unitPriceAtAdd: 990000,
+        currentPrice: 990000,
+        lineTotal: 990000,
+        attributes: {}
+      }
+    ],
+    totalPrice: 990000,
+    itemCount: 1
+  };
   let draft: unknown = emptyDraft;
 
   await page.addInitScript(() => {
@@ -319,8 +342,14 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
 
   await page.route('**/api/quote-drafts/current**', async (route) => {
     const method = route.request().method();
+    const url = new URL(route.request().url());
     if (method === 'PUT') {
-      draft = gpuDraft;
+      if (url.pathname.endsWith('/items/part-gpu-compatible')) {
+        candidateApplyRequests.push(JSON.parse(route.request().postData() ?? '{}'));
+        draft = compatibleDraft;
+      } else {
+        draft = gpuDraft;
+      }
     }
     await route.fulfill({
       status: 200,
@@ -331,6 +360,36 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
 
   await page.route('**/api/parts**', async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname === '/api/parts/compatible-candidates') {
+      compatibleCandidateRequests.push(JSON.parse(route.request().postData() ?? '{}'));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          category: 'GPU',
+          items: [
+            {
+              part: {
+                id: 'part-gpu-compatible',
+                category: 'GPU',
+                name: 'RTX 5070 Ti 그래프 호환 후보',
+                manufacturer: 'NVIDIA',
+                price: 990000,
+                status: 'ACTIVE',
+                attributes: { wattage: 285, lengthMm: 310 }
+              },
+              status: 'PASS',
+              statusLabel: '여유 있음',
+              summary: '현재 PSU/케이스 기준 장착 가능합니다.',
+              checkedTools: ['power', 'size', 'performance']
+            }
+          ],
+          rejectedCount: 1,
+          warnings: []
+        })
+      });
+      return;
+    }
     if (url.pathname.includes('/price-history')) {
       await route.fulfill({
         status: 200,
@@ -396,7 +455,20 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
   await expect.poll(() => graphRequests.length).toBeGreaterThan(initialGraphCalls);
   await expect(page.getByRole('link', { name: 'RTX 5070 그래프 테스트', exact: true })).toBeVisible();
   await expect(page.getByTestId('build-dependency-graph')).toContainText('현재 GPU 선택은 PSU 용량과 케이스 장착 조건');
+  await expect(page.getByTestId('build-dependency-graph')).not.toContainText('선택한 그래픽카드');
   expect((graphRequests[graphRequests.length - 1] as { source?: string }).source).toBe('QUOTE_DRAFT_CURRENT');
+
+  await page.getByTestId('build-dependency-graph').getByText('RTX 5070', { exact: true }).click();
+  await expect(page.getByTestId('build-dependency-graph')).toContainText('선택한 부품 상세');
+  await expect(page.getByTestId('build-dependency-graph')).toContainText('선택한 그래픽카드');
+  await expect(page.getByTestId('build-dependency-graph')).toContainText('RTX 5070 Ti 그래프 호환 후보');
+  await expect.poll(() => compatibleCandidateRequests.length).toBe(1);
+  expect((compatibleCandidateRequests[0] as { source?: string; category?: string }).source).toBe('QUOTE_DRAFT_CURRENT');
+  expect((compatibleCandidateRequests[0] as { category?: string }).category).toBe('GPU');
+
+  await page.getByRole('button', { name: 'RTX 5070 Ti 그래프 호환 후보 담기/교체' }).click();
+  await expect.poll(() => candidateApplyRequests.length).toBe(1);
+  await expect(page.getByText('RTX 5070 Ti 그래프 호환 후보')).toBeVisible();
 });
 
 test('opens checkout from self quote purchase CTA without using the build result route', async ({ page }) => {

@@ -395,6 +395,15 @@ export function HomePage() {
                       isError={graphQuery.isError}
                       title="견적 관계도"
                       subtitle="최신 AI 추천 조합에서 영향을 받는 부품과 제약을 먼저 보여줍니다."
+                      candidateContext={activeAiBuild ? {
+                        source: 'AI_BUILD',
+                        items: activeAiBuild.items.map((item) => ({
+                          partId: item.partId,
+                          category: item.category,
+                          quantity: item.quantity
+                        })),
+                        readOnly: true
+                      } : undefined}
                     />
                   </div>
                 </>

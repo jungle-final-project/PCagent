@@ -245,6 +245,12 @@ export function SelfQuotePage() {
           title="견적 관계도"
           subtitle="장바구니에 담긴 부품이 서로 어떤 조건으로 연결되는지 확인합니다."
           onCategorySelect={selectCategory}
+          candidateContext={{
+            source: 'QUOTE_DRAFT_CURRENT',
+            readOnly: false,
+            selectedPartIds,
+            onSelectPart: addPart
+          }}
         />
 
         <div className="grid gap-5 xl:grid-cols-[216px_minmax(0,1fr)_320px]">
