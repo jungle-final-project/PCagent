@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bell, CheckCircle2, PackageCheck, Search, ShoppingCart, SlidersHorizontal, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -45,9 +45,10 @@ export function SelfQuotePage() {
   const [page, setPage] = useState(() => normalizePage(searchParams.get('page')));
   const [aiBuild, setAiBuild] = useState<AiSelectedBuild | null>(() => readSelectedAiBuild());
   const hasToken = Boolean(getToken());
-  const { data, isError, isLoading } = useQuery({
+  const { data, isError, isFetching, isLoading, isPlaceholderData } = useQuery({
     queryKey: ['parts', 'self-quote', category, query, sort, page],
     queryFn: () => listParts({ category, q: query, page, size: PAGE_SIZE, sort }),
+    placeholderData: keepPreviousData,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true
   });
@@ -85,8 +86,11 @@ export function SelfQuotePage() {
       view: 'FOCUSED',
       focus: graphFocus
     }),
+    placeholderData: keepPreviousData,
     enabled: hasToken && !isQuoteDraftLoading
   });
+  const showPartsSkeleton = isLoading && !data;
+  const showPartsRefreshing = isFetching && Boolean(data);
 
   useEffect(() => {
     const nextCategory = normalizeCategory(searchParams.get('category'));
@@ -146,11 +150,11 @@ export function SelfQuotePage() {
   }, [setSearchParams, totalPages]);
 
   useEffect(() => {
-    if (!data || page === safePage) {
+    if (!data || isPlaceholderData || page === safePage) {
       return;
     }
     movePage(safePage);
-  }, [data, movePage, page, safePage]);
+  }, [data, isPlaceholderData, movePage, page, safePage]);
 
   useEffect(() => {
     const syncSelectedBuild = () => setAiBuild(readSelectedAiBuild());
@@ -240,7 +244,8 @@ export function SelfQuotePage() {
 
         <BuildDependencyGraph
           graph={graphQuery.data}
-          isLoading={graphQuery.isLoading}
+          isLoading={graphQuery.isLoading || (hasToken && isQuoteDraftLoading)}
+          isRefreshing={graphQuery.isFetching && Boolean(graphQuery.data)}
           isError={graphQuery.isError}
           title="견적 관계도"
           subtitle="장바구니에 담긴 부품이 서로 어떤 조건으로 연결되는지 확인합니다."
@@ -278,34 +283,44 @@ export function SelfQuotePage() {
                   전체 보기
                 </button>
               </div>
-              {isLoading ? <div className="rounded-md border border-commerce-line p-5 text-sm text-slate-500">부품 목록을 불러오는 중입니다.</div> : null}
-              {isError ? <div className="rounded-md border border-orange-200 bg-orange-50 p-5 text-sm text-orange-700">부품 목록 API를 불러오지 못했습니다.</div> : null}
-              {!isLoading && !isError ? (
-                <>
-                  <div className="mb-3 flex flex-col gap-2 text-xs font-bold text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-                    <span>{total.toLocaleString()}개 중 {fromIndex.toLocaleString()}-{toIndex.toLocaleString()}개 표시</span>
-                    <span>페이지 {safePage + 1} / {totalPages}</span>
+              {showPartsSkeleton ? <PartsTableSkeleton /> : null}
+              {isError && !data ? <div className="rounded-md border border-orange-200 bg-orange-50 p-5 text-sm text-orange-700">부품 목록 API를 불러오지 못했습니다.</div> : null}
+              {!showPartsSkeleton && data ? (
+                <div className="relative">
+                  {isError ? <div className="mb-3 rounded-md border border-orange-200 bg-orange-50 p-3 text-xs font-bold text-orange-700">새 부품 목록을 불러오지 못해 이전 목록을 유지합니다.</div> : null}
+                  <div className={showPartsRefreshing ? 'pointer-events-none opacity-45 transition-opacity duration-150' : 'transition-opacity duration-150'}>
+                    <div className="mb-3 flex flex-col gap-2 text-xs font-bold text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+                      <span>{total.toLocaleString()}개 중 {fromIndex.toLocaleString()}-{toIndex.toLocaleString()}개 표시</span>
+                      <span>페이지 {safePage + 1} / {totalPages}</span>
+                    </div>
+                    <DataTable columns={['product', 'manufacturer', 'supplier', 'price', 'action']} rows={partRows(parts, selectedPartIds, addPart)} />
+                    <div className="mt-4 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => movePage(safePage - 1)}
+                        disabled={safePage === 0 || showPartsRefreshing}
+                        className="rounded-md border border-commerce-line bg-white px-3 py-2 text-sm font-black text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                      >
+                        이전
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => movePage(safePage + 1)}
+                        disabled={safePage >= totalPages - 1 || showPartsRefreshing}
+                        className="rounded-md border border-commerce-line bg-white px-3 py-2 text-sm font-black text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                      >
+                        다음
+                      </button>
+                    </div>
                   </div>
-                  <DataTable columns={['product', 'manufacturer', 'supplier', 'price', 'action']} rows={partRows(parts, selectedPartIds, addPart)} />
-                  <div className="mt-4 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => movePage(safePage - 1)}
-                      disabled={safePage === 0}
-                      className="rounded-md border border-commerce-line bg-white px-3 py-2 text-sm font-black text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
-                    >
-                      이전
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => movePage(safePage + 1)}
-                      disabled={safePage >= totalPages - 1}
-                      className="rounded-md border border-commerce-line bg-white px-3 py-2 text-sm font-black text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
-                    >
-                      다음
-                    </button>
-                  </div>
-                </>
+                  {showPartsRefreshing ? (
+                    <div className="absolute inset-x-0 top-11 z-10 flex justify-center">
+                      <div className="rounded-full border border-blue-100 bg-white/95 px-3 py-1.5 text-xs font-black text-brand-blue shadow-product">
+                        목록 업데이트 중
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
             </Panel>
           </section>
@@ -457,6 +472,42 @@ function AiSelectedBuildPanel({
   );
 }
 
+function PartsTableSkeleton() {
+  const columns = ['product', 'manufacturer', 'supplier', 'price', 'action'];
+  return (
+    <div>
+      <div className="mb-3 flex flex-col gap-2 text-xs font-bold text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+        <span>부품 목록 준비 중</span>
+        <span>페이지 계산 중</span>
+      </div>
+      <div className="overflow-x-auto rounded-md border border-commerce-line bg-white">
+        <table className="w-full min-w-[760px] border-collapse bg-white text-left text-xs">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              {columns.map((column) => <th key={column} className="border-b border-commerce-line px-3 py-3 font-black uppercase tracking-wide">{column}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 5 }).map((_, rowIndex) => (
+              <tr key={rowIndex} className="border-b border-slate-100 last:border-0">
+                {columns.map((column, columnIndex) => (
+                  <td key={column} className="px-3 py-3 align-middle">
+                    <div className={`h-4 rounded bg-slate-100 ${columnIndex === 0 ? 'w-48' : columnIndex === 4 ? 'w-16' : 'w-24'}`} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <div className="h-9 w-14 rounded-md border border-slate-200 bg-slate-50" />
+        <div className="h-9 w-14 rounded-md border border-slate-200 bg-slate-50" />
+      </div>
+    </div>
+  );
+}
+
 function partRows(parts: PartRow[], selectedPartIds: Set<string>, onAddPart: (part: PartRow) => void) {
   return parts.map((part) => ({
     product: <PartProductCell part={part} />,
@@ -480,23 +531,25 @@ function partRows(parts: PartRow[], selectedPartIds: Set<string>, onAddPart: (pa
 function PriceTrendBadge({ partId }: { partId: string }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['parts', partId, 'price-history', 'NAVER_SHOPPING_SEARCH'],
-    queryFn: () => getPartPriceHistory(partId, { days: 3650, source: 'NAVER_SHOPPING_SEARCH', limit: 60 })
+    queryFn: () => getPartPriceHistory(partId, { days: 3650, source: 'NAVER_SHOPPING_SEARCH', limit: 60 }),
+    staleTime: 60_000
   });
+  const className = 'mt-2 min-h-4 text-[11px]';
   if (isLoading) {
-    return <div className="mt-2 text-[11px] text-slate-400">가격 기록 확인 중</div>;
+    return <div className={`${className} text-slate-400`}>가격 기록 확인 중</div>;
   }
   if (isError || !data) {
-    return <div className="mt-2 text-[11px] text-slate-400">가격 기록 없음</div>;
+    return <div className={`${className} text-slate-400`}>가격 기록 없음</div>;
   }
   const sampleCount = data.summary.sampleCount;
   if (sampleCount < 2) {
-    return <div className="mt-2 text-[11px] text-slate-500">가격 기록 {sampleCount}개</div>;
+    return <div className={`${className} text-slate-500`}>가격 기록 {sampleCount}개</div>;
   }
   const change = data.summary.changeAmount;
   const tone = change > 0 ? 'text-orange-700' : change < 0 ? 'text-emerald-700' : 'text-slate-500';
   const sign = change > 0 ? '+' : '';
   return (
-    <div className={`mt-2 text-[11px] font-bold ${tone}`}>
+    <div className={`${className} font-bold ${tone}`}>
       {sampleCount}회 기록 · {sign}{change.toLocaleString()}원 ({sign}{data.summary.changeRatePercent.toFixed(2)}%)
     </div>
   );

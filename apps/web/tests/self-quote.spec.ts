@@ -303,6 +303,140 @@ test('filters internal assets by sidebar category on self quote page', async ({ 
   await expect(page.getByText('왼쪽 목록에서 부품을 담으면 이곳에 내 견적이 쌓입니다.')).toBeVisible();
 });
 
+test('keeps table and graph frames while first category switch is fetching', async ({ page }) => {
+  let releaseMotherboardParts: () => void = () => {};
+  let releaseMotherboardGraph: () => void = () => {};
+  const motherboardPartsGate = new Promise<void>((resolve) => {
+    releaseMotherboardParts = resolve;
+  });
+  const motherboardGraphGate = new Promise<void>((resolve) => {
+    releaseMotherboardGraph = resolve;
+  });
+  let motherboardPartsRequested = false;
+  let motherboardGraphRequested = false;
+
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'jwt-user-token');
+  });
+
+  await page.route('**/api/quote-drafts/current**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'draft-stable-transition-test',
+        status: 'ACTIVE',
+        name: '셀프 견적',
+        items: [],
+        totalPrice: 0,
+        itemCount: 0
+      })
+    });
+  });
+
+  await page.route('**/api/build-graphs/resolve', async (route) => {
+    const body = JSON.parse(route.request().postData() ?? '{}');
+    if (body.focus?.category === 'MOTHERBOARD') {
+      motherboardGraphRequested = true;
+      await motherboardGraphGate;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(buildGraphResponse(body.focus?.mode ?? 'ISSUE_PATH'))
+    });
+  });
+
+  await page.route('**/api/parts**', async (route) => {
+    const url = new URL(route.request().url());
+    const category = url.searchParams.get('category') ?? '';
+    if (category === 'MOTHERBOARD') {
+      motherboardPartsRequested = true;
+      await motherboardPartsGate;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [
+            {
+              id: 'part-stable-motherboard',
+              category: 'MOTHERBOARD',
+              name: 'B650M 안정화 테스트',
+              manufacturer: 'ASRock',
+              price: 179000,
+              status: 'ACTIVE',
+              attributes: { shortSpec: 'AM5 / DDR5' },
+              externalOffer: {
+                imageUrl: 'https://example.test/stable-board.png',
+                supplierName: '메인보드테스트몰',
+                offerUrl: 'https://example.test/stable-board',
+                lowPrice: 179000,
+                source: 'NAVER_SHOPPING_SEARCH'
+              }
+            }
+          ],
+          page: 0,
+          size: 20,
+          total: 1
+        })
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: 'part-stable-cpu',
+            category: 'CPU',
+            name: '초기 CPU 안정화 테스트',
+            manufacturer: 'AMD',
+            price: 260000,
+            status: 'ACTIVE',
+            attributes: { shortSpec: 'AM5 baseline' },
+            externalOffer: {
+              imageUrl: 'https://example.test/stable-cpu.png',
+              supplierName: 'CPU안정화몰',
+              offerUrl: 'https://example.test/stable-cpu',
+              lowPrice: 260000,
+              source: 'NAVER_SHOPPING_SEARCH'
+            }
+          }
+        ],
+        page: 0,
+        size: 20,
+        total: 1
+      })
+    });
+  });
+
+  await page.goto('/self-quote');
+
+  const graphCanvas = page.getByTestId('graph-flow-canvas');
+  await expect(page.getByText('초기 CPU 안정화 테스트')).toBeVisible();
+  await expect(graphCanvas.getByText('소켓 일치')).toBeVisible();
+
+  await page.getByRole('button', { name: '메인보드' }).click();
+
+  await expect.poll(() => motherboardPartsRequested).toBe(true);
+  await expect.poll(() => motherboardGraphRequested).toBe(true);
+  await expect(page.getByText('초기 CPU 안정화 테스트')).toBeVisible();
+  await expect(page.getByText('부품 목록을 불러오는 중입니다.')).toHaveCount(0);
+  await expect(page.getByText('목록 업데이트 중')).toBeVisible();
+  await expect(graphCanvas.locator('.react-flow')).toBeVisible();
+  await expect(page.getByText('관계도 업데이트 중')).toBeVisible();
+
+  releaseMotherboardParts();
+  releaseMotherboardGraph();
+
+  await expect(page.getByText('B650M 안정화 테스트')).toBeVisible();
+  await expect(page.getByText('초기 CPU 안정화 테스트')).toHaveCount(0);
+  await expect(page.getByText('목록 업데이트 중')).toHaveCount(0);
+  await expect(page.getByText('관계도 업데이트 중')).toHaveCount(0);
+});
+
 test('updates quote dependency graph after self quote cart changes', async ({ page }) => {
   const graphRequests: unknown[] = [];
   const compatibleCandidateRequests: unknown[] = [];
@@ -495,7 +629,7 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
   await expect(page.getByTestId('build-dependency-graph')).not.toContainText('선택한 그래픽카드');
   expect((graphRequests[graphRequests.length - 1] as { source?: string }).source).toBe('QUOTE_DRAFT_CURRENT');
 
-  await page.getByTestId('build-dependency-graph').getByText('RTX 5070', { exact: true }).click();
+  await page.getByTestId('graph-flow-canvas').getByText('RTX 5070', { exact: true }).click();
   const candidatePanel = page.getByTestId('graph-flow-canvas').getByTestId('graph-node-candidate-panel');
   await expect(candidatePanel).toContainText('선택한 부품 상세');
   await expect(candidatePanel).toContainText('선택한 그래픽카드');

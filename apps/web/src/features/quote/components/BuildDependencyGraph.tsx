@@ -26,6 +26,7 @@ import type { CompatiblePartCandidate, PartRow } from '../../parts/types';
 type BuildDependencyGraphProps = {
   graph?: BuildGraphResolveResponse | null;
   isLoading?: boolean;
+  isRefreshing?: boolean;
   isError?: boolean;
   title?: string;
   subtitle?: string;
@@ -57,6 +58,7 @@ const categoryPositions: Record<string, { x: number; y: number }> = {
 export function BuildDependencyGraph({
   graph,
   isLoading,
+  isRefreshing = false,
   isError,
   title = '견적 관계도',
   subtitle = '선택한 부품이 전력, 규격, 호환성에 주는 영향을 시각화합니다.',
@@ -161,11 +163,21 @@ export function BuildDependencyGraph({
         </div>
       </div>
 
-      {isLoading ? (
-        <div className="grid min-h-[320px] place-items-center p-6 text-sm font-bold text-slate-500">
-          관계 그래프를 계산하는 중입니다.
+      {isLoading && !graph ? (
+        <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="grid h-[430px] place-items-center border-b border-commerce-line bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] p-6 text-sm font-bold text-slate-500 lg:h-[680px] lg:border-b-0 lg:border-r xl:h-[720px]">
+            관계 그래프를 계산하는 중입니다.
+          </div>
+          <aside className="hidden min-w-0 bg-white p-5 lg:block">
+            <div className="mb-4 h-5 w-20 rounded bg-slate-100" />
+            <div className="space-y-3">
+              <div className="h-20 rounded-lg border border-dashed border-commerce-line bg-slate-50" />
+              <div className="h-28 rounded-lg border border-amber-100 bg-amber-50/50" />
+              <div className="h-24 rounded-lg border border-commerce-line bg-slate-50" />
+            </div>
+          </aside>
         </div>
-      ) : isError ? (
+      ) : isError && !graph ? (
         <div className="m-5 rounded-lg border border-orange-200 bg-orange-50 p-5 text-sm font-bold text-orange-700">
           관계 그래프 API를 불러오지 못했습니다.
         </div>
@@ -205,6 +217,11 @@ export function BuildDependencyGraph({
                 {isDesktopViewport ? <Controls showInteractive={false} /> : null}
               </ReactFlow>
             </div>
+            {isRefreshing ? (
+              <div className="absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-full border border-blue-100 bg-white/95 px-3 py-1.5 text-xs font-black text-brand-blue shadow-product">
+                관계도 업데이트 중
+              </div>
+            ) : null}
 
             {activeNode ? (
               <GraphNodeCandidatePanel
