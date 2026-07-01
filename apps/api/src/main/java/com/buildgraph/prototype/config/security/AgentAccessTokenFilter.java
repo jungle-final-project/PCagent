@@ -29,7 +29,7 @@ public class AgentAccessTokenFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = path(request);
-        return !path.startsWith("/api/agent/");
+        return !path.startsWith("/api/agent/") || isRegisterRequest(request, path);
     }
 
     @Override
@@ -79,5 +79,9 @@ public class AgentAccessTokenFilter extends OncePerRequestFilter {
     private static String path(HttpServletRequest request) {
         String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
         return path == null ? request.getRequestURI() : path;
+    }
+
+    private static boolean isRegisterRequest(HttpServletRequest request, String path) {
+        return "POST".equals(request.getMethod()) && "/api/agent/devices/register".equals(path);
     }
 }

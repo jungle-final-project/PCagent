@@ -46,7 +46,7 @@ class AgentSecurityChainTest {
 
     @Test
     void agentEndpointRejectsMissingBearerTokenWithUnauthorized() throws Exception {
-        mockMvc.perform(post("/api/agent/devices/register"))
+        mockMvc.perform(post("/api/agent/consents"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
