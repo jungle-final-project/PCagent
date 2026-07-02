@@ -190,6 +190,53 @@ class DefaultAiChatEngineTest {
     }
 
     @Test
+    void partRecommendationHonorsExplicitCpuModelToken() {
+        AiChatEngineResponse response = engine.respond(new AiChatEngineRequest(
+                "CPU 9700X인 거 추천해줘",
+                "HOME",
+                null,
+                null,
+                null,
+                Map.of(),
+                1L
+        ));
+
+        assertThat(response.intent()).isEqualTo(AiChatIntent.PART_RECOMMEND);
+        assertThat(response.partRecommendations()).isNotEmpty();
+        assertThat(response.partRecommendations())
+                .allSatisfy(part -> assertThat(part.name()).contains("9700X"));
+        assertThat(response.parsedContext().get("requiredPartKeywords")).asList().contains("9700X");
+        verifyNoJdbcWrites();
+    }
+
+    @Test
+    void partRecommendationHonorsRamCapacityAndSingleModuleRequest() {
+        AiChatEngineResponse response = engine.respond(new AiChatEngineRequest(
+                "램 32기가 한 개 달린 거 추천해줘",
+                "HOME",
+                null,
+                null,
+                null,
+                Map.of(),
+                1L
+        ));
+
+        assertThat(response.intent()).isEqualTo(AiChatIntent.PART_RECOMMEND);
+        assertThat(response.partRecommendations())
+                .extracting(AiChatEngineResponse.PartRecommendation::partId)
+                .containsExactly("ram-32-single");
+        assertThat(response.partRecommendations())
+                .allSatisfy(part -> assertThat(part.attributes())
+                        .containsEntry("capacityGb", 32)
+                        .containsEntry("moduleCount", 1));
+        assertThat(response.parsedContext())
+                .containsEntry("targetCapacityGb", 32)
+                .containsEntry("targetModuleCount", 1)
+                .containsEntry("targetQuantity", 1);
+        verifyNoJdbcWrites();
+    }
+
+    @Test
     void buildModifyReturnsReplaceDraftPartAction() {
         AiChatEngineResponse response = engine.respond(new AiChatEngineRequest(
                 "이 견적에서 램 64기가로 바꿔줘",
@@ -589,8 +636,16 @@ class DefaultAiChatEngineTest {
         if ("CPU".equals(category)) {
             return List.of(
                     partRow(category, "cpu-high", "CPU High", 500_000, Map.of("toolReady", true, "cpuClass", "RYZEN_9", "coreCount", 16, "threadCount", 32, "socket", "AM5")),
+                    partRow(category, "cpu-9700x", "AMD Ryzen 7 9700X", 377_500, Map.of("toolReady", true, "cpuClass", "RYZEN_7_9700X", "hardwareClass", "RYZEN_7_9700X", "coreCount", 8, "threadCount", 16, "socket", "AM5")),
                     partRow(category, "cpu-mid", "CPU Mid", 300_000, Map.of("toolReady", true, "cpuClass", "RYZEN_7", "coreCount", 8, "threadCount", 16, "socket", "AM5")),
                     partRow(category, "cpu-low", "CPU Low", 180_000, Map.of("toolReady", true, "cpuClass", "RYZEN_5", "coreCount", 6, "threadCount", 12, "socket", "AM5"))
+            );
+        }
+        if ("RAM".equals(category)) {
+            return List.of(
+                    partRow(category, "ram-64-kit", "DDR5 64GB Kit", 900_000, Map.of("toolReady", true, "capacityGb", 64, "moduleCount", 2, "memoryType", "DDR5", "speedMhz", 6400)),
+                    partRow(category, "ram-32-kit", "DDR5 32GB Kit", 700_000, Map.of("toolReady", true, "capacityGb", 32, "moduleCount", 2, "memoryType", "DDR5", "speedMhz", 6000)),
+                    partRow(category, "ram-32-single", "Samsung DDR5 32GB UDIMM", 500_000, Map.of("toolReady", true, "capacityGb", 32, "moduleCount", 1, "memoryType", "DDR5", "speedMhz", 5600))
             );
         }
         if ("MOTHERBOARD".equals(category)) {

@@ -147,7 +147,7 @@ public class BuildChatService {
             case PART_RECOMMEND, BUILD_MODIFY -> changedCurrentBuilds(engineResponse, request, safePartRecommendations, warnings);
             default -> engineBuilds(engineResponse, warnings);
         };
-        Map<String, Object> partRecommendation = partRecommendation(safePartRecommendations);
+        Map<String, Object> partRecommendation = partRecommendation(safePartRecommendations, engineResponse.parsedContext());
         List<Map<String, Object>> actions = draftActions(engineResponse, request, safePartRecommendations);
         warnings.addAll(buildWarnings(builds));
         warnings.addAll(stringList(engineResponse.parsedContext().get("warnings")));
@@ -251,7 +251,7 @@ public class BuildChatService {
         return updatedBuilds;
     }
 
-    private Map<String, Object> partRecommendation(List<AiChatEngineResponse.PartRecommendation> parts) {
+    private Map<String, Object> partRecommendation(List<AiChatEngineResponse.PartRecommendation> parts, Map<String, Object> parsedContext) {
         if (parts == null || parts.isEmpty()) {
             return null;
         }
@@ -261,7 +261,10 @@ public class BuildChatService {
                 "label", categoryLabel(category),
                 "intro", categoryLabel(category) + " 후보를 AI 엔진과 내부 자산 DB 기준으로 정리했습니다.",
                 "options", parts.stream()
-                        .map(part -> partItem(partCandidate(part), "AI 엔진 내부 자산 추천"))
+                        .map(part -> {
+                            PartCandidate candidate = partCandidate(part);
+                            return partItem(candidate, "AI 엔진 내부 자산 추천", quantityForRecommendation(candidate, parsedContext));
+                        })
                         .toList()
         );
     }
@@ -327,7 +330,7 @@ public class BuildChatService {
             AiChatEngineResponse.PartRecommendation candidate = recommendations.get(index);
             Map<String, Object> existing = findDraftItem(draftItems, candidate.category(), candidate.name());
             String type = existing.isEmpty() ? "ADD_PART_TO_DRAFT" : "REPLACE_DRAFT_PART";
-            int quantity = defaultQuantity(candidate.category());
+            int quantity = quantityForRecommendation(partCandidate(candidate), Map.of());
             actions.add(actionMap(
                     type,
                     categoryLabel(candidate.category()) + " " + (existing.isEmpty() ? "추가" : "교체"),
@@ -698,12 +701,16 @@ public class BuildChatService {
     }
 
     private Map<String, Object> partItem(PartCandidate part, String fallbackNote) {
+        return partItem(part, fallbackNote, defaultQuantity(part.category()));
+    }
+
+    private Map<String, Object> partItem(PartCandidate part, String fallbackNote, int quantity) {
         return MockData.map(
                 "partId", part.publicId(),
                 "category", part.category(),
                 "name", part.name(),
                 "manufacturer", part.manufacturer(),
-                "quantity", defaultQuantity(part.category()),
+                "quantity", quantity,
                 "price", part.price(),
                 "note", firstText(text(part.attributes().get("shortSpec")), fallbackNote)
         );
@@ -731,6 +738,14 @@ public class BuildChatService {
 
     private static int defaultQuantity(String category) {
         return "RAM".equals(category) ? 2 : 1;
+    }
+
+    private static int quantityForRecommendation(PartCandidate part, Map<String, Object> parsedContext) {
+        Integer targetQuantity = parsedContext == null ? null : numberValue(parsedContext.get("targetQuantity"));
+        if (targetQuantity != null && targetQuantity > 0) {
+            return Math.max(1, Math.min(9, targetQuantity));
+        }
+        return defaultQuantity(part.category());
     }
 
     private static boolean hasHardConstraint(Map<String, Object> parsedContext) {

@@ -268,21 +268,37 @@ public class DefaultAiChatEngine implements AiChatEngine {
         if (category == null) {
             return askFollowUpResponse(message);
         }
-        List<AiChatEngineResponse.PartRecommendation> parts = partRecommendations(category, 3);
+        PartQueryConstraints constraints = partQueryConstraints(category, message);
+        List<AiChatEngineResponse.PartRecommendation> parts = constrainedPartRecommendations(category, constraints, 3);
         List<AiChatAction> actions = parts.stream()
                 .map(part -> new AiChatAction(
                         AiChatActionType.ADD_PART_TO_DRAFT,
                         part.name() + " 담기",
-                        MockData.map("partId", part.partId(), "category", part.category(), "quantity", defaultQuantity(part.category()))
+                        MockData.map("partId", part.partId(), "category", part.category(), "quantity", constraints.targetQuantity(defaultQuantity(part.category())))
                 ))
                 .toList();
+        Map<String, Object> parsedContext = new LinkedHashMap<>();
+        parsedContext.put("category", category);
+        parsedContext.put("hardConstraintPolicy", constraints.hasHardConstraint() ? "MUST_INCLUDE" : "NONE");
+        parsedContext.put("requiredPartKeywords", constraints.requiredPartKeywords());
+        if (constraints.targetCapacityGb() != null) {
+            parsedContext.put("targetCapacityGb", constraints.targetCapacityGb());
+        }
+        if (constraints.targetModuleCount() != null) {
+            parsedContext.put("targetModuleCount", constraints.targetModuleCount());
+        }
+        if (constraints.targetQuantity() != null) {
+            parsedContext.put("targetQuantity", constraints.targetQuantity());
+        }
         return response(
-                categoryLabel(category) + " 후보를 내부 자산 기준으로 골랐습니다. 담기 버튼은 기존 셀프 견적 장바구니 API로 연결하면 됩니다.",
+                parts.isEmpty()
+                        ? categoryLabel(category) + " 조건에 맞는 내부 자산 후보를 찾지 못했습니다. 조건을 조금 넓혀 다시 요청해 주세요."
+                        : categoryLabel(category) + " 후보를 내부 자산 기준으로 골랐습니다. 담기 버튼은 기존 셀프 견적 장바구니 API로 연결하면 됩니다.",
                 AiChatIntent.PART_RECOMMEND,
                 actions,
                 List.of(),
                 parts,
-                MockData.map("category", category)
+                parsedContext
         );
     }
 
@@ -412,13 +428,17 @@ public class DefaultAiChatEngine implements AiChatEngine {
             Map<String, Object> parsedContext,
             List<String> evidenceIds
     ) {
+        Map<String, Object> mergedContext = new LinkedHashMap<>(response.parsedContext() == null ? Map.of() : response.parsedContext());
+        if (parsedContext != null) {
+            mergedContext.putAll(parsedContext);
+        }
         return new AiChatEngineResponse(
                 firstText(assistantMessage, response.assistantMessage()),
                 response.intent(),
                 response.actions(),
                 response.recommendations(),
                 response.partRecommendations(),
-                parsedContext == null ? response.parsedContext() : parsedContext,
+                mergedContext,
                 evidenceIds == null ? List.of() : evidenceIds,
                 response.toolResults(),
                 response.agentSessionId()
@@ -549,6 +569,52 @@ public class DefaultAiChatEngine implements AiChatEngine {
                     );
                 })
                 .toList();
+    }
+
+    private List<AiChatEngineResponse.PartRecommendation> constrainedPartRecommendations(
+            String category,
+            PartQueryConstraints constraints,
+            int limit
+    ) {
+        List<AiChatEngineResponse.PartRecommendation> parts = partRecommendations(category, 50);
+        List<AiChatEngineResponse.PartRecommendation> filtered = parts.stream()
+                .filter(part -> matchesPartConstraints(part, constraints))
+                .sorted((left, right) -> Integer.compare(left.price(), right.price()))
+                .limit(Math.max(1, limit))
+                .toList();
+        if (!constraints.hasHardConstraint() || !filtered.isEmpty()) {
+            return filtered;
+        }
+        return List.of();
+    }
+
+    private static boolean matchesPartConstraints(AiChatEngineResponse.PartRecommendation part, PartQueryConstraints constraints) {
+        if (constraints.cpuModelToken() != null && !partContainsToken(part, constraints.cpuModelToken())) {
+            return false;
+        }
+        if (constraints.targetCapacityGb() != null && !constraints.targetCapacityGb().equals(attrNumber(part.attributes(), "capacityGb"))) {
+            return false;
+        }
+        if (constraints.targetModuleCount() != null && !constraints.targetModuleCount().equals(attrNumber(part.attributes(), "moduleCount"))) {
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean partContainsToken(AiChatEngineResponse.PartRecommendation part, String token) {
+        String normalizedToken = compactToken(token);
+        if (normalizedToken == null) {
+            return true;
+        }
+        List<String> values = new ArrayList<>();
+        values.add(part.name());
+        values.add(text(part.attributes().get("cpuClass")));
+        values.add(text(part.attributes().get("hardwareClass")));
+        values.add(text(part.attributes().get("shortSpec")));
+        return values.stream()
+                .map(DefaultAiChatEngine::compactToken)
+                .filter(Objects::nonNull)
+                .anyMatch(value -> value.contains(normalizedToken));
     }
 
     private PartReplacementRanker.SelectionResult draftEditPartRecommendations(
@@ -928,6 +994,57 @@ public class DefaultAiChatEngine implements AiChatEngine {
                         "hardConstraints", requiredGpuClasses.isEmpty() ? "LOW" : "HIGH"
                 )
         );
+    }
+
+    private static PartQueryConstraints partQueryConstraints(String category, String message) {
+        String normalizedCategory = categoryFrom(category);
+        String cpuModelToken = "CPU".equals(normalizedCategory) ? inferCpuModelToken(message) : null;
+        Integer targetCapacityGb = "RAM".equals(normalizedCategory) ? inferCapacityGb(message) : null;
+        Integer targetModuleCount = "RAM".equals(normalizedCategory) ? inferRamModuleCount(message) : null;
+        Integer targetQuantity = targetModuleCount != null ? targetModuleCount : null;
+        List<String> keywords = new ArrayList<>();
+        if (cpuModelToken != null) {
+            keywords.add(cpuModelToken);
+        }
+        if (targetCapacityGb != null) {
+            keywords.add(targetCapacityGb + "GB");
+        }
+        if (targetModuleCount != null) {
+            keywords.add(targetModuleCount + "개");
+        }
+        return new PartQueryConstraints(
+                cpuModelToken,
+                targetCapacityGb,
+                targetModuleCount,
+                targetQuantity,
+                keywords
+        );
+    }
+
+    private static String inferCpuModelToken(String message) {
+        Matcher matcher = Pattern.compile("(\\d{4,5}\\s*(?:X3D|X|KF|K|F)|\\d{3}\\s*(?:KF|K))", Pattern.CASE_INSENSITIVE)
+                .matcher(safe(message));
+        if (!matcher.find()) {
+            return null;
+        }
+        return matcher.group(1).replaceAll("\\s+", "").toUpperCase(Locale.ROOT);
+    }
+
+    private static Integer inferCapacityGb(String message) {
+        Matcher matcher = Pattern.compile("(\\d+)\\s*(?:GB|기가|기가바이트)", Pattern.CASE_INSENSITIVE)
+                .matcher(safe(message));
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : null;
+    }
+
+    private static Integer inferRamModuleCount(String message) {
+        String normalized = safe(message).toLowerCase(Locale.ROOT);
+        if (containsAny(normalized, "한 개", "한개", "1개", "1장", "싱글", "single", "x1", "1x")) {
+            return 1;
+        }
+        if (containsAny(normalized, "두 개", "두개", "2개", "2장", "듀얼", "dual", "x2", "2x")) {
+            return 2;
+        }
+        return null;
     }
 
     private static Map<String, Object> withAgentParseMetadata(
@@ -1536,6 +1653,11 @@ public class DefaultAiChatEngine implements AiChatEngine {
         return value == null ? "" : value;
     }
 
+    private static String compactToken(String value) {
+        String text = text(value);
+        return text == null ? null : text.toUpperCase(Locale.ROOT).replaceAll("[^0-9A-Z가-힣]", "");
+    }
+
     private static boolean containsAny(String value, String... needles) {
         for (String needle : needles) {
             if (value.contains(needle)) {
@@ -1586,5 +1708,21 @@ public class DefaultAiChatEngine implements AiChatEngine {
     }
 
     private record BuildPreviewPlan(String name, String recommendedFor, double budgetRatio, String confidence) {
+    }
+
+    private record PartQueryConstraints(
+            String cpuModelToken,
+            Integer targetCapacityGb,
+            Integer targetModuleCount,
+            Integer targetQuantity,
+            List<String> requiredPartKeywords
+    ) {
+        private boolean hasHardConstraint() {
+            return cpuModelToken != null || targetCapacityGb != null || targetModuleCount != null;
+        }
+
+        private int targetQuantity(int fallback) {
+            return targetQuantity == null || targetQuantity <= 0 ? fallback : targetQuantity;
+        }
     }
 }

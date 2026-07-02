@@ -148,6 +148,26 @@ class BuildChatServiceTest {
     }
 
     @Test
+    void partQuestionUsesExplicitRamSingleQuantityInResponseOptions() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        ToolCheckService toolCheckService = mock(ToolCheckService.class);
+        AiChatEngine aiChatEngine = mock(AiChatEngine.class);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
+        when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class))).thenReturn(singleRamResponse());
+
+        Map<String, Object> response = service.chat(Map.of("message", "램 32기가 한 개 달린 거 추천해줘"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> partRecommendation = (Map<String, Object>) response.get("partRecommendation");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> options = (List<Map<String, Object>>) partRecommendation.get("options");
+        assertThat(options).singleElement()
+                .satisfies(option -> assertThat(option)
+                        .containsEntry("partId", "ram-32-single")
+                        .containsEntry("quantity", 1));
+    }
+
+    @Test
     void buildChatExcludesPartRecommendationAndDraftActionWhenToolReturnsBlockingFail() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         ToolCheckService toolCheckService = mock(ToolCheckService.class);
@@ -280,6 +300,27 @@ class BuildChatServiceTest {
                         part("GPU", "gpu-3", 700_000)
                 ),
                 Map.of("category", "GPU"),
+                List.of("evidence-1"),
+                List.of(),
+                null
+        );
+    }
+
+    private static AiChatEngineResponse singleRamResponse() {
+        return new AiChatEngineResponse(
+                "램 32GB 1개 구성으로 추천해드릴게요.",
+                AiChatIntent.PART_RECOMMEND,
+                List.<AiChatAction>of(),
+                List.of(),
+                List.of(new AiChatEngineResponse.PartRecommendation(
+                        "ram-32-single",
+                        "RAM",
+                        "Samsung DDR5 32GB UDIMM",
+                        "Samsung",
+                        117_4250,
+                        Map.of("toolReady", true, "shortSpec", "32GB x1, DDR5-5600", "capacityGb", 32, "moduleCount", 1)
+                )),
+                Map.of("category", "RAM", "targetCapacityGb", 32, "targetModuleCount", 1, "targetQuantity", 1),
                 List.of("evidence-1"),
                 List.of(),
                 null
