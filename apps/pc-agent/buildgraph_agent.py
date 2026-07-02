@@ -5,7 +5,11 @@ import gzip
 import hashlib
 import json
 import mimetypes
+import os
+import platform
 import random
+import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -19,9 +23,24 @@ from pathlib import Path
 from typing import Any, Sequence
 
 try:
+    import tkinter as tk
+    from tkinter import ttk
+except Exception:  # pragma: no cover - optional in minimal packaged runtimes
+    tk = None
+    ttk = None
+
+try:
     import psutil
 except Exception:  # pragma: no cover - optional for prototype environments
     psutil = None
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except Exception:  # pragma: no cover - optional outside packaged Windows agent
+    pystray = None
+    Image = None
+    ImageDraw = None
 
 KST = timezone(timedelta(hours=9))
 DEFAULT_CONFIG_PATH = Path("agent-config.json")
@@ -33,6 +52,9 @@ REGISTER_PATH = "/api/agent/devices/register"
 LOG_UPLOAD_PATH = "/api/agent/log-uploads"
 REGISTERED_STATUS = "REGISTERED"
 UNREGISTERED_STATUS = "UNREGISTERED"
+APP_NAME = "BuildGraphAgent"
+DEFAULT_AGENT_VERSION = "0.1.0"
+DEFAULT_POLICY_VERSION = "policy-v1"
 
 
 class ConfigError(ValueError):
@@ -51,6 +73,15 @@ class UploadError(AgentError):
     pass
 
 
+class AgentRuntime:
+    def __init__(self) -> None:
+        self.running = True
+        self.index = 0
+
+    def stop(self) -> None:
+        self.running = False
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     api_base_url: str
@@ -62,6 +93,8 @@ class AgentConfig:
     agent_token: str | None = None
     log_dir: Path = DEFAULT_LOG_DIR
     schema_version: int = DEFAULT_SCHEMA_VERSION
+    web_base_url: str | None = None
+    environment: str = "local"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentConfig":
@@ -75,6 +108,8 @@ class AgentConfig:
             agent_token=optional_config_text(data, "agentToken"),
             log_dir=optional_config_path(data, "logDir", DEFAULT_LOG_DIR),
             schema_version=optional_config_int(data, "schemaVersion", DEFAULT_SCHEMA_VERSION),
+            web_base_url=optional_config_text(data, "webBaseUrl"),
+            environment=optional_config_text(data, "environment") or "local",
         )
 
     def registration_status(self) -> str:
@@ -134,6 +169,118 @@ def load_config(path: Path) -> AgentConfig:
     return AgentConfig.from_dict(data)
 
 
+def app_data_dir() -> Path:
+    root = os.environ.get("LOCALAPPDATA")
+    if root:
+        return Path(root) / APP_NAME
+    return Path.home() / f".{APP_NAME.lower()}"
+
+
+def default_background_config_path() -> Path:
+    return app_data_dir() / "agent-config.json"
+
+
+def web_base_url(config: AgentConfig) -> str:
+    if config.web_base_url:
+        return config.web_base_url.rstrip("/")
+    base = config.api_base_url.rstrip("/")
+    if base.endswith(":8080"):
+        return base[:-5] + ":5173"
+    return base
+
+
+def support_new_url(config: AgentConfig) -> str:
+    return f"{web_base_url(config)}/support/new"
+
+
+def restrict_file_to_current_user(path: Path) -> None:
+    if os.name == "nt":
+        user_sid = current_user_sid()
+        if not user_sid:
+            return
+        try:
+            subprocess.run(
+                [
+                    "icacls",
+                    str(path),
+                    "/inheritance:r",
+                    "/grant:r",
+                    f"*{user_sid}:F",
+                    "*S-1-5-32-544:F",
+                    "*S-1-5-18:F",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception:
+            return
+    else:
+        try:
+            path.chmod(0o600)
+        except Exception:
+            return
+
+
+def current_user_sid() -> str | None:
+    if os.name != "nt":
+        return None
+    try:
+        result = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    parts = [part.strip().strip('"') for part in result.stdout.strip().split(",")]
+    if len(parts) < 2 or not parts[1].startswith("S-"):
+        return None
+    return parts[1]
+
+
+def config_access_summary(path: Path) -> str:
+    if os.name == "nt":
+        return "restricted to current user when saved on Windows"
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        return "unknown"
+    return oct(mode)
+
+
+def device_fingerprint_hash() -> str:
+    raw = f"{socket.gethostname()}:{os.environ.get('USERNAME', '')}:{platform.platform()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def ensure_default_config(path: Path) -> Path:
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "apiBaseUrl": "http://localhost:8080",
+        "activationToken": "demo-agent-activation-token",
+        "deviceFingerprintHash": device_fingerprint_hash(),
+        "osVersion": platform.platform(),
+        "agentVersion": DEFAULT_AGENT_VERSION,
+        "policyVersion": DEFAULT_POLICY_VERSION,
+        "agentToken": None,
+        "logDir": str(path.parent / "logs"),
+        "schemaVersion": DEFAULT_SCHEMA_VERSION,
+        "webBaseUrl": "http://localhost:5173",
+        "environment": "local",
+    }
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    restrict_file_to_current_user(path)
+    return path
+
+
 def log_file(config: AgentConfig) -> Path:
     return config.log_dir / DEFAULT_LOG_FILE
 
@@ -155,6 +302,9 @@ def print_doctor(config_path: Path) -> None:
     print(f"logBytes: {path.stat().st_size if path.exists() else 0}")
     print(f"agentVersion: {config.agent_version}")
     print(f"policyVersion: {config.policy_version}")
+    print(f"environment: {config.environment}")
+    print(f"webBaseUrl: {web_base_url(config)}")
+    print(f"configAccess: {config_access_summary(config_path)}")
     if config.agent_token:
         print("agentToken: present")
     else:
@@ -224,6 +374,7 @@ def save_agent_token(config_path: Path, agent_token: str) -> None:
     with config_path.open("w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=2)
         file.write("\n")
+    restrict_file_to_current_user(config_path)
 
 
 def register_agent(config_path: Path) -> None:
@@ -280,10 +431,15 @@ def read_recent_rows(source: Path, minutes: int) -> list[dict]:
         for line in file:
             if not line.strip():
                 continue
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
             try:
                 ts = datetime.fromisoformat(row["timestamp"])
-            except ValueError:
+            except (KeyError, TypeError, ValueError):
                 continue
             if ts >= cutoff:
                 rows.append(row)
@@ -310,7 +466,13 @@ def append_metric(config: AgentConfig, index: int = 0) -> Path:
 
 
 def gzip_recent(source: Path, out: Path, minutes: int = DEFAULT_RANGE_MINUTES) -> int:
+    if minutes <= 0:
+        raise AgentError("minutes must be greater than 0.")
+    if not source.exists():
+        raise AgentError(f"log file does not exist: {source}")
     rows = read_recent_rows(source, minutes)
+    if not rows:
+        raise AgentError(f"no log rows found in the last {minutes} minutes: {source}")
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("wb") as raw_file:
         with gzip.GzipFile(fileobj=raw_file, mode="wb", mtime=0) as gzip_file:
@@ -320,9 +482,9 @@ def gzip_recent(source: Path, out: Path, minutes: int = DEFAULT_RANGE_MINUTES) -
     return out.stat().st_size
 
 
-def support_url(api_base_url: str, ticket_id: str) -> str:
-    base = api_base_url.rstrip("/")
-    if base.endswith(":8080"):
+def support_url(api_base_url: str, ticket_id: str, configured_web_base_url: str | None = None) -> str:
+    base = configured_web_base_url.rstrip("/") if configured_web_base_url else api_base_url.rstrip("/")
+    if not configured_web_base_url and base.endswith(":8080"):
         base = base[:-5] + ":5173"
     return f"{base}/support/{ticket_id}"
 
@@ -411,6 +573,448 @@ def collect_metrics(config: AgentConfig, iterations: int | None, interval_second
             time.sleep(interval_seconds)
 
 
+def hide_console_window() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        window = ctypes.windll.kernel32.GetConsoleWindow()
+        if window:
+            ctypes.windll.user32.ShowWindow(window, 0)
+    except Exception:
+        return
+
+
+def startup_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        raise AgentError("APPDATA is not available; cannot register startup command.")
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
+def executable_command() -> str:
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" run-background'
+    script = Path(__file__).resolve()
+    return f'"{sys.executable}" "{script}" run-background'
+
+
+def register_startup() -> Path:
+    directory = startup_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{APP_NAME}.cmd"
+    path.write_text(f"@echo off\nstart \"\" {executable_command()}\n", encoding="utf-8")
+    return path
+
+
+def pid_file() -> Path:
+    return app_data_dir() / "agent.pid"
+
+
+def write_pid() -> None:
+    path = pid_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def remove_pid() -> None:
+    try:
+        pid_file().unlink(missing_ok=True)
+    except Exception:
+        return
+
+
+def create_tray_image() -> object | None:
+    if Image is None or ImageDraw is None:
+        return None
+    image = Image.new("RGB", (64, 64), "#1d4ed8")
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((10, 10, 54, 54), fill="#ffffff")
+    draw.rectangle((27, 18, 37, 46), fill="#1d4ed8")
+    draw.rectangle((18, 27, 46, 37), fill="#1d4ed8")
+    return image
+
+
+def open_log_folder(config_path: Path) -> None:
+    config = load_config(config_path)
+    config.log_dir.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(config.log_dir.resolve()))
+
+
+def read_log_tail(path: Path, limit: int = 100) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows[-limit:]
+
+
+def parse_log_timestamp(row: dict[str, Any]) -> datetime | None:
+    value = row.get("timestamp")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def read_log_hour(path: Path, date_text: str, hour: int, limit: int = 500) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        selected_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+    except ValueError:
+        return []
+    if hour < 0 or hour > 23:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            timestamp = parse_log_timestamp(row)
+            if timestamp and timestamp.date() == selected_date and timestamp.hour == hour:
+                rows.append(row)
+    return rows[-limit:]
+
+
+def format_percent(value: Any) -> str:
+    if isinstance(value, int | float):
+        return f"{value:.1f}%"
+    return "-"
+
+
+def powershell_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def show_log_viewer_powershell(config_path: Path) -> None:
+    config = load_config(config_path)
+    config.log_dir.mkdir(parents=True, exist_ok=True)
+    viewer_path = app_data_dir() / "log-viewer.ps1"
+    viewer_path.parent.mkdir(parents=True, exist_ok=True)
+    script = f"""
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$logPath = {powershell_string(str(log_file(config).resolve()))}
+$logDir = {powershell_string(str(config.log_dir.resolve()))}
+$supportUrl = {powershell_string(support_new_url(config))}
+
+function Get-FilteredLogText {{
+  param([string]$DateText, [int]$Hour)
+  if (-not (Test-Path -LiteralPath $logPath)) {{
+    return "No log file yet.`r`n$logPath"
+  }}
+  $output = New-Object System.Collections.Generic.List[string]
+  try {{
+    $start = [datetime]::ParseExact($DateText, "yyyy-MM-dd", $null).AddHours($Hour)
+  }} catch {{
+    return "Invalid date. Use yyyy-MM-dd."
+  }}
+  $end = $start.AddHours(1)
+  Get-Content -LiteralPath $logPath | ForEach-Object {{
+    try {{
+      $row = $_ | ConvertFrom-Json
+      $observedAt = [datetime]::Parse([string]$row.timestamp)
+      if ($observedAt -ge $start -and $observedAt -lt $end) {{
+        $timestamp = if ($row.timestamp) {{ $row.timestamp }} else {{ "-" }}
+        $cpu = if ($null -ne $row.cpuUsage) {{ "{{0:N1}}%" -f [double]$row.cpuUsage }} else {{ "-" }}
+        $memory = if ($null -ne $row.memoryUsage) {{ "{{0:N1}}%" -f [double]$row.memoryUsage }} else {{ "-" }}
+        $eventType = if ($row.eventType) {{ $row.eventType }} else {{ "-" }}
+        $message = if ($row.message) {{ $row.message }} else {{ "-" }}
+        $output.Add("$timestamp`tCPU $cpu`tMEM $memory`t$eventType`t$message")
+      }}
+    }} catch {{}}
+  }}
+  if ($output.Count -eq 0) {{
+    return "No logs for $DateText $($Hour.ToString('00')):00 - $($Hour.ToString('00')):59.`r`n$logPath"
+  }}
+  if ($output.Count -gt 500) {{
+    $output = $output.GetRange($output.Count - 500, 500)
+  }}
+  return ($output -join "`r`n")
+}}
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "BuildGraph PC Agent"
+$form.Size = New-Object System.Drawing.Size(820, 460)
+$form.StartPosition = "CenterScreen"
+
+$label = New-Object System.Windows.Forms.Label
+$label.Text = "Collected logs by 1-hour range"
+$label.AutoSize = $true
+$label.Location = New-Object System.Drawing.Point(12, 12)
+$form.Controls.Add($label)
+
+$dateLabel = New-Object System.Windows.Forms.Label
+$dateLabel.Text = "Date"
+$dateLabel.AutoSize = $true
+$dateLabel.Location = New-Object System.Drawing.Point(12, 42)
+$form.Controls.Add($dateLabel)
+
+$dateInput = New-Object System.Windows.Forms.TextBox
+$dateInput.Location = New-Object System.Drawing.Point(54, 38)
+$dateInput.Size = New-Object System.Drawing.Size(96, 22)
+$dateInput.Text = (Get-Date).ToString("yyyy-MM-dd")
+$form.Controls.Add($dateInput)
+
+$hourLabel = New-Object System.Windows.Forms.Label
+$hourLabel.Text = "Hour"
+$hourLabel.AutoSize = $true
+$hourLabel.Location = New-Object System.Drawing.Point(166, 42)
+$form.Controls.Add($hourLabel)
+
+$hourSelect = New-Object System.Windows.Forms.ComboBox
+$hourSelect.DropDownStyle = "DropDownList"
+$hourSelect.Location = New-Object System.Drawing.Point(208, 38)
+$hourSelect.Size = New-Object System.Drawing.Size(72, 22)
+0..23 | ForEach-Object {{ [void]$hourSelect.Items.Add(($_.ToString("00")) + ":00") }}
+$hourSelect.SelectedIndex = [int](Get-Date).Hour
+$form.Controls.Add($hourSelect)
+
+$textbox = New-Object System.Windows.Forms.TextBox
+$textbox.Multiline = $true
+$textbox.ScrollBars = "Both"
+$textbox.ReadOnly = $true
+$textbox.Font = New-Object System.Drawing.Font("Consolas", 9)
+$textbox.Location = New-Object System.Drawing.Point(12, 72)
+$textbox.Size = New-Object System.Drawing.Size(780, 288)
+$textbox.Text = Get-FilteredLogText $dateInput.Text $hourSelect.SelectedIndex
+$form.Controls.Add($textbox)
+
+$refresh = New-Object System.Windows.Forms.Button
+$refresh.Text = "Load hour"
+$refresh.Location = New-Object System.Drawing.Point(292, 37)
+$refresh.Size = New-Object System.Drawing.Size(88, 24)
+$refresh.Add_Click({{ $textbox.Text = Get-FilteredLogText $dateInput.Text $hourSelect.SelectedIndex }})
+$form.Controls.Add($refresh)
+
+$today = New-Object System.Windows.Forms.Button
+$today.Text = "Now"
+$today.Location = New-Object System.Drawing.Point(388, 37)
+$today.Size = New-Object System.Drawing.Size(64, 24)
+$today.Add_Click({{
+  $dateInput.Text = (Get-Date).ToString("yyyy-MM-dd")
+  $hourSelect.SelectedIndex = [int](Get-Date).Hour
+  $textbox.Text = Get-FilteredLogText $dateInput.Text $hourSelect.SelectedIndex
+}})
+$form.Controls.Add($today)
+
+$folder = New-Object System.Windows.Forms.Button
+$folder.Text = "Open log folder"
+$folder.Location = New-Object System.Drawing.Point(12, 374)
+$folder.Size = New-Object System.Drawing.Size(120, 24)
+$folder.Add_Click({{ Start-Process -FilePath $logDir }})
+$form.Controls.Add($folder)
+
+$support = New-Object System.Windows.Forms.Button
+$support.Text = "Open AS page"
+$support.Location = New-Object System.Drawing.Point(144, 374)
+$support.Size = New-Object System.Drawing.Size(112, 24)
+$support.Add_Click({{ Start-Process -FilePath $supportUrl }})
+$form.Controls.Add($support)
+
+[void]$form.ShowDialog()
+"""
+    viewer_path.write_text(script.strip() + "\n", encoding="utf-8")
+    try:
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(viewer_path),
+            ],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        open_log_folder(config_path)
+
+
+def show_log_viewer(config_path: Path) -> None:
+    if tk is None or ttk is None:
+        show_log_viewer_powershell(config_path)
+        return
+
+    config = load_config(config_path)
+    config.log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_file(config)
+
+    root = tk.Tk()
+    root.title("BuildGraph PC Agent")
+    root.geometry("760x420")
+    root.minsize(640, 340)
+
+    status = tk.StringVar(value="Loading recent logs...")
+    header = ttk.Frame(root, padding=(12, 10, 12, 6))
+    header.pack(fill="x")
+
+    ttk.Label(header, text="BuildGraph PC Agent", font=("Segoe UI", 13, "bold")).pack(anchor="w")
+    ttk.Label(header, textvariable=status).pack(anchor="w", pady=(4, 0))
+
+    filters = ttk.Frame(root, padding=(12, 4, 12, 4))
+    filters.pack(fill="x")
+    ttk.Label(filters, text="Date").pack(side="left")
+    date_value = tk.StringVar(value=datetime.now(KST).strftime("%Y-%m-%d"))
+    date_entry = ttk.Entry(filters, textvariable=date_value, width=12)
+    date_entry.pack(side="left", padx=(6, 14))
+    ttk.Label(filters, text="Hour").pack(side="left")
+    hour_value = tk.StringVar(value=f"{datetime.now(KST).hour:02d}:00")
+    hour_select = ttk.Combobox(
+        filters,
+        textvariable=hour_value,
+        values=[f"{hour:02d}:00" for hour in range(24)],
+        width=7,
+        state="readonly",
+    )
+    hour_select.pack(side="left", padx=(6, 14))
+
+    columns = ("timestamp", "cpu", "memory", "event", "message")
+    table_frame = ttk.Frame(root, padding=(12, 4, 12, 4))
+    table_frame.pack(fill="both", expand=True)
+    tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=12)
+    tree.heading("timestamp", text="Timestamp")
+    tree.heading("cpu", text="CPU")
+    tree.heading("memory", text="Memory")
+    tree.heading("event", text="Event")
+    tree.heading("message", text="Message")
+    tree.column("timestamp", width=190, anchor="w")
+    tree.column("cpu", width=70, anchor="e")
+    tree.column("memory", width=80, anchor="e")
+    tree.column("event", width=160, anchor="w")
+    tree.column("message", width=240, anchor="w")
+
+    scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=scrollbar.set)
+    tree.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    def refresh() -> None:
+        try:
+            selected_hour = int(hour_value.get().split(":", 1)[0])
+        except ValueError:
+            selected_hour = datetime.now(KST).hour
+        rows = read_log_hour(path, date_value.get(), selected_hour, 500)
+        tree.delete(*tree.get_children())
+        for row in rows:
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    str(row.get("timestamp", "-")),
+                    format_percent(row.get("cpuUsage")),
+                    format_percent(row.get("memoryUsage")),
+                    str(row.get("eventType", "-")),
+                    str(row.get("message", "-")),
+                ),
+            )
+        token_status = "present" if config.agent_token else "missing"
+        status.set(
+            f"Status: running | Agent token: {token_status} | "
+            f"Range: {date_value.get()} {selected_hour:02d}:00 | Rows shown: {len(rows)} | Log file: {path}"
+        )
+
+    def set_current_hour() -> None:
+        now = datetime.now(KST)
+        date_value.set(now.strftime("%Y-%m-%d"))
+        hour_value.set(f"{now.hour:02d}:00")
+        refresh()
+
+    buttons = ttk.Frame(root, padding=(12, 6, 12, 12))
+    buttons.pack(fill="x")
+    ttk.Button(buttons, text="Load hour", command=refresh).pack(side="left")
+    ttk.Button(buttons, text="Now", command=set_current_hour).pack(side="left", padx=(8, 0))
+    ttk.Button(buttons, text="Open log folder", command=lambda: open_log_folder(config_path)).pack(side="left", padx=(8, 0))
+    ttk.Button(buttons, text="Open AS page", command=lambda: open_support_page(config_path)).pack(side="left", padx=(8, 0))
+
+    refresh()
+    root.mainloop()
+
+
+def open_support_page(config_path: Path) -> None:
+    config = load_config(config_path)
+    webbrowser.open(support_new_url(config))
+
+
+def collect_background_loop(config_path: Path, runtime: AgentRuntime, interval_seconds: int) -> None:
+    while runtime.running:
+        try:
+            config = load_config(config_path)
+            append_metric(config, runtime.index)
+            runtime.index += 1
+        except Exception as exception:
+            error_log = app_data_dir() / "agent-error.log"
+            error_log.parent.mkdir(parents=True, exist_ok=True)
+            with error_log.open("a", encoding="utf-8") as file:
+                file.write(f"{datetime.now(KST).isoformat()} {exception}\n")
+        for _ in range(interval_seconds):
+            if not runtime.running:
+                break
+            time.sleep(1)
+
+
+def run_background(config_path: Path | None = None, interval_seconds: int = 5, with_tray: bool = True) -> int:
+    path = ensure_default_config(config_path or default_background_config_path())
+    register_startup()
+    hide_console_window()
+    write_pid()
+    runtime = AgentRuntime()
+
+    import threading
+
+    worker = threading.Thread(target=collect_background_loop, args=(path, runtime, interval_seconds), daemon=True)
+    worker.start()
+
+    if with_tray and pystray is not None:
+        def stop(icon: object, item: object = None) -> None:
+            runtime.stop()
+            remove_pid()
+            icon.stop()
+
+        icon = pystray.Icon(
+            APP_NAME,
+            create_tray_image(),
+            "BuildGraph PC Agent",
+            menu=pystray.Menu(
+                pystray.MenuItem("Open log viewer", lambda icon, item: show_log_viewer(path), default=True),
+                pystray.MenuItem("Open log folder", lambda icon, item: open_log_folder(path)),
+                pystray.MenuItem("Open AS page", lambda icon, item: open_support_page(path)),
+                pystray.MenuItem("Stop", stop),
+            ),
+        )
+        icon.run()
+    else:
+        try:
+            while runtime.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            runtime.stop()
+
+    runtime.stop()
+    remove_pid()
+    return 0
+
+
 def upload_recent(
     config: AgentConfig,
     work_dir: Path,
@@ -431,7 +1035,7 @@ def upload_recent(
     print("Replay the same command with this Idempotency-Key to verify duplicate ticket prevention.")
     result = upload_gzip(config, gzip_path, key, symptom)
     ticket_id = str(result["ticketId"])
-    url = support_url(config.api_base_url, ticket_id)
+    url = support_url(config.api_base_url, ticket_id, config.web_base_url)
     print(f"ticketId: {ticket_id}")
     print(f"supportUrl: {url}")
     if open_browser:
@@ -440,6 +1044,10 @@ def upload_recent(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        return run_background()
+
     parser = argparse.ArgumentParser(description="BuildGraph AI PC Agent prototype CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -474,6 +1082,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     upload.add_argument("--idempotency-key", default=None)
     upload.add_argument("--no-open", action="store_true", help="do not open /support/{ticketId} in the default browser")
 
+    background = sub.add_parser("run-background", help="run as a startup-friendly background tray agent")
+    background.add_argument("--config", type=Path, default=None)
+    background.add_argument("--interval-seconds", type=int, default=5)
+    background.add_argument("--no-tray", action="store_true")
+
     args = parser.parse_args(argv)
 
     try:
@@ -496,6 +1109,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "upload":
             config = load_config(args.config)
             upload_recent(config, args.work_dir, args.symptom, args.idempotency_key, not args.no_open)
+        elif args.command == "run-background":
+            return run_background(args.config, args.interval_seconds, not args.no_tray)
     except ConfigError as exception:
         print(f"config error: {exception}", file=sys.stderr)
         return 2

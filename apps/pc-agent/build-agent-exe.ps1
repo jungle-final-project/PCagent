@@ -11,6 +11,12 @@ python -m PyInstaller `
   --noconfirm `
   --onefile `
   --name agent `
+  --exclude-module numpy `
+  --exclude-module scipy `
+  --exclude-module pandas `
+  --exclude-module matplotlib `
+  --exclude-module IPython `
+  --exclude-module jupyter `
   --distpath $Dist `
   --workpath $Work `
   (Join-Path $Root "buildgraph_agent.py")
