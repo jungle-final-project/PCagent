@@ -2,7 +2,7 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { AdminShell, DataTable, Panel, StateMessage } from '../../../components/ui';
 import { getAgentSession, getRagEvidence } from '../adminApi';
-import { KoreanStatusBadge, koreanStatusLabel } from '../adminDisplay';
+import { KoreanStatusBadge, koreanStatusLabel, koreanToolLabel } from '../adminDisplay';
 import type { AgentSessionDetail, LlmGeneration, RagEvidenceDetail, ToolInvocation } from '../adminApi';
 
 export function AgentSessionAdminPage() {
@@ -71,7 +71,7 @@ export function AgentSessionAdminPage() {
         </Panel>
         <Panel title="도구 호출 이력">
           {session.toolInvocations.length ? (
-            <DataTable columns={['식별자', '도구', '상태', '신뢰도', '지연 시간', '요약']} rows={toolRows(session.toolInvocations)} />
+            <DataTable columns={['식별자', '도구', '상태', '근거 수준', '지연 시간', '요약']} rows={toolRows(session.toolInvocations)} />
           ) : (
             <StateMessage type="info" title="도구 호출 없음" body="이 에이전트 세션에 연결된 도구 호출 기록이 없습니다." />
           )}
@@ -109,9 +109,9 @@ function timelineRows(session: AgentSessionDetail) {
 function toolRows(toolInvocations: ToolInvocation[]) {
   return toolInvocations.map((invocation) => ({
     식별자: <Link className="font-bold text-brand-blue" to={`/admin/tool-invocations/${invocation.id}`}>{shortId(invocation.id)}</Link>,
-    도구: invocation.toolName,
+    도구: koreanToolLabel(invocation.toolName),
     상태: <KoreanStatusBadge status={invocation.status} />,
-    신뢰도: <KoreanStatusBadge status={invocation.confidence} />,
+    '근거 수준': <KoreanStatusBadge status={invocation.confidence} />,
     '지연 시간': invocation.latencyMs == null ? '-' : `${invocation.latencyMs}ms`,
     요약: invocation.summary
   }));

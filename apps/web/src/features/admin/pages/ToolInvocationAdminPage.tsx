@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { AdminShell, DataTable, Panel, StateMessage } from '../../../components/ui';
 import { getToolInvocation } from '../adminApi';
-import { KoreanStatusBadge, koreanStatusLabel } from '../adminDisplay';
+import { KoreanStatusBadge, koreanStatusLabel, koreanToolLabel } from '../adminDisplay';
 import type { ToolInvocation } from '../adminApi';
 
 export function ToolInvocationAdminPage() {
@@ -44,7 +44,7 @@ export function ToolInvocationAdminPage() {
   return (
     <AdminShell title="도구 호출 상세">
       <div className="grid grid-cols-[1fr_420px] gap-5">
-        <Panel title="호출 상세" subtitle={`${invocation.toolName} / ${invocation.id}`}>
+        <Panel title="호출 상세" subtitle={`${koreanToolLabel(invocation.toolName)} / ${invocation.id}`}>
           <DataTable columns={['필드', '값']} rows={detailRows(invocation)} />
         </Panel>
         <Panel title="결과 요약">
@@ -64,9 +64,9 @@ export function ToolInvocationAdminPage() {
 function detailRows(invocation: ToolInvocation) {
   return [
     { 필드: '호출 식별자', 값: invocation.id },
-    { 필드: '도구', 값: invocation.toolName },
+    { 필드: '도구', 값: koreanToolLabel(invocation.toolName) },
     { 필드: '상태', 값: <KoreanStatusBadge status={invocation.status} /> },
-    { 필드: '신뢰도', 값: <KoreanStatusBadge status={invocation.confidence} /> },
+    { 필드: '근거 수준', 값: <KoreanStatusBadge status={invocation.confidence} /> },
     { 필드: '지연 시간', 값: invocation.latencyMs == null ? '-' : `${invocation.latencyMs}ms` },
     {
       필드: '세션 식별자',

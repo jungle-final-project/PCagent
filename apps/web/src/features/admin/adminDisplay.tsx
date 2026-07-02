@@ -19,6 +19,14 @@ const STATUS_LABELS: Record<string, string> = {
   RESOLVED: '해결'
 };
 
+const TOOL_LABELS: Record<string, string> = {
+  compatibility: '호환성 확인',
+  power: '전력 여유 확인',
+  size: '장착 규격 확인',
+  performance: '성능 적합도',
+  price: '예산 확인'
+};
+
 const SUCCESS_STATUSES = new Set(['SUCCEEDED', 'PASS', 'HIGH', 'ACTIVE', 'RESOLVED']);
 const WARN_STATUSES = new Set(['WARN', 'MEDIUM', 'OPEN', 'READY', 'QUEUED', 'FALLBACK_READY']);
 const FAIL_STATUSES = new Set(['FAILED', 'FAIL', 'LOW']);
@@ -29,6 +37,13 @@ export function koreanStatusLabel(status?: string | null) {
     return '-';
   }
   return STATUS_LABELS[status.toUpperCase()] ?? status;
+}
+
+export function koreanToolLabel(toolName?: string | null) {
+  if (!toolName) {
+    return '-';
+  }
+  return TOOL_LABELS[toolName.toLowerCase()] ?? toolName;
 }
 
 export function KoreanStatusBadge({ status }: { status: string }) {

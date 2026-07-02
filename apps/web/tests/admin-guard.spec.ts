@@ -174,6 +174,8 @@ test('renders admin page when auth/me returns ADMIN role', async ({ page }) => {
   await expect(page.locator('body')).toContainText('에이전트 / 검색 근거 / 도구 근거 상세');
   await expect(page.getByRole('main')).toContainText('에이전트 실행 이력');
   await expect(page.getByRole('main')).toContainText('도구 호출 이력');
+  await expect(page.getByRole('main')).toContainText('근거 수준');
+  await expect(page.getByRole('main')).toContainText('호환성 확인');
   await expect(page.getByRole('main')).toContainText('검색 근거');
   await expect(page.getByRole('main')).toContainText('통과');
   await expect(page.getByRole('main')).toContainText('Compatibility check passed.');
@@ -226,6 +228,26 @@ test('renders admin Agent, Tool, and RAG list pages with detail links', async ({
             summary: 'Power check passed.',
             latencyMs: 42,
             createdAt: '2026-06-29T10:36:10Z'
+          },
+          {
+            id: 'tool-perf-001',
+            agentSessionId: 'demo-session',
+            toolName: 'performance',
+            status: 'PASS',
+            confidence: 'MEDIUM',
+            summary: 'QHD gaming and development fit.',
+            latencyMs: 73,
+            createdAt: '2026-06-29T10:36:12Z'
+          },
+          {
+            id: 'tool-budget-001',
+            agentSessionId: 'demo-session',
+            toolName: 'price',
+            status: 'PASS',
+            confidence: 'HIGH',
+            summary: 'Budget check passed.',
+            latencyMs: 31,
+            createdAt: '2026-06-29T10:36:13Z'
           }
         ],
         page: 0,
@@ -270,7 +292,11 @@ test('renders admin Agent, Tool, and RAG list pages with detail links', async ({
   await expect(page.locator('body')).toContainText('도구 호출 목록');
   await expect(page.locator('main')).toContainText('세션');
   await expect(page.locator('main')).toContainText('도구');
-  await expect(page.locator('main')).toContainText('신뢰도');
+  await expect(page.locator('main')).toContainText('근거 수준');
+  await expect(page.locator('main')).not.toContainText('신뢰도');
+  await expect(page.locator('main')).toContainText('전력 여유 확인');
+  await expect(page.locator('main')).toContainText('성능 적합도');
+  await expect(page.locator('main')).toContainText('예산 확인');
   await expect(page.locator('main')).toContainText('통과');
   await expect(page.locator('main')).toContainText('높음');
   await expect(page.getByRole('link', { name: 'tool-power-001' })).toHaveAttribute('href', '/admin/tool-invocations/tool-power-001');
@@ -330,12 +356,16 @@ test('renders admin Tool and RAG detail pages in Korean', async ({ page }) => {
 
   await page.goto('/admin/tool-invocations/tool-power-001');
   await expect(page.locator('body')).toContainText('도구 호출 상세');
+  await expect(page.locator('main')).toContainText('전력 여유 확인 / tool-power-001');
   await expect(page.locator('main')).toContainText('요청 데이터');
   await expect(page.locator('main')).toContainText('결과 데이터');
   await expect(page.locator('main')).toContainText('상태');
+  await expect(page.locator('main')).toContainText('근거 수준');
+  await expect(page.locator('main')).not.toContainText('신뢰도');
   await expect(page.locator('main')).toContainText('주의');
   await expect(page.locator('main')).toContainText('보통');
   await expect(page.locator('pre').first()).toContainText('"tool"');
+  await expect(page.locator('pre').first()).toContainText('"power"');
 
   await page.goto('/admin/rag-evidence/rag-psu-001');
   await expect(page.locator('body')).toContainText('검색 근거 상세');

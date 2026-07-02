@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { AdminShell, DataTable, Panel, StateMessage } from '../../../components/ui';
 import { getAdminToolInvocations } from '../adminApi';
-import { KoreanStatusBadge } from '../adminDisplay';
+import { KoreanStatusBadge, koreanToolLabel } from '../adminDisplay';
 
 export function ToolInvocationsListAdminPage() {
   const { data, isError, isLoading } = useQuery({
@@ -15,9 +15,9 @@ export function ToolInvocationsListAdminPage() {
     세션: invocation.agentSessionId
       ? <Link className="font-bold text-brand-blue" to={`/admin/agent-sessions/${invocation.agentSessionId}`}>{invocation.agentSessionId}</Link>
       : '-',
-    도구: invocation.toolName,
+    도구: koreanToolLabel(invocation.toolName),
     상태: <KoreanStatusBadge status={invocation.status} />,
-    신뢰도: <KoreanStatusBadge status={invocation.confidence} />,
+    '근거 수준': <KoreanStatusBadge status={invocation.confidence} />,
     '생성 시간': formatDateTime(invocation.createdAt)
   }));
   const exportRows = invocations.map((invocation) => ({
@@ -37,7 +37,7 @@ export function ToolInvocationsListAdminPage() {
         ) : isError ? (
           <StateMessage type="warn" title="도구 호출 조회 실패" body="관리자 도구 호출 목록 응답을 불러오지 못했습니다." />
         ) : rows.length ? (
-          <DataTable columns={['식별자', '세션', '도구', '상태', '신뢰도', '생성 시간']} rows={rows} />
+          <DataTable columns={['식별자', '세션', '도구', '상태', '근거 수준', '생성 시간']} rows={rows} />
         ) : (
           <StateMessage type="info" title="도구 호출 없음" body="표시할 도구 호출 기록이 없습니다." />
         )}
