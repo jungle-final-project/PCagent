@@ -2,6 +2,7 @@ package com.buildgraph.prototype.ticket;
 
 import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
+import com.buildgraph.prototype.ticket.contract.SupportDecision;
 import com.buildgraph.prototype.user.CurrentUserService;
 import java.net.URI;
 import java.time.LocalDate;
@@ -24,15 +25,7 @@ public class TicketQueryService {
     private static final Set<String> REVIEW_STATUSES = Set.of(
             "NOT_REQUIRED", "REQUIRED", "IN_REVIEW", "APPROVED", "REJECTED"
     );
-    private static final Set<String> SUPPORT_DECISIONS = Set.of(
-            "SELF_SOLVABLE",
-            "REMOTE_POSSIBLE",
-            "VISIT_REQUIRED",
-            "REPAIR_OR_REPLACE",
-            "NEEDS_MORE_INFO",
-            "MONITOR_ONLY",
-            "UNSUPPORTED"
-    );
+    private static final Set<String> SUPPORT_DECISIONS = SupportDecision.names();
     private static final Set<String> RISK_LEVELS = Set.of("LOW", "MEDIUM", "HIGH");
     private static final Set<String> VISIT_TIME_SLOTS = Set.of("MORNING", "AFTERNOON", "EVENING");
 
@@ -445,11 +438,11 @@ public class TicketQueryService {
                        admin.public_id::text AS assigned_admin_id,
                        t.cause_candidates,
                        t.upgrade_candidates,
-                       t.admin_note,
-                       COALESCE(t.log_summary->>'summaryText', lu.summary) AS log_summary_text,
                        t.incident_window,
-                       t.log_summary AS log_summary_detail,
+                       t.log_summary,
                        t.support_routing,
+                       COALESCE(t.log_summary->>'summaryText', lu.summary) AS log_summary_text,
+                       t.admin_note,
                        t.ai_diagnosis_request,
                        t.exception_approval_reason,
                        t.exception_responsibility_scope,
@@ -497,11 +490,11 @@ public class TicketQueryService {
                 "assignedAdminId", DbValueMapper.string(row, "assigned_admin_id"),
                 "causeCandidates", DbValueMapper.json(row, "cause_candidates", List.of()),
                 "upgradeCandidates", DbValueMapper.json(row, "upgrade_candidates", List.of()),
+                "incidentWindow", DbValueMapper.json(row, "incident_window", null),
+                "logSummary", DbValueMapper.json(row, "log_summary", null),
+                "supportRouting", DbValueMapper.json(row, "support_routing", null),
+                "logSummaryText", DbValueMapper.string(row, "log_summary_text"),
                 "adminNote", DbValueMapper.string(row, "admin_note"),
-                "logSummary", DbValueMapper.string(row, "log_summary_text"),
-                "incidentWindow", DbValueMapper.json(row, "incident_window", Map.of()),
-                "logSummaryDetail", DbValueMapper.json(row, "log_summary_detail", Map.of()),
-                "supportRouting", DbValueMapper.json(row, "support_routing", Map.of()),
                 "aiDiagnosisRequest", DbValueMapper.json(row, "ai_diagnosis_request", Map.of()),
                 "exceptionApprovalReason", DbValueMapper.string(row, "exception_approval_reason"),
                 "exceptionResponsibilityScope", DbValueMapper.string(row, "exception_responsibility_scope"),

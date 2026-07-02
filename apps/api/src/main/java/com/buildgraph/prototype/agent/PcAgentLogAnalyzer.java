@@ -46,13 +46,13 @@ final class PcAgentLogAnalyzer {
             "VISIT_FAN_THERMAL"
     );
     private static final Set<String> UNSUPPORTED_SYMPTOMS = Set.of(
-            "GAME_FPS_TUNING",
-            "OVERCLOCK_STABILITY",
-            "ISP_ROUTER",
-            "PERIPHERAL_PRINTER",
-            "DATA_RECOVERY",
-            "ILLEGAL_SOFTWARE",
-            "PHYSICAL_DAMAGE"
+            "UNSUPPORTED_GAME_FPS_TUNING",
+            "UNSUPPORTED_OVERCLOCK_STABILITY",
+            "UNSUPPORTED_ISP_ROUTER",
+            "UNSUPPORTED_PERIPHERAL_PRINTER",
+            "UNSUPPORTED_DATA_RECOVERY",
+            "UNSUPPORTED_ILLEGAL_SOFTWARE",
+            "UNSUPPORTED_PHYSICAL_DAMAGE"
     );
     private static final Pattern WINDOWS_PATH = Pattern.compile("(?i)[a-z]:\\\\[^\\s\"']+");
     private static final Pattern UNIX_USER_PATH = Pattern.compile("(?i)/(users|home)/[^\\s\"']+");
@@ -281,7 +281,7 @@ final class PcAgentLogAnalyzer {
                 maskedPayload,
                 MockData.map(
                         "masked", true,
-                        "containsRawPath", containsRawPath
+                        "containsRawPath", false
                 )
         );
     }
@@ -292,14 +292,14 @@ final class PcAgentLogAnalyzer {
                 "DRIVER_ERROR_REPEAT",
                 "SMART_CRITICAL",
                 "DISK_IO_ERROR_REPEAT",
-                "WHEA_REPEAT",
+                "WHEA_ERROR_REPEAT",
                 "KERNEL_POWER_REPEAT",
                 "THERMAL_SHUTDOWN",
                 "FAN_RPM_ZERO",
                 "DNS_FAILURE",
-                "APP_CRASH_REPEAT",
-                "AGENT_UPLOAD_FAILURE",
-                "EXTERNAL_NETWORK"
+                "APP_CRASH",
+                "AGENT_UPLOAD_ERROR",
+                "UNSUPPORTED_SCOPE"
         )) {
             result.put(signal, new ArrayList<>());
         }
@@ -315,7 +315,7 @@ final class PcAgentLogAnalyzer {
                 result.get("DISK_IO_ERROR_REPEAT").add(record);
             }
             if (containsAny(text, "whea", "bugcheck", "bsod", "blue screen", "hardware error", "memory hardware")) {
-                result.get("WHEA_REPEAT").add(record);
+                result.get("WHEA_ERROR_REPEAT").add(record);
             }
             if (containsAny(text, "kernel-power", "kernel power", "event id 41", "unexpected shutdown", "power loss")) {
                 result.get("KERNEL_POWER_REPEAT").add(record);
@@ -330,18 +330,18 @@ final class PcAgentLogAnalyzer {
                 result.get("DNS_FAILURE").add(record);
             }
             if (containsAny(text, "app crash", "application crash", "runtime missing", "launcher crash", "installer error")) {
-                result.get("APP_CRASH_REPEAT").add(record);
+                result.get("APP_CRASH").add(record);
             }
             if (containsAny(text, "upload failed", "auth 401", "auth 409", "config parse", "agent service stopped", "heartbeat missing")) {
-                result.get("AGENT_UPLOAD_FAILURE").add(record);
+                result.get("AGENT_UPLOAD_ERROR").add(record);
             }
             if (containsAny(text, "isp", "router", "shared router", "external network", "external service")) {
-                result.get("EXTERNAL_NETWORK").add(record);
+                result.get("UNSUPPORTED_SCOPE").add(record);
             }
         }
         result.replaceAll((signal, values) -> shouldKeepRepeatSignal(signal, values) ? values : List.of());
         if (records.isEmpty() && containsAny(symptom.toLowerCase(Locale.ROOT), "부팅", "원격 연결 불가", "boot", "cannot remote")) {
-            result.put("AGENT_UPLOAD_FAILURE", List.of());
+            result.put("AGENT_UPLOAD_ERROR", List.of());
         }
         return result;
     }
@@ -350,7 +350,7 @@ final class PcAgentLogAnalyzer {
         if (values.isEmpty()) {
             return false;
         }
-        if (Set.of("SMART_CRITICAL", "THERMAL_SHUTDOWN", "FAN_RPM_ZERO", "DNS_FAILURE", "AGENT_UPLOAD_FAILURE", "EXTERNAL_NETWORK").contains(signal)) {
+        if (Set.of("SMART_CRITICAL", "THERMAL_SHUTDOWN", "FAN_RPM_ZERO", "DNS_FAILURE", "AGENT_UPLOAD_ERROR", "UNSUPPORTED_SCOPE").contains(signal)) {
             return true;
         }
         return values.size() >= 2;
@@ -367,17 +367,17 @@ final class PcAgentLogAnalyzer {
         if (UNSUPPORTED_SYMPTOMS.contains(symptomType) || unsupportedText(symptom)) {
             decision = "UNSUPPORTED";
             confidence = "HIGH";
-            reasons.add("UNSUPPORTED_CATEGORY");
-            blockingFactors.add("REMOTE_AND_VISIT_BOOKING_BLOCKED_BY_DEFAULT");
+            reasons.add("UNSUPPORTED_SCOPE");
+            blockingFactors.add("OUT_OF_SCOPE");
         } else if ("REMOTE_STORAGE_MEMORY".equals(symptomType)
                 && (reasonCodes.contains("SMART_CRITICAL") || reasonCodes.contains("DISK_IO_ERROR_REPEAT"))) {
             decision = "REPAIR_OR_REPLACE";
             confidence = "HIGH";
-            visitReasons.add("Disk failure signals are unsafe for remote-only handling.");
-        } else if ("REMOTE_LOCAL_NETWORK".equals(symptomType) && reasonCodes.contains("EXTERNAL_NETWORK")) {
+            visitReasons.add("SMART_CRITICAL");
+        } else if ("REMOTE_LOCAL_NETWORK".equals(symptomType) && reasonCodes.contains("UNSUPPORTED_SCOPE")) {
             decision = "UNSUPPORTED";
             confidence = "HIGH";
-            blockingFactors.add("External ISP/router/service issue is outside PC Agent AS scope.");
+            blockingFactors.add("OUT_OF_SCOPE");
         } else if (REMOTE_SYMPTOMS.contains(symptomType)) {
             decision = "REMOTE_POSSIBLE";
             confidence = reasonCodes.isEmpty() ? "MEDIUM" : "HIGH";
@@ -385,44 +385,68 @@ final class PcAgentLogAnalyzer {
         } else if ("VISIT_DISK_FAILURE".equals(symptomType)) {
             decision = "REPAIR_OR_REPLACE";
             confidence = "HIGH";
-            visitReasons.add("Disk failure symptom requires repair or replacement review.");
+            visitReasons.add("SMART_CRITICAL");
         } else if (VISIT_SYMPTOMS.contains(symptomType)) {
             decision = "VISIT_REQUIRED";
             confidence = "HIGH";
-            visitReasons.add("Symptom category is visit-required by support policy.");
+            visitReasons.add(visitReasonFor(symptomType, reasonCodes));
         } else if (reasonCodes.contains("SMART_CRITICAL") || reasonCodes.contains("DISK_IO_ERROR_REPEAT")) {
             decision = "REPAIR_OR_REPLACE";
             confidence = "HIGH";
-            visitReasons.add("Disk failure rule signal matched.");
-        } else if (reasonCodes.contains("WHEA_REPEAT") || reasonCodes.contains("KERNEL_POWER_REPEAT")
+            visitReasons.add(reasonCodes.contains("DISK_IO_ERROR_REPEAT") ? "DISK_IO_ERROR_REPEAT" : "SMART_CRITICAL");
+        } else if (reasonCodes.contains("WHEA_ERROR_REPEAT") || reasonCodes.contains("KERNEL_POWER_REPEAT")
                 || reasonCodes.contains("THERMAL_SHUTDOWN") || reasonCodes.contains("FAN_RPM_ZERO")) {
             decision = "VISIT_REQUIRED";
             confidence = "HIGH";
-            visitReasons.add("Hardware-risk rule signal matched.");
+            visitReasons.add(firstHardwareVisitReason(reasonCodes));
         } else if (!reasonCodes.isEmpty()) {
             decision = "REMOTE_POSSIBLE";
-            remoteActions.add("ADMIN_REVIEW_RULE_SIGNAL");
+            remoteActions.add("CONFIG_REPAIR");
         } else {
             decision = "NEEDS_MORE_INFO";
             confidence = "LOW";
-            reasons.add("INSUFFICIENT_RULE_SIGNAL");
-            blockingFactors.add("No high-signal evidence inside incidentWindow.");
+            reasons.add("INSUFFICIENT_EVIDENCE");
+            blockingFactors.add("DATA_QUALITY_LOW");
         }
         return new RoutingDraft(decision, confidence, new ArrayList<>(reasons), remoteActions, visitReasons, blockingFactors, true);
     }
 
     private static List<String> remoteActionsFor(String symptomType, List<String> reasonCodes) {
         return switch (symptomType) {
-            case "REMOTE_AGENT" -> List.of("AGENT_RESTART", "AGENT_REREGISTER", "TOKEN_REISSUE_CHECK");
+            case "REMOTE_AGENT" -> List.of("AGENT_RESTART", "AGENT_REREGISTER", "TOKEN_REISSUE");
             case "REMOTE_DRIVER_OS" -> List.of("DRIVER_ROLLBACK", "WINDOWS_UPDATE_CHECK");
-            case "REMOTE_APP_LAUNCHER" -> List.of("APP_REPAIR", "RUNTIME_INSTALL_CHECK");
-            case "REMOTE_STORAGE_MEMORY" -> List.of("TEMP_FILE_CLEANUP", "STARTUP_APP_REVIEW", "PAGEFILE_CHECK");
-            case "REMOTE_STARTUP_SERVICE" -> List.of("STARTUP_ITEM_REVIEW", "SERVICE_RESTART_REVIEW");
+            case "REMOTE_APP_LAUNCHER" -> List.of("APP_REPAIR", "RUNTIME_INSTALL");
+            case "REMOTE_STORAGE_MEMORY" -> List.of("TEMP_FILE_CLEANUP", "STARTUP_APP_DISABLE", "PAGEFILE_CHECK");
+            case "REMOTE_STARTUP_SERVICE" -> List.of("STARTUP_APP_DISABLE", "SERVICE_RESET");
             case "REMOTE_LOCAL_NETWORK" -> reasonCodes.contains("DNS_FAILURE")
-                    ? List.of("DNS_RESET", "ADAPTER_RESET", "NIC_DRIVER_CHECK")
-                    : List.of("ADAPTER_RESET", "NIC_DRIVER_CHECK");
-            default -> List.of("ADMIN_REVIEW_RULE_SIGNAL");
+                    ? List.of("DNS_RESET", "ADAPTER_RESET", "NETWORK_DIAGNOSTIC")
+                    : List.of("ADAPTER_RESET", "NETWORK_DIAGNOSTIC");
+            default -> List.of("CONFIG_REPAIR");
         };
+    }
+
+    private static String visitReasonFor(String symptomType, List<String> reasonCodes) {
+        return switch (symptomType) {
+            case "VISIT_BOOT_REMOTE_BLOCKED" -> "BOOT_UNAVAILABLE";
+            case "VISIT_DISK_FAILURE" -> reasonCodes.contains("DISK_IO_ERROR_REPEAT") ? "DISK_IO_ERROR_REPEAT" : "SMART_CRITICAL";
+            case "VISIT_WHEA_BSOD" -> "WHEA_HARDWARE_ERROR";
+            case "VISIT_POWER_SHUTDOWN" -> "KERNEL_POWER_REPEAT";
+            case "VISIT_FAN_THERMAL" -> reasonCodes.contains("FAN_RPM_ZERO") ? "FAN_NOT_WORKING" : "THERMAL_SHUTDOWN";
+            default -> "REMOTE_CONNECTION_UNAVAILABLE";
+        };
+    }
+
+    private static String firstHardwareVisitReason(List<String> reasonCodes) {
+        if (reasonCodes.contains("WHEA_ERROR_REPEAT")) {
+            return "WHEA_HARDWARE_ERROR";
+        }
+        if (reasonCodes.contains("KERNEL_POWER_REPEAT")) {
+            return "KERNEL_POWER_REPEAT";
+        }
+        if (reasonCodes.contains("FAN_RPM_ZERO")) {
+            return "FAN_NOT_WORKING";
+        }
+        return "THERMAL_SHUTDOWN";
     }
 
     private static List<Map<String, Object>> timeline(List<RawLogRecord> records, Map<String, List<RawLogRecord>> signalRecords) {
@@ -494,10 +518,10 @@ final class PcAgentLogAnalyzer {
     }
 
     private static String severity(String signal) {
-        if (Set.of("SMART_CRITICAL", "DISK_IO_ERROR_REPEAT", "WHEA_REPEAT", "KERNEL_POWER_REPEAT", "THERMAL_SHUTDOWN", "FAN_RPM_ZERO").contains(signal)) {
+        if (Set.of("SMART_CRITICAL", "DISK_IO_ERROR_REPEAT", "WHEA_ERROR_REPEAT", "KERNEL_POWER_REPEAT", "THERMAL_SHUTDOWN", "FAN_RPM_ZERO").contains(signal)) {
             return "HIGH";
         }
-        if ("EXTERNAL_NETWORK".equals(signal)) {
+        if ("UNSUPPORTED_SCOPE".equals(signal)) {
             return "MEDIUM";
         }
         return "MEDIUM";
@@ -505,7 +529,7 @@ final class PcAgentLogAnalyzer {
 
     private static String normalizeSymptomType(String explicit, String symptom) {
         if (explicit != null && !explicit.isBlank()) {
-            return explicit.trim().toUpperCase(Locale.ROOT);
+            return normalizeLegacySymptomType(explicit.trim().toUpperCase(Locale.ROOT));
         }
         String text = symptom == null ? "" : symptom.toLowerCase(Locale.ROOT);
         if (containsAny(text, "boot", "부팅", "원격 연결 불가")) {
@@ -515,9 +539,22 @@ final class PcAgentLogAnalyzer {
             return "VISIT_DISK_FAILURE";
         }
         if (unsupportedText(symptom)) {
-            return "GAME_FPS_TUNING";
+            return "UNSUPPORTED_GAME_FPS_TUNING";
         }
         return "REMOTE_AGENT";
+    }
+
+    private static String normalizeLegacySymptomType(String symptomType) {
+        return switch (symptomType) {
+            case "GAME_FPS_TUNING" -> "UNSUPPORTED_GAME_FPS_TUNING";
+            case "OVERCLOCK_STABILITY" -> "UNSUPPORTED_OVERCLOCK_STABILITY";
+            case "ISP_ROUTER" -> "UNSUPPORTED_ISP_ROUTER";
+            case "PERIPHERAL_PRINTER" -> "UNSUPPORTED_PERIPHERAL_PRINTER";
+            case "DATA_RECOVERY" -> "UNSUPPORTED_DATA_RECOVERY";
+            case "ILLEGAL_SOFTWARE" -> "UNSUPPORTED_ILLEGAL_SOFTWARE";
+            case "PHYSICAL_DAMAGE" -> "UNSUPPORTED_PHYSICAL_DAMAGE";
+            default -> symptomType;
+        };
     }
 
     private static WindowPolicy policyFor(String symptomType, Integer explicitRangeMinutes) {
@@ -760,6 +797,7 @@ final class PcAgentLogAnalyzer {
                     "schemaVersion", schemaVersion,
                     "collectedAt", collectedAt.toString(),
                     "agentId", agentId,
+                    "deviceIdHash", agentId,
                     "sequence", sequence,
                     "kind", kind,
                     "payload", samplePayload(payload),

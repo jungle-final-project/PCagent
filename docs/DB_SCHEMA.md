@@ -1007,17 +1007,17 @@ Owner: 4번
 | `assigned_admin_id` | `BIGINT` | yes | `users.id` | 담당 관리자 |
 | `symptom` | `TEXT` | no | - | 증상 |
 | `status` | `VARCHAR(30)` | no | - | AS ticket status |
-| `analysis_status` | `VARCHAR(30)` | no | - | 분석 상태 |
-| `review_status` | `VARCHAR(30)` | no | - | 관리자 검토 상태 |
+| `analysis_status` | `VARCHAR(30)` | no | - | `NOT_STARTED`, `QUEUED`, `ANALYZING`, `RULE_READY`, `LLM_READY`, `FAILED` |
+| `review_status` | `VARCHAR(30)` | no | - | `NOT_REQUIRED`, `REQUIRED`, `IN_REVIEW`, `APPROVED`, `REJECTED` |
 | `support_decision` | `VARCHAR(50)` | yes | - | `SELF_SOLVABLE`, `REMOTE_POSSIBLE`, `VISIT_REQUIRED`, `REPAIR_OR_REPLACE`, `NEEDS_MORE_INFO`, `MONITOR_ONLY`, `UNSUPPORTED` |
 | `risk_level` | `VARCHAR(30)` | yes | - | `LOW`, `MEDIUM`, `HIGH` |
-| `auto_response_allowed` | `BOOLEAN` | no | - | 자동 안내 허용 여부 |
+| `auto_response_allowed` | `BOOLEAN` | no | - | 자동 안내 가능 여부 |
 | `cause_candidates` | `JSONB` | yes | - | 원인 후보 배열 |
 | `upgrade_candidates` | `JSONB` | yes | - | 업그레이드 후보 배열 |
-| `incident_window` | `JSONB` | yes | - | 티켓 생성 시 확정된 IncidentWindow |
-| `log_summary` | `JSONB` | yes | - | `timeline`, `anomalies`, `correlations`, `ruleSignals`, `dataQuality`, `evidenceRefs`, `rawSamples` |
-| `support_routing` | `JSONB` | yes | - | rule routing 결과 |
-| `ai_diagnosis_request` | `JSONB` | yes | - | LLM 입력용 서버 요약 요청 payload |
+| `incident_window` | `JSONB` | yes | - | `IncidentWindowDto` 계약 |
+| `log_summary` | `JSONB` | yes | - | `LogSummaryDto` 계약. rawSamples는 최대 20개 |
+| `support_routing` | `JSONB` | yes | - | `SupportRoutingDto` 계약 |
+| `ai_diagnosis_request` | `JSONB` | yes | - | `AiDiagnosisRequestDto` 계약. 원본 gzip/전체 JSONL/전체 프로세스 목록 금지 |
 | `exception_approval_reason` | `TEXT` | yes | - | `UNSUPPORTED` 예외 승인 사유 |
 | `exception_responsibility_scope` | `TEXT` | yes | - | 예외 승인 책임 범위 |
 | `exception_user_message` | `TEXT` | yes | - | 사용자 안내 문구 |

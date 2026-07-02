@@ -67,7 +67,7 @@ class PcAgentLogAnalyzerTest {
         PcAgentLogAnalyzer.AnalysisResult result = analyze(symptomType, "unsupported symptom", rawLog(1, "2026-07-02T09:55:00Z", "USER_EVENT", "unsupported issue"));
 
         assertThat(result.supportRouting().get("recommendedDecision")).isEqualTo("UNSUPPORTED");
-        assertThat(result.supportRouting().get("blockingFactors").toString()).contains("REMOTE_AND_VISIT_BOOKING_BLOCKED_BY_DEFAULT");
+        assertThat(result.supportRouting().get("blockingFactors").toString()).contains("OUT_OF_SCOPE");
     }
 
     @Test
