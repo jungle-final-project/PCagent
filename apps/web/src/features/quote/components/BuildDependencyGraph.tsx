@@ -46,14 +46,12 @@ type CandidateContext = NonNullable<BuildDependencyGraphProps['candidateContext'
 
 const categoryOrder = ['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'PSU', 'CASE', 'COOLER', 'STORAGE', 'PRICE'];
 const DEFAULT_NODE_DIAMETER = 140;
-const FLOATING_GRAPH_DEFAULT_SIZE = { width: 760, graphHeight: 560 };
+const FLOATING_GRAPH_DEFAULT_SIZE = { width: 500, graphHeight: 480 };
 const FLOATING_GRAPH_MIN_SIZE = { width: 300, graphHeight: 200 };
-const FLOATING_GRAPH_MAX_SIZE = { width: 760, graphHeight: 560 };
+const FLOATING_GRAPH_MAX_SIZE = { width: 760, graphHeight: 640 };
+const FLOATING_GRAPH_MAIN_VISIBLE_RATIO = 0.5;
 const FLOATING_GRAPH_VIEWPORT_MARGIN = 40;
 const FLOATING_GRAPH_HEADER_HEIGHT = 42;
-const FLOATING_GRAPH_CANDIDATE_MIN_HEIGHT = 260;
-const FLOATING_GRAPH_CANDIDATE_MAX_HEIGHT = 480;
-const FLOATING_GRAPH_PANEL_GAP = 12;
 const graphNodeTypes = { priceTotal: PriceTotalNode };
 const categoryPositions: Record<string, { x: number; y: number }> = {
   CPU: { x: 20, y: 170 },
@@ -127,14 +125,14 @@ export function BuildDependencyGraph({
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.intersectionRatio >= 0.18) {
+        if (entry.intersectionRatio >= FLOATING_GRAPH_MAIN_VISIBLE_RATIO) {
           hasSeenGraphRef.current = true;
           setShowFloatingGraph(false);
           return;
         }
         setShowFloatingGraph(hasSeenGraphRef.current);
       },
-      { threshold: [0, 0.18, 0.5, 1] }
+      { threshold: [0, 0.18, FLOATING_GRAPH_MAIN_VISIBLE_RATIO, 1] }
     );
     observer.observe(graphElement);
     return () => observer.disconnect();
@@ -153,10 +151,6 @@ export function BuildDependencyGraph({
     const graphEdge = displayGraph?.edges.find((item) => item.id === edge.id);
     setActiveNodeId(null);
     setActiveEdge(graphEdge ?? null);
-  };
-
-  const closeActiveNode = () => {
-    setActiveNodeId(null);
   };
 
   const scrollToMainGraph = () => {
@@ -225,6 +219,9 @@ export function BuildDependencyGraph({
                 fitViewOptions={{ padding: 0.06 }}
                 minZoom={0.45}
                 maxZoom={1.35}
+                zoomOnScroll
+                zoomOnPinch
+                panOnDrag
                 proOptions={{ hideAttribution: true }}
                 onNodeClick={(_, node: Node) => handleNodeClick(node)}
                 onEdgeClick={(_, edge: Edge) => handleEdgeClick(edge)}
@@ -318,16 +315,6 @@ export function BuildDependencyGraph({
         <FloatingDependencyGraph
           nodes={nodes}
           edges={edges}
-          activeNode={activeNode}
-          activeNodeCategory={activeNodeCategory}
-          candidateContext={candidateContext}
-          candidates={candidateQuery.data?.items ?? []}
-          isLoading={candidateQuery.isLoading}
-          isError={candidateQuery.isError}
-          rejectedCount={candidateQuery.data?.rejectedCount ?? 0}
-          onNodeClick={handleNodeClick}
-          onEdgeClick={handleEdgeClick}
-          onCloseCandidatePanel={closeActiveNode}
           onScrollToMainGraph={scrollToMainGraph}
         />
       ) : null}
@@ -338,34 +325,15 @@ export function BuildDependencyGraph({
 function FloatingDependencyGraph({
   nodes,
   edges,
-  activeNode,
-  activeNodeCategory,
-  candidateContext,
-  candidates,
-  isLoading,
-  isError,
-  rejectedCount,
-  onNodeClick,
-  onEdgeClick,
-  onCloseCandidatePanel,
   onScrollToMainGraph
 }: {
   nodes: Node[];
   edges: Edge[];
-  activeNode: BuildGraphNode | null;
-  activeNodeCategory: PartCategory | null;
-  candidateContext?: CandidateContext;
-  candidates: CompatiblePartCandidate[];
-  isLoading: boolean;
-  isError: boolean;
-  rejectedCount: number;
-  onNodeClick: (node: Node) => void;
-  onEdgeClick: (edge: Edge) => void;
-  onCloseCandidatePanel: () => void;
   onScrollToMainGraph: () => void;
 }) {
   const [size, setSize] = useState(FLOATING_GRAPH_DEFAULT_SIZE);
   const [isResizing, setIsResizing] = useState(false);
+  const [miniActiveNodeId, setMiniActiveNodeId] = useState<string | null>(null);
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const dragRef = useRef<{
@@ -401,12 +369,26 @@ function FloatingDependencyGraph({
 
   useEffect(() => {
     const clampSizeToViewport = () => {
-      setSize((current) => clampFloatingGraphSize(current, Boolean(activeNode)));
+      setSize((current) => clampFloatingGraphSize(current));
     };
     clampSizeToViewport();
     window.addEventListener('resize', clampSizeToViewport);
     return () => window.removeEventListener('resize', clampSizeToViewport);
-  }, [activeNode]);
+  }, []);
+
+  useEffect(() => {
+    if (miniActiveNodeId && !nodes.some((node) => node.id === miniActiveNodeId)) {
+      setMiniActiveNodeId(null);
+    }
+  }, [miniActiveNodeId, nodes]);
+
+  const floatingNodes = useMemo<Node[]>(() => nodes.map((node) => ({
+    ...node,
+    className: [
+      node.className,
+      node.id === miniActiveNodeId ? 'buildgraph-flow-node--mini-active' : ''
+    ].filter(Boolean).join(' ')
+  })), [miniActiveNodeId, nodes]);
 
   useEffect(() => {
     if (!isResizing) return;
@@ -453,7 +435,7 @@ function FloatingDependencyGraph({
   const startResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    const maxSize = floatingGraphMaxSize(Boolean(activeNode));
+    const maxSize = floatingGraphMaxSize();
     dragRef.current = {
       startX: event.clientX,
       startY: event.clientY,
@@ -467,28 +449,6 @@ function FloatingDependencyGraph({
 
   return (
     <div className="fixed bottom-5 left-5 z-[70] hidden max-w-[calc(100vw-2.5rem)] flex-col items-start gap-3 lg:flex">
-      {activeNode ? (
-        <div
-          data-testid="floating-graph-candidate-panel"
-          className="shrink-0 overflow-y-auto"
-          style={{
-            width: size.width,
-            maxHeight: floatingCandidatePanelMaxHeight(size.graphHeight)
-          }}
-        >
-          <GraphNodeCandidatePanel
-            variant="floating"
-            activeNode={activeNode}
-            activeNodeCategory={activeNodeCategory}
-            candidateContext={candidateContext}
-            candidates={candidates}
-            isLoading={isLoading}
-            isError={isError}
-            rejectedCount={rejectedCount}
-            onClose={onCloseCandidatePanel}
-          />
-        </div>
-      ) : null}
       <div
         data-testid="floating-dependency-graph"
         className={`relative shrink-0 overflow-hidden rounded-xl border border-commerce-line bg-white shadow-2xl ${isResizing ? 'ring-2 ring-brand-blue/30' : ''}`}
@@ -522,13 +482,14 @@ function FloatingDependencyGraph({
           style={{ height: size.graphHeight }}
         >
           <ReactFlow
-            nodes={nodes}
+            nodes={floatingNodes}
             edges={edges}
             nodeTypes={graphNodeTypes}
-            fitView
-            fitViewOptions={{ padding: 0.18 }}
             minZoom={0.18}
             maxZoom={1.15}
+            zoomOnScroll
+            zoomOnPinch
+            panOnDrag
             nodesDraggable={false}
             nodesConnectable={false}
             proOptions={{ hideAttribution: true }}
@@ -536,8 +497,7 @@ function FloatingDependencyGraph({
               flowInstanceRef.current = instance;
               fitFloatingGraph();
             }}
-            onNodeClick={(_, node: Node) => onNodeClick(node)}
-            onEdgeClick={(_, edge: Edge) => onEdgeClick(edge)}
+            onNodeClick={(_, node: Node) => setMiniActiveNodeId(node.id)}
           >
             <Background color="#dbe4f0" gap={14} />
             <Controls showInteractive={false} />
@@ -552,12 +512,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function floatingGraphMaxSize(hasCandidatePanel: boolean) {
+function floatingGraphMaxSize() {
   const viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth;
   const viewportHeight = typeof window === 'undefined' ? 720 : window.innerHeight;
-  const reservedHeight = hasCandidatePanel
-    ? FLOATING_GRAPH_VIEWPORT_MARGIN + FLOATING_GRAPH_HEADER_HEIGHT + FLOATING_GRAPH_PANEL_GAP + FLOATING_GRAPH_CANDIDATE_MIN_HEIGHT
-    : 120;
+  const reservedHeight = 120;
 
   return {
     width: Math.max(
@@ -571,25 +529,8 @@ function floatingGraphMaxSize(hasCandidatePanel: boolean) {
   };
 }
 
-function floatingCandidatePanelMaxHeight(graphHeight: number) {
-  const viewportHeight = typeof window === 'undefined' ? 720 : window.innerHeight;
-  const availableHeight = viewportHeight
-    - FLOATING_GRAPH_VIEWPORT_MARGIN
-    - FLOATING_GRAPH_HEADER_HEIGHT
-    - FLOATING_GRAPH_PANEL_GAP
-    - graphHeight;
-  return clamp(
-    availableHeight,
-    FLOATING_GRAPH_CANDIDATE_MIN_HEIGHT,
-    FLOATING_GRAPH_CANDIDATE_MAX_HEIGHT
-  );
-}
-
-function clampFloatingGraphSize(
-  size: typeof FLOATING_GRAPH_DEFAULT_SIZE,
-  hasCandidatePanel: boolean
-) {
-  const maxSize = floatingGraphMaxSize(hasCandidatePanel);
+function clampFloatingGraphSize(size: typeof FLOATING_GRAPH_DEFAULT_SIZE) {
+  const maxSize = floatingGraphMaxSize();
   return {
     width: clamp(size.width, FLOATING_GRAPH_MIN_SIZE.width, maxSize.width),
     graphHeight: clamp(size.graphHeight, FLOATING_GRAPH_MIN_SIZE.graphHeight, maxSize.graphHeight)

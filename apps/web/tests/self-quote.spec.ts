@@ -308,14 +308,93 @@ test('filters internal assets by sidebar category on self quote page', async ({ 
   await expect(page.getByText('92.4')).toHaveCount(0);
   expect(requestedCategories).toContain('GPU');
 
-  await page.getByRole('button', { name: 'RTX 4070 SUPER 테스트 견적 담기' }).click();
+  const gpuListRow = page.getByRole('row', { name: /RTX 4070 SUPER 테스트/ });
+  await gpuListRow.getByRole('button', { name: 'RTX 4070 SUPER 테스트 견적 담기' }).click();
   await expect(page.getByText('견적 합계')).toBeVisible();
   const cartPanel = page.getByRole('heading', { name: '견적 장바구니', exact: true }).locator('xpath=ancestor::section[1]');
   await expect(cartPanel.getByText('890,000원')).toHaveCount(2);
-  await expect(page.getByText('가격 기록 1개')).toBeVisible();
+  await expect(page.getByText('가격 기록 1개')).toHaveCount(0);
+  await expect(gpuListRow.getByRole('button', { name: 'RTX 4070 SUPER 테스트 견적에서 제거' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'RTX 4070 SUPER 테스트 견적에서 제거' }).click();
+  await gpuListRow.getByRole('button', { name: 'RTX 4070 SUPER 테스트 견적에서 제거' }).click();
   await expect(page.getByText('왼쪽 목록에서 부품을 담으면 이곳에 내 견적이 쌓입니다.')).toBeVisible();
+});
+
+test('shows only latest cart price trend delta when price history changed', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'jwt-user-token');
+  });
+
+  await page.route('**/api/quote-drafts/current**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'draft-price-trend-delta',
+        status: 'ACTIVE',
+        name: '셀프 견적',
+        items: [
+          {
+            id: 'draft-item-gpu-trend-delta',
+            partId: 'part-gpu-trend-delta',
+            category: 'GPU',
+            name: 'RTX 가격 변동 테스트',
+            manufacturer: 'NVIDIA',
+            quantity: 1,
+            unitPriceAtAdd: 616310,
+            currentPrice: 619660,
+            lineTotal: 619660,
+            attributes: {}
+          }
+        ],
+        totalPrice: 619660,
+        itemCount: 1
+      })
+    });
+  });
+
+  await page.route('**/api/parts**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.includes('/price-history')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          partId: 'part-gpu-trend-delta',
+          partName: 'RTX 가격 변동 테스트',
+          currentPrice: 619660,
+          days: 3650,
+          source: 'NAVER_SHOPPING_SEARCH',
+          items: [
+            { price: 616310, source: 'NAVER_SHOPPING_SEARCH', collectedAt: '2026-06-28T00:00:00Z' },
+            { price: 619660, source: 'NAVER_SHOPPING_SEARCH', collectedAt: '2026-06-29T00:00:00Z' }
+          ],
+          summary: {
+            sampleCount: 2,
+            currentPrice: 619660,
+            minPrice: 616310,
+            maxPrice: 619660,
+            firstPrice: 616310,
+            lastPrice: 619660,
+            changeAmount: 3350,
+            changeRatePercent: 0.54
+          }
+        })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], page: 0, size: 20, total: 0 })
+    });
+  });
+
+  await page.goto('/self-quote');
+
+  const cartPanel = page.getByRole('heading', { name: '견적 장바구니', exact: true }).locator('xpath=ancestor::section[1]');
+  await expect(cartPanel.getByText('직전 기록 대비 +3,350원 (+0.54%)')).toBeVisible();
+  await expect(cartPanel.getByText(/가격 기록/)).toHaveCount(0);
 });
 
 test('shows compatibility status column and compatibility sort on selected self quote category', async ({ page }) => {
@@ -864,25 +943,22 @@ test('updates quote dependency graph after self quote cart changes', async ({ pa
   expect(viewport).not.toBeNull();
   expect((clampedFloatingBox?.x ?? 0) + (clampedFloatingBox?.width ?? 0)).toBeLessThanOrEqual((viewport?.width ?? 0) - 12);
 
-  await floatingGraph.getByText('RTX 5070', { exact: true }).click();
-  const floatingCandidatePanel = page.getByTestId('floating-graph-candidate-panel');
-  await expect(floatingCandidatePanel).toContainText('RTX 5070 Ti 그래프 호환 후보');
-  const graphBoxWithCandidate = await floatingGraph.boundingBox();
-  const candidateBoxAboveGraph = await floatingCandidatePanel.boundingBox();
-  expect(graphBoxWithCandidate).not.toBeNull();
-  expect(candidateBoxAboveGraph).not.toBeNull();
-  expect((candidateBoxAboveGraph?.y ?? 0) + (candidateBoxAboveGraph?.height ?? 0)).toBeLessThanOrEqual((graphBoxWithCandidate?.y ?? 0) - 8);
-  expect(Math.abs((candidateBoxAboveGraph?.x ?? 0) - (graphBoxWithCandidate?.x ?? 0))).toBeLessThanOrEqual(2);
-  expect(Math.abs((candidateBoxAboveGraph?.width ?? 0) - (graphBoxWithCandidate?.width ?? 0))).toBeLessThanOrEqual(2);
-
-  await floatingCandidatePanel.getByRole('button', { name: '선택한 부품 상세 닫기' }).click();
   await expect(page.getByTestId('floating-graph-candidate-panel')).toHaveCount(0);
-
   await floatingGraph.getByText('RTX 5070', { exact: true }).click();
-  const reopenedFloatingCandidatePanel = page.getByTestId('floating-graph-candidate-panel');
-  await expect(reopenedFloatingCandidatePanel).toContainText('RTX 5070 Ti 그래프 호환 후보');
+  await expect(page.getByTestId('floating-graph-candidate-panel')).toHaveCount(0);
+  await expect(floatingGraph.locator('.react-flow__node').filter({ hasText: 'RTX 5070' }).first()).toHaveClass(/buildgraph-flow-node--mini-active/);
+  await expect.poll(() => compatibleCandidateRequests.length).toBe(1);
+  await expect(candidatePanel).toContainText('RTX 5070 Ti 그래프 호환 후보');
 
-  await reopenedFloatingCandidatePanel.getByRole('button', { name: 'RTX 5070 Ti 그래프 호환 후보 담기/교체' }).click();
+  const mainViewportTransform = await page.getByTestId('graph-flow-canvas').locator('.react-flow__viewport').getAttribute('style');
+  await page.getByTestId('graph-flow-canvas').getByRole('button', { name: /zoom in/i }).click();
+  await expect.poll(async () => page.getByTestId('graph-flow-canvas').locator('.react-flow__viewport').getAttribute('style')).not.toBe(mainViewportTransform);
+
+  const floatingViewportTransform = await floatingGraph.locator('.react-flow__viewport').getAttribute('style');
+  await floatingGraph.getByRole('button', { name: /zoom in/i }).click();
+  await expect.poll(async () => floatingGraph.locator('.react-flow__viewport').getAttribute('style')).not.toBe(floatingViewportTransform);
+
+  await candidatePanel.getByRole('button', { name: 'RTX 5070 Ti 그래프 호환 후보 담기/교체' }).click();
   await expect.poll(() => candidateApplyRequests.length).toBe(1);
 });
 
@@ -1391,7 +1467,7 @@ test('shows selected AI build separately from the manual quote draft and marks d
   await expect(page.getByText('견적 합계')).toBeVisible();
 });
 
-test('shows current quote total savings compared with selected AI build prices only in the cart total area', async ({ page }) => {
+test('keeps selected AI build current total without cart AI price movement summary', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('buildgraph.token', 'jwt-user-token');
     localStorage.setItem('buildgraph.authUser', JSON.stringify({
@@ -1515,16 +1591,16 @@ test('shows current quote total savings compared with selected AI build prices o
 
   const aiPanel = page.getByTestId('ai-selected-build-panel');
   const cartPanel = page.getByRole('heading', { name: '견적 장바구니', exact: true }).locator('xpath=ancestor::section[1]');
-  const changeSummary = cartPanel.getByTestId('quote-price-change-summary');
 
   await expect(aiPanel.getByTestId('ai-selected-build-current-total')).toHaveText('1,260,000원');
   await expect(aiPanel.getByText('현재 저장가 기준')).toBeVisible();
-  await expect(changeSummary).toContainText('AI 추천 시점 대비 50,000원 절감 (-3.8%)');
+  await expect(cartPanel.getByTestId('quote-price-change-summary')).toHaveCount(0);
   await expect(cartPanel.getByTestId('quote-price-change-list')).toHaveCount(0);
+  await expect(cartPanel.getByText(/AI 추천 시점 대비/)).toHaveCount(0);
   await expect(aiPanel.getByText(/절감|상승|변동 없음/)).toHaveCount(0);
 });
 
-test('shows current quote total increase compared with selected AI build prices', async ({ page }) => {
+test('does not show selected AI build increase summary in the cart total area', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('buildgraph.token', 'jwt-user-token');
     localStorage.setItem('buildgraph.authUser', JSON.stringify({
@@ -1626,11 +1702,12 @@ test('shows current quote total increase compared with selected AI build prices'
   await page.goto('/self-quote');
 
   const cartPanel = page.getByRole('heading', { name: '견적 장바구니', exact: true }).locator('xpath=ancestor::section[1]');
-  await expect(cartPanel.getByTestId('quote-price-change-summary')).toContainText('AI 추천 시점 대비 80,000원 상승 (+8.0%)');
+  await expect(cartPanel.getByTestId('quote-price-change-summary')).toHaveCount(0);
   await expect(cartPanel.getByTestId('quote-price-change-list')).toHaveCount(0);
+  await expect(cartPanel.getByText(/AI 추천 시점 대비/)).toHaveCount(0);
 });
 
-test('shows no price movement when selected AI build and current quote prices match', async ({ page }) => {
+test('does not show selected AI build no-movement summary in the cart total area', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('buildgraph.token', 'jwt-user-token');
     localStorage.setItem('buildgraph.authUser', JSON.stringify({
@@ -1732,8 +1809,9 @@ test('shows no price movement when selected AI build and current quote prices ma
   await page.goto('/self-quote');
 
   const cartPanel = page.getByRole('heading', { name: '견적 장바구니', exact: true }).locator('xpath=ancestor::section[1]');
-  await expect(cartPanel.getByTestId('quote-price-change-summary')).toContainText('AI 추천 시점 대비 변동 없음');
+  await expect(cartPanel.getByTestId('quote-price-change-summary')).toHaveCount(0);
   await expect(cartPanel.getByTestId('quote-price-change-list')).toHaveCount(0);
+  await expect(cartPanel.getByText(/AI 추천 시점 대비/)).toHaveCount(0);
 });
 
 test('paginates self quote assets in 20 item pages', async ({ page }) => {

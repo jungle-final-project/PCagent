@@ -45,6 +45,7 @@ export function SelfQuotePage() {
   const [sort, setSort] = useState<PartSearchParams['sort']>(() => defaultSortForCategory(initialCategory));
   const [page, setPage] = useState(() => normalizePage(searchParams.get('page')));
   const [aiBuild, setAiBuild] = useState<AiSelectedBuild | null>(() => readSelectedAiBuild());
+  const [pendingPartActionId, setPendingPartActionId] = useState<string | null>(null);
   const hasToken = Boolean(getToken());
   const compatibilitySource = category ? 'QUOTE_DRAFT_CURRENT' : undefined;
   const { data, isError, isFetching, isLoading, isPlaceholderData } = useQuery({
@@ -79,7 +80,6 @@ export function SelfQuotePage() {
   const toIndex = total === 0 ? 0 : Math.min((safePage + 1) * PAGE_SIZE, total);
   const draftItems = quoteDraft?.items ?? [];
   const selectedTotal = quoteDraft?.totalPrice ?? 0;
-  const quotePriceComparison = compareAiBuildPrices(aiBuild, draftItems);
   const aiBuildDisplayTotal = currentPriceTotalForAiBuild(aiBuild, draftItems);
   const selectedPartIds = new Set(draftItems.map((part) => part.partId));
   const graphFocus = quoteGraphFocus(category);
@@ -184,7 +184,11 @@ export function SelfQuotePage() {
       navigate(`/login?redirect=${encodeURIComponent(`${location.pathname}${location.search}`)}`);
       return;
     }
-    addMutation.mutate({ partId: part.id, quantity: 1 });
+    setPendingPartActionId(part.id);
+    addMutation.mutate(
+      { partId: part.id, quantity: 1 },
+      { onSettled: () => setPendingPartActionId(null) }
+    );
   };
 
   const removePart = (partId: string) => {
@@ -192,7 +196,10 @@ export function SelfQuotePage() {
       navigate(`/login?redirect=${encodeURIComponent(`${location.pathname}${location.search}`)}`);
       return;
     }
-    deleteMutation.mutate(partId);
+    setPendingPartActionId(partId);
+    deleteMutation.mutate(partId, {
+      onSettled: () => setPendingPartActionId(null)
+    });
   };
 
   const updateQuantity = (partId: string, quantity: number) => {
@@ -306,7 +313,10 @@ export function SelfQuotePage() {
                       <span>{total.toLocaleString()}개 중 {fromIndex.toLocaleString()}-{toIndex.toLocaleString()}개 표시</span>
                       <span>페이지 {safePage + 1} / {totalPages}</span>
                     </div>
-                    <DataTable columns={partTableColumns(Boolean(category))} rows={partRows(parts, selectedPartIds, addPart, Boolean(category))} />
+                    <DataTable
+                      columns={partTableColumns(Boolean(category))}
+                      rows={partRows(parts, selectedPartIds, addPart, removePart, pendingPartActionId, Boolean(category))}
+                    />
                     <div className="mt-4 flex items-center justify-end gap-2">
                       <button
                         type="button"
@@ -340,7 +350,7 @@ export function SelfQuotePage() {
 
           <aside className="min-w-0 xl:sticky xl:top-5 xl:self-start">
             <Panel title="견적 장바구니" subtitle="선택한 부품 총액과 검증 진입점을 확인합니다.">
-              <QuoteTotalCard totalPrice={selectedTotal} comparison={quotePriceComparison} />
+              <QuoteTotalCard totalPrice={selectedTotal} />
               <div className="mt-4 space-y-2">
                 {!hasToken ? (
                   <div className="rounded-md border border-dashed border-slate-300 p-4 text-sm text-slate-500">
@@ -488,8 +498,6 @@ function AiSelectedBuildPanel({
   );
 }
 
-type QuotePriceChangeDirection = 'down' | 'up' | 'same';
-
 type AiBuildDisplayTotal = {
   totalPrice: number;
   matchedItemCount: number;
@@ -527,120 +535,13 @@ function displayTotalLabel(total: AiBuildDisplayTotal) {
   return '추천 시점 기준';
 }
 
-type QuotePriceChangeRow = {
-  partId: string;
-  categoryLabel: string;
-  name: string;
-  referencePrice: number;
-  currentPrice: number;
-  delta: number;
-  ratePercent: number;
-  direction: QuotePriceChangeDirection;
-};
-
-type QuotePriceComparison = {
-  referenceTotal: number;
-  currentTotal: number;
-  delta: number;
-  ratePercent: number;
-  direction: QuotePriceChangeDirection;
-  rows: QuotePriceChangeRow[];
-  changedRows: QuotePriceChangeRow[];
-};
-
-function QuoteTotalCard({ totalPrice, comparison }: { totalPrice: number; comparison: QuotePriceComparison | null }) {
+function QuoteTotalCard({ totalPrice }: { totalPrice: number }) {
   return (
     <div className="rounded-md border border-commerce-line bg-white p-4 shadow-sm">
       <div className="text-xs font-bold text-slate-500">견적 합계</div>
       <div className="mt-2 text-2xl font-black tracking-tight text-brand-blue">{totalPrice.toLocaleString()}원</div>
-      {comparison ? (
-        <div className="mt-3 border-t border-slate-100 pt-3">
-         
-        </div>
-      ) : null}
     </div>
   );
-}
-
-function compareAiBuildPrices(aiBuild: AiSelectedBuild | null, draftItems: QuoteDraftItem[]): QuotePriceComparison | null {
-  if (!aiBuild || draftItems.length === 0) {
-    return null;
-  }
-  const aiItemsByPartId = new Map(aiBuild.items.map((item) => [item.partId, item]));
-  const rows = draftItems
-    .map((draftItem) => {
-      const aiItem = aiItemsByPartId.get(draftItem.partId);
-      if (!aiItem || aiItem.price <= 0 || draftItem.quantity <= 0) {
-        return null;
-      }
-      const referencePrice = aiItem.price * draftItem.quantity;
-      const currentPrice = draftItem.currentPrice * draftItem.quantity;
-      const delta = currentPrice - referencePrice;
-      return {
-        partId: draftItem.partId,
-        categoryLabel: isPartCategory(draftItem.category) ? PART_CATEGORY_LABELS[draftItem.category] : draftItem.category,
-        name: draftItem.name,
-        referencePrice,
-        currentPrice,
-        delta,
-        ratePercent: (delta / referencePrice) * 100,
-        direction: priceChangeDirection(delta)
-      };
-    })
-    .filter((row): row is QuotePriceChangeRow => row !== null);
-
-  if (rows.length === 0) {
-    return null;
-  }
-
-  const referenceTotal = rows.reduce((sum, row) => sum + row.referencePrice, 0);
-  const currentTotal = rows.reduce((sum, row) => sum + row.currentPrice, 0);
-  const delta = currentTotal - referenceTotal;
-  const changedRows = rows
-    .filter((row) => row.delta !== 0)
-    .sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta));
-
-  return {
-    referenceTotal,
-    currentTotal,
-    delta,
-    ratePercent: referenceTotal === 0 ? 0 : (delta / referenceTotal) * 100,
-    direction: priceChangeDirection(delta),
-    rows,
-    changedRows
-  };
-}
-
-function priceChangeDirection(delta: number): QuotePriceChangeDirection {
-  if (delta < 0) return 'down';
-  if (delta > 0) return 'up';
-  return 'same';
-}
-
-function priceChangeSummaryText(comparison: QuotePriceComparison) {
-  if (comparison.direction === 'same') {
-    return 'AI 추천 시점 대비 변동 없음';
-  }
-  const label = comparison.direction === 'down' ? '절감' : '상승';
-  return `AI 추천 시점 대비 ${Math.abs(comparison.delta).toLocaleString()}원 ${label} (${formatSignedPercent(comparison.ratePercent)})`;
-}
-
-function formatSignedPercent(value: number) {
-  if (value === 0) {
-    return '0.0%';
-  }
-  const sign = value > 0 ? '+' : '-';
-  return `${sign}${Math.abs(value).toFixed(1)}%`;
-}
-
-function priceChangeSummaryClassName(direction: QuotePriceChangeDirection) {
-  if (direction === 'down') {
-    return 'border-emerald-100 bg-emerald-50 text-emerald-700';
-  }
-  if (direction === 'up') {
-    return 'border-orange-100 bg-orange-50 text-orange-700';
-  }
-  return 'border-slate-200 bg-slate-50 text-slate-500';
 }
 
 function compatibilityBadgeClassName(status: NonNullable<PartRow['compatibility']>['status']) {
@@ -705,8 +606,17 @@ function partTableColumns(showCompatibility: boolean) {
     : ['product', 'manufacturer', 'supplier', 'price', 'action'];
 }
 
-function partRows(parts: PartRow[], selectedPartIds: Set<string>, onAddPart: (part: PartRow) => void, showCompatibility: boolean) {
+function partRows(
+  parts: PartRow[],
+  selectedPartIds: Set<string>,
+  onAddPart: (part: PartRow) => void,
+  onRemovePart: (partId: string) => void,
+  pendingPartActionId: string | null,
+  showCompatibility: boolean
+) {
   return parts.map((part) => {
+    const isSelected = selectedPartIds.has(part.id);
+    const isPending = pendingPartActionId === part.id;
     const row = {
       product: <PartProductCell part={part} />,
       manufacturer: part.manufacturer ?? '-',
@@ -715,12 +625,16 @@ function partRows(parts: PartRow[], selectedPartIds: Set<string>, onAddPart: (pa
       action: (
         <button
           type="button"
-          aria-label={`${part.name} 견적 담기`}
-          disabled={selectedPartIds.has(part.id)}
-          onClick={() => onAddPart(part)}
-          className="rounded-md bg-commerce-ink px-3 py-2 text-xs font-black text-white transition hover:bg-slate-700 disabled:bg-slate-300"
+          aria-label={isSelected ? `${part.name} 견적에서 제거` : `${part.name} 견적 담기`}
+          disabled={isPending}
+          onClick={() => isSelected ? onRemovePart(part.id) : onAddPart(part)}
+          className={`rounded-md px-3 py-2 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-brand-blue disabled:cursor-wait disabled:opacity-60 ${
+            isSelected
+              ? 'border border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100'
+              : 'bg-commerce-ink text-white hover:bg-slate-700'
+          }`}
         >
-          {selectedPartIds.has(part.id) ? '담김' : '담기'}
+          {isPending ? (isSelected ? '빼는 중' : '담는 중') : isSelected ? '빼기' : '담기'}
         </button>
       )
     };
@@ -753,28 +667,36 @@ function CompatibilityStatusCell({ part }: { part: PartRow }) {
 }
 
 function PriceTrendBadge({ partId }: { partId: string }) {
-  const { data, isLoading, isError } = useQuery({
+  const { data } = useQuery({
     queryKey: ['parts', partId, 'price-history', 'NAVER_SHOPPING_SEARCH'],
     queryFn: () => getPartPriceHistory(partId, { days: 3650, source: 'NAVER_SHOPPING_SEARCH', limit: 60 }),
     staleTime: 60_000
   });
-  const className = 'mt-2 min-h-4 text-[11px]';
-  if (isLoading) {
-    return <div className={`${className} text-slate-400`}>가격 기록 확인 중</div>;
+  const points = [...(data?.items ?? [])]
+    .filter((point) => Number.isFinite(point.price))
+    .sort((first, second) => Date.parse(first.collectedAt) - Date.parse(second.collectedAt));
+
+  if (points.length < 2) {
+    return null;
   }
-  if (isError || !data) {
-    return <div className={`${className} text-slate-400`}>가격 기록 없음</div>;
+
+  const previousPrice = points[points.length - 2]?.price ?? 0;
+  const latestPrice = points[points.length - 1]?.price ?? 0;
+  if (previousPrice <= 0 || latestPrice <= 0) {
+    return null;
   }
-  const sampleCount = data.summary.sampleCount;
-  if (sampleCount < 2) {
-    return <div className={`${className} text-slate-500`}>가격 기록 {sampleCount}개</div>;
+
+  const change = latestPrice - previousPrice;
+  if (change === 0) {
+    return null;
   }
-  const change = data.summary.changeAmount;
-  const tone = change > 0 ? 'text-orange-700' : change < 0 ? 'text-emerald-700' : 'text-slate-500';
+
+  const changeRatePercent = (change / previousPrice) * 100;
+  const tone = change > 0 ? 'text-orange-700' : 'text-emerald-700';
   const sign = change > 0 ? '+' : '';
   return (
-    <div className={`${className} font-bold ${tone}`}>
-      {sampleCount}회 기록 · {sign}{change.toLocaleString()}원 ({sign}{data.summary.changeRatePercent.toFixed(2)}%)
+    <div className={`mt-2 text-[11px] font-bold ${tone}`}>
+      직전 기록 대비 {sign}{change.toLocaleString()}원 ({sign}{changeRatePercent.toFixed(2)}%)
     </div>
   );
 }

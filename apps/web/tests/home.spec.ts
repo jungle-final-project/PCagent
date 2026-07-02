@@ -642,7 +642,7 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   await expect(page.getByTestId('floating-dependency-graph')).toHaveCount(0);
   await graphCanvas.getByText('RTX 5070', { exact: true }).click();
   const graphPaneBox = await graphCanvas.locator('.react-flow').boundingBox();
-  expect(graphPaneBox?.height).toBeGreaterThanOrEqual(680);
+  expect(graphPaneBox?.height).toBeGreaterThanOrEqual(520);
   const gpuGraphNode = graphCanvas.locator('.react-flow__node').filter({ hasText: 'RTX 5070' }).first();
   await expect(gpuGraphNode).toHaveClass(/buildgraph-flow-node/);
   await expect(gpuGraphNode).toHaveCSS('border-radius', '50%');
@@ -689,24 +689,20 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   expect(expandedFloatingBox?.height).toBeGreaterThan((defaultFloatingBox?.height ?? 0) + 60);
   await expect(floatingGraph.locator('.react-flow')).toBeVisible();
 
-  await floatingGraph.getByText('RTX 5070', { exact: true }).click();
-  const floatingCandidatePanel = page.getByTestId('floating-graph-candidate-panel');
-  await expect(floatingCandidatePanel).toContainText('호환 후보');
-  await expect(floatingCandidatePanel).toContainText('RTX 5070 Ti 호환 후보');
-  await expect(floatingCandidatePanel.getByRole('img', { name: 'RTX 5070 Ti 호환 후보 제품 사진' })).toBeVisible();
-  await expect(floatingCandidatePanel).toContainText('읽기 전용');
-  await expect(floatingCandidatePanel).not.toContainText('담기/교체');
-  const graphBoxWithCandidate = await floatingGraph.boundingBox();
-  const candidateBoxAboveGraph = await floatingCandidatePanel.boundingBox();
-  expect(graphBoxWithCandidate).not.toBeNull();
-  expect(candidateBoxAboveGraph).not.toBeNull();
-  expect((candidateBoxAboveGraph?.y ?? 0) + (candidateBoxAboveGraph?.height ?? 0)).toBeLessThanOrEqual((graphBoxWithCandidate?.y ?? 0) - 8);
-  expect(Math.abs((candidateBoxAboveGraph?.x ?? 0) - (graphBoxWithCandidate?.x ?? 0))).toBeLessThanOrEqual(2);
-  expect(Math.abs((candidateBoxAboveGraph?.width ?? 0) - (graphBoxWithCandidate?.width ?? 0))).toBeLessThanOrEqual(2);
-  await floatingCandidatePanel.getByRole('button', { name: '선택한 부품 상세 닫기' }).click();
   await expect(page.getByTestId('floating-graph-candidate-panel')).toHaveCount(0);
   await floatingGraph.getByText('RTX 5070', { exact: true }).click();
-  await expect(page.getByTestId('floating-graph-candidate-panel')).toContainText('RTX 5070 Ti 호환 후보');
+  await expect(page.getByTestId('floating-graph-candidate-panel')).toHaveCount(0);
+  await expect(floatingGraph.locator('.react-flow__node').filter({ hasText: 'RTX 5070' }).first()).toHaveClass(/buildgraph-flow-node--mini-active/);
+  await expect(candidatePanel).toContainText('RTX 5070 Ti 호환 후보');
+  await expect.poll(() => compatibleCandidateRequests.length).toBe(1);
+
+  const floatingViewportTransform = await floatingGraph.locator('.react-flow__viewport').getAttribute('style');
+  await floatingGraph.getByRole('button', { name: /zoom in/i }).click();
+  await expect.poll(async () => floatingGraph.locator('.react-flow__viewport').getAttribute('style')).not.toBe(floatingViewportTransform);
+
+  const mainViewportTransform = await graphCanvas.locator('.react-flow__viewport').getAttribute('style');
+  await graphCanvas.getByRole('button', { name: /zoom in/i }).click();
+  await expect.poll(async () => graphCanvas.locator('.react-flow__viewport').getAttribute('style')).not.toBe(mainViewportTransform);
   await expect(page.getByTestId('ai-chat-messages')).toContainText('200만원 예산 기준');
 
   await page.getByRole('textbox', { name: 'AI 챗봇에게 PC 사양 질문' }).fill('300만원 PC 추천');
