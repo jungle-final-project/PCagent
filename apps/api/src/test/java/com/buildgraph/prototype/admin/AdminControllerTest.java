@@ -165,6 +165,57 @@ class AdminControllerTest {
     }
 
     @Test
+    void ragEvidenceListReturnsUnauthorizedErrorResponseWhenAdminTokenIsMissing() throws Exception {
+        mockMvc.perform(get("/api/admin/rag-evidence"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"))
+                .andExpect(jsonPath("$.message").value("로그인이 필요합니다."));
+
+        verifyNoInteractions(ragQueryService);
+    }
+
+    @Test
+    void ragEvidenceListReturnsForbiddenErrorResponseWhenTokenIsNotAdmin() throws Exception {
+        mockMvc.perform(get("/api/admin/rag-evidence")
+                        .header("Authorization", USER_TOKEN))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.message").value("관리자 권한이 필요합니다."));
+
+        verifyNoInteractions(ragQueryService);
+    }
+
+    @Test
+    void ragEvidenceListReturnsItemsForAdminToken() throws Exception {
+        when(ragQueryService.adminEvidenceList()).thenReturn(Map.of(
+                "items", List.of(Map.of(
+                        "id", "rag-public-id",
+                        "agentSessionId", "session-public-id",
+                        "sourceId", "spec-rtx4070",
+                        "summary", "RTX 4070 QHD 성능 근거",
+                        "score", 0.92
+                )),
+                "page", 0,
+                "size", 20,
+                "total", 1
+        ));
+
+        mockMvc.perform(get("/api/admin/rag-evidence")
+                        .header("Authorization", ADMIN_TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].id").value("rag-public-id"))
+                .andExpect(jsonPath("$.items[0].agentSessionId").value("session-public-id"))
+                .andExpect(jsonPath("$.items[0].sourceId").value("spec-rtx4070"))
+                .andExpect(jsonPath("$.items[0].summary").value("RTX 4070 QHD 성능 근거"))
+                .andExpect(jsonPath("$.items[0].score").value(0.92))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(20))
+                .andExpect(jsonPath("$.total").value(1));
+
+        verify(ragQueryService).adminEvidenceList();
+    }
+
+    @Test
     void updateAsTicketStoresSupportDecisionForAdminToken() throws Exception {
         when(ticketQueryService.update("ticket-public-id", Map.of(
                 "supportDecision", "REMOTE_POSSIBLE",

@@ -5,7 +5,7 @@ import { RequireUser } from './features/auth/RequireUser';
 import { CheckoutCompletePage, CheckoutPage, PartDetailPage, SelfQuotePage } from './features/parts/PartsPages';
 import { BuildResultPage, ChangePartPage, HomePage, MyQuotesPage, RequirementPage } from './features/quote/QuotePages';
 import { AsChatPage, SupportNewPage, SupportTicketPage } from './features/support/SupportPages';
-import { AdminDashboardPage, AdminLoadTestsPage, AdminPartsPage, AdminPriceJobsPage, AdminTicketDetailPage, AdminTicketsPage, AgentSessionAdminPage, RagEvidenceAdminPage, ToolInvocationAdminPage } from './features/admin/AdminPages';
+import { AdminDashboardPage, AdminLoadTestsPage, AdminPartsPage, AdminPriceJobsPage, AdminTicketDetailPage, AdminTicketsPage, AgentSessionAdminPage, AgentSessionsListAdminPage, RagEvidenceAdminPage, RagEvidenceListAdminPage, ToolInvocationAdminPage, ToolInvocationsListAdminPage } from './features/admin/AdminPages';
 
 export default function App() {
   return (
@@ -25,8 +25,11 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
       <Route path="/admin" element={<RequireAdmin><AdminDashboardPage /></RequireAdmin>} />
+      <Route path="/admin/agent-sessions" element={<RequireAdmin><AgentSessionsListAdminPage /></RequireAdmin>} />
       <Route path="/admin/agent-sessions/:id" element={<RequireAdmin><AgentSessionAdminPage /></RequireAdmin>} />
+      <Route path="/admin/tool-invocations" element={<RequireAdmin><ToolInvocationsListAdminPage /></RequireAdmin>} />
       <Route path="/admin/tool-invocations/:id" element={<RequireAdmin><ToolInvocationAdminPage /></RequireAdmin>} />
+      <Route path="/admin/rag-evidence" element={<RequireAdmin><RagEvidenceListAdminPage /></RequireAdmin>} />
       <Route path="/admin/rag-evidence/:id" element={<RequireAdmin><RagEvidenceAdminPage /></RequireAdmin>} />
       <Route path="/admin/parts" element={<RequireAdmin><AdminPartsPage /></RequireAdmin>} />
       <Route path="/admin/price-jobs" element={<RequireAdmin><AdminPriceJobsPage /></RequireAdmin>} />

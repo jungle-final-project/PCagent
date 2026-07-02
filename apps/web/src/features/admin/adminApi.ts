@@ -84,6 +84,13 @@ export type AgentSessionsResponse = {
   total?: number;
 };
 
+export type ToolInvocationsResponse = {
+  items: ToolInvocation[];
+  page?: number;
+  size?: number;
+  total?: number;
+};
+
 export type RagEvidenceDetail = {
   id: string;
   agentSessionId?: string;
@@ -92,6 +99,13 @@ export type RagEvidenceDetail = {
   summary: string;
   score?: string | number | null;
   metadata?: Record<string, unknown>;
+};
+
+export type RagEvidenceResponse = {
+  items: RagEvidenceDetail[];
+  page?: number;
+  size?: number;
+  total?: number;
 };
 
 export type AsTicketStatus = 'OPEN' | 'ASSIGNED' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED' | 'CANCELLED';
@@ -508,6 +522,14 @@ export function getRecentAdminAuditLogs() {
 
 export function getAdminAgentSessions() {
   return api<AgentSessionsResponse>('/api/admin/agent-sessions');
+}
+
+export function getAdminToolInvocations() {
+  return api<ToolInvocationsResponse>('/api/admin/tool-invocations');
+}
+
+export function getAdminRagEvidence() {
+  return api<RagEvidenceResponse>('/api/admin/rag-evidence');
 }
 
 export function listAdminParts(params: AdminPartsParams = {}) {

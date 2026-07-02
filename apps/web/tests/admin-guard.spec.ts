@@ -2,8 +2,11 @@ import { expect, test } from '@playwright/test';
 
 const adminRoutes = [
   '/admin',
+  '/admin/agent-sessions',
   '/admin/agent-sessions/demo-session',
+  '/admin/tool-invocations',
   '/admin/tool-invocations/tool-power-001',
+  '/admin/rag-evidence',
   '/admin/rag-evidence/rag-psu-001',
   '/admin/parts',
   '/admin/price-jobs',
@@ -168,10 +171,209 @@ test('renders admin page when auth/me returns ADMIN role', async ({ page }) => {
   await page.goto('/admin/agent-sessions/demo-session');
 
   await expect(page.getByRole('heading', { name: '관리자 권한이 필요합니다' })).toBeHidden();
-  await expect(page.locator('body')).toContainText('Agent / RAG / Tool 근거 상세');
-  await expect(page.getByRole('main')).toContainText('Agent 실행 Trace');
+  await expect(page.locator('body')).toContainText('에이전트 / 검색 근거 / 도구 근거 상세');
+  await expect(page.getByRole('main')).toContainText('에이전트 실행 이력');
+  await expect(page.getByRole('main')).toContainText('도구 호출 이력');
+  await expect(page.getByRole('main')).toContainText('근거 수준');
+  await expect(page.getByRole('main')).toContainText('호환성 확인');
+  await expect(page.getByRole('main')).toContainText('검색 근거');
+  await expect(page.getByRole('main')).toContainText('통과');
   await expect(page.getByRole('main')).toContainText('Compatibility check passed.');
+  await expect(page.getByText('에이전트 / 검색 근거 / 도구 근거 상세').first()).toHaveCSS('font-family', /Noto Sans KR/);
   expect(authMeCalls).toBeGreaterThan(0);
+});
+
+test('renders admin Agent, Tool, and RAG list pages with detail links', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'jwt-admin-token');
+  });
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'admin-001', email: 'admin@example.com', role: 'ADMIN' })
+    });
+  });
+  await page.route('**/api/admin/agent-sessions', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: 'demo-session',
+            status: 'SUCCEEDED',
+            userId: 'user-001',
+            createdAt: '2026-06-29T10:35:00Z'
+          }
+        ],
+        page: 0,
+        size: 20,
+        total: 1
+      })
+    });
+  });
+  await page.route('**/api/admin/tool-invocations', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: 'tool-power-001',
+            agentSessionId: 'demo-session',
+            toolName: 'power',
+            status: 'PASS',
+            confidence: 'HIGH',
+            summary: 'Power check passed.',
+            latencyMs: 42,
+            createdAt: '2026-06-29T10:36:10Z'
+          },
+          {
+            id: 'tool-perf-001',
+            agentSessionId: 'demo-session',
+            toolName: 'performance',
+            status: 'PASS',
+            confidence: 'MEDIUM',
+            summary: 'QHD gaming and development fit.',
+            latencyMs: 73,
+            createdAt: '2026-06-29T10:36:12Z'
+          },
+          {
+            id: 'tool-budget-001',
+            agentSessionId: 'demo-session',
+            toolName: 'price',
+            status: 'PASS',
+            confidence: 'HIGH',
+            summary: 'Budget check passed.',
+            latencyMs: 31,
+            createdAt: '2026-06-29T10:36:13Z'
+          }
+        ],
+        page: 0,
+        size: 20,
+        total: 1
+      })
+    });
+  });
+  await page.route('**/api/admin/rag-evidence', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: 'rag-psu-001',
+            agentSessionId: 'demo-session',
+            sourceId: 'psu-rule-001',
+            summary: 'PSU capacity evidence.',
+            score: 0.88,
+            metadata: { sourceType: 'INTERNAL_RULE' }
+          }
+        ],
+        page: 0,
+        size: 20,
+        total: 1
+      })
+    });
+  });
+
+  await page.goto('/admin/agent-sessions');
+  await expect(page.locator('body')).toContainText('에이전트 세션 목록');
+  await expect(page.locator('main')).toContainText('식별자');
+  await expect(page.locator('main')).toContainText('상태');
+  await expect(page.locator('main')).toContainText('사용자');
+  await expect(page.locator('main')).toContainText('생성 시간');
+  await expect(page.locator('main')).toContainText('성공');
+  await expect(page.getByRole('link', { name: 'demo-session' })).toHaveAttribute('href', '/admin/agent-sessions/demo-session');
+  await expect(page.getByText('에이전트 세션 목록').first()).toHaveCSS('font-family', /Noto Sans KR/);
+
+  await page.goto('/admin/tool-invocations');
+  await expect(page.locator('body')).toContainText('도구 호출 목록');
+  await expect(page.locator('main')).toContainText('세션');
+  await expect(page.locator('main')).toContainText('도구');
+  await expect(page.locator('main')).toContainText('근거 수준');
+  await expect(page.locator('main')).not.toContainText('신뢰도');
+  await expect(page.locator('main')).toContainText('전력 여유 확인');
+  await expect(page.locator('main')).toContainText('성능 적합도');
+  await expect(page.locator('main')).toContainText('예산 확인');
+  await expect(page.locator('main')).toContainText('통과');
+  await expect(page.locator('main')).toContainText('높음');
+  await expect(page.getByRole('link', { name: 'tool-power-001' })).toHaveAttribute('href', '/admin/tool-invocations/tool-power-001');
+
+  await page.goto('/admin/rag-evidence');
+  await expect(page.locator('body')).toContainText('검색 근거 목록');
+  await expect(page.locator('main')).toContainText('출처 식별자');
+  await expect(page.locator('main')).toContainText('요약');
+  await expect(page.locator('main')).toContainText('점수');
+  await expect(page.getByRole('link', { name: 'rag-psu-001' })).toHaveAttribute('href', '/admin/rag-evidence/rag-psu-001');
+});
+
+test('renders admin Tool and RAG detail pages in Korean', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'jwt-admin-token');
+  });
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'admin-001', email: 'admin@example.com', role: 'ADMIN' })
+    });
+  });
+  await page.route('**/api/admin/tool-invocations/tool-power-001', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'tool-power-001',
+        agentSessionId: 'demo-session',
+        toolName: 'power',
+        status: 'WARN',
+        confidence: 'MEDIUM',
+        summary: 'Power margin is low.',
+        requestPayload: { tool: 'power' },
+        resultPayload: { status: 'WARN' },
+        latencyMs: 42,
+        createdAt: '2026-06-29T10:36:10Z'
+      })
+    });
+  });
+  await page.route('**/api/admin/rag-evidence/rag-psu-001', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'rag-psu-001',
+        agentSessionId: 'demo-session',
+        sourceId: 'psu-rule-001',
+        summary: 'PSU capacity evidence.',
+        score: 0.88,
+        chunkText: 'Power supply sizing rule chunk.',
+        metadata: { sourceType: 'INTERNAL_RULE' }
+      })
+    });
+  });
+
+  await page.goto('/admin/tool-invocations/tool-power-001');
+  await expect(page.locator('body')).toContainText('도구 호출 상세');
+  await expect(page.locator('main')).toContainText('전력 여유 확인 / tool-power-001');
+  await expect(page.locator('main')).toContainText('요청 데이터');
+  await expect(page.locator('main')).toContainText('결과 데이터');
+  await expect(page.locator('main')).toContainText('상태');
+  await expect(page.locator('main')).toContainText('근거 수준');
+  await expect(page.locator('main')).not.toContainText('신뢰도');
+  await expect(page.locator('main')).toContainText('주의');
+  await expect(page.locator('main')).toContainText('보통');
+  await expect(page.locator('pre').first()).toContainText('"tool"');
+  await expect(page.locator('pre').first()).toContainText('"power"');
+
+  await page.goto('/admin/rag-evidence/rag-psu-001');
+  await expect(page.locator('body')).toContainText('검색 근거 상세');
+  await expect(page.locator('main')).toContainText('근거 본문');
+  await expect(page.locator('main')).toContainText('메타데이터 JSON');
+  await expect(page.locator('main')).toContainText('출처 식별자');
+  await expect(page.locator('main')).toContainText('점수 0.88');
+  await expect(page.locator('pre').first()).toContainText('"sourceType"');
 });
 
 test('renders manufacturer release demo intake on admin parts page', async ({ page }) => {
@@ -535,17 +737,18 @@ test('renders eight admin shell navigation entries for ADMIN role', async ({ pag
   const navigation = page.getByRole('navigation', { name: '관리자 메뉴' });
   await expect(navigation.getByRole('link')).toHaveCount(8);
   await expect(navigation.getByRole('link', { name: '대시보드' })).toHaveAttribute('href', '/admin');
-  await expect(navigation.getByRole('link', { name: 'Agent 세션' })).toHaveAttribute('href', '/admin/agent-sessions/00000000-0000-4000-8000-000000003001');
-  await expect(navigation.getByRole('link', { name: 'Tool 이력' })).toHaveAttribute('href', '/admin/tool-invocations/00000000-0000-4000-8000-000000005002');
-  await expect(navigation.getByRole('link', { name: 'RAG 근거' })).toHaveAttribute('href', '/admin/rag-evidence/00000000-0000-4000-8000-000000004001');
+  await expect(navigation.getByRole('link', { name: '에이전트 세션' })).toHaveAttribute('href', '/admin/agent-sessions');
+  await expect(navigation.getByRole('link', { name: '도구 이력' })).toHaveAttribute('href', '/admin/tool-invocations');
+  await expect(navigation.getByRole('link', { name: '검색 근거' })).toHaveAttribute('href', '/admin/rag-evidence');
   await expect(navigation.getByRole('link', { name: '부품/가격' })).toHaveAttribute('href', '/admin/parts');
   await expect(navigation.getByRole('link', { name: 'AS 티켓' })).toHaveAttribute('href', '/admin/as-tickets');
-  await expect(navigation.getByRole('link', { name: '가격 Job' })).toHaveAttribute('href', '/admin/price-jobs');
+  await expect(navigation.getByRole('link', { name: '가격 작업' })).toHaveAttribute('href', '/admin/price-jobs');
   await expect(navigation.getByRole('link', { name: '부하 테스트' })).toHaveAttribute('href', '/admin/load-tests');
+  await expect(navigation.getByRole('link', { name: '에이전트 세션' })).toHaveCSS('font-family', /Noto Sans KR/);
 
   await expect(page.getByRole('searchbox', { name: '관리자 검색' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '내보내기' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '작업 실행' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '내보내기' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '작업 실행' })).toHaveCount(0);
 });
 
 test('renders price job and load test admin menu pages for ADMIN role', async ({ page }) => {
@@ -559,18 +762,33 @@ test('renders price job and load test admin menu pages for ADMIN role', async ({
       body: JSON.stringify({ id: 'admin-001', email: 'admin@example.com', role: 'ADMIN' })
     });
   });
+  await page.route('**/api/admin/price-jobs', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [],
+        page: 0,
+        size: 20,
+        total: 0
+      })
+    });
+  });
 
   await page.goto('/admin/price-jobs');
   await expect(page.getByRole('heading', { name: '관리자 권한이 필요합니다' })).toBeHidden();
-  await expect(page.locator('body')).toContainText('가격 Job 관리자');
+  await expect(page.locator('body')).toContainText('가격 작업 관리자');
   await expect(page.locator('main')).toContainText('가격 수집 작업');
-  await expect(page.locator('main')).toContainText('네이버 쇼핑 API');
-  await expect(page.locator('main')).toContainText('다나와 제한 크롤링');
+  await expect(page.locator('main')).toContainText('네이버 쇼핑 연동');
+  await expect(page.locator('main')).toContainText('작업 처리기 실행');
+  await expect(page.getByRole('button', { name: '가격 작업 실행' }).first()).toBeEnabled();
+  await expect(page.getByText('가격 작업 관리자').first()).toHaveCSS('font-family', /Noto Sans KR/);
 
   await page.goto('/admin/load-tests');
   await expect(page.getByRole('heading', { name: '관리자 권한이 필요합니다' })).toBeHidden();
   await expect(page.locator('body')).toContainText('부하 테스트');
   await expect(page.locator('main')).toContainText('k6 Smoke');
+  await expect(page.locator('main')).toContainText('npm run test');
   await expect(page.locator('main')).toContainText('300명');
 });
 
