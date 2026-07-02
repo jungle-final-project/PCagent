@@ -3,6 +3,11 @@
 #### 작성일: 2026-07-01  
 #### 최신커밋: 6a055824fa1fc88c4d71e9927d8b41f2367593a1
 
+- 공통 API Client 완료 : 커밋 807429c
+- dashboard 지표가 실제 도메인 데이터 변화와 맞는지 최종 smoke 완료 : 실제 db 확인
+- CI/OpenAPI: 커밋 12181af
+
+
 기준 문서: 
 ```
 docs/API_CONTRACT.md 
@@ -43,9 +48,9 @@ MVP 완료 기준:
 
 | 영역 | 현재 상태 | 남은 작업 | 완료 기준 | 담당/협업 |
 | --- | --- | --- | --- | --- |
-| Auth/User | 부분완료 | 이메일 회원가입, 로그인, refresh/logout, `/auth/me`는 있으나 OAuth 계약과 공통 client 최종 정리가 남음 | 로그인/회원가입/refresh/logout/me가 실제 JWT와 refresh token 기준으로 통과하고, 401/403/ErrorResponse 테스트가 있음 | 1번, 5번 |
+| Auth/User | 부분완료 | 이메일 회원가입, 로그인, refresh/logout, `/auth/me`와 공통 client 인증/오류 처리는 정리됨. OAuth 계약과 사용자 소유권 기준 Quote/Auth 마무리가 남음 | 로그인/회원가입/refresh/logout/me가 실제 JWT와 refresh token 기준으로 통과하고, 401/403/ErrorResponse 테스트가 있음 | 1번, 5번 |
 | OAuth 계약 | 미확정 | Google OAuth를 MVP에 넣을지 결정. 넣으면 start/callback/exchange, Redis one-time code, account linking 구현. 빼면 OpenAPI/API_CONTRACT에서 MVP 범위 조정 | OAuth 포함 또는 제외가 문서와 코드에서 일치함 | 1번, 5번 |
-| 공통 API Client | 부분완료 | `api.ts`가 `ErrorResponse.code/message/details`를 보존하고, access token 만료 시 refresh retry 1회, 실패 시 `clearToken()`, logout API 호출 흐름을 고정 | Playwright에서 refresh 성공/실패/logout/error normalization 테스트 통과 | 5번 |
+| 공통 API Client | 완료 | `api.ts`가 `ErrorResponse.code/message/details`를 보존하고, access token 만료 시 refresh retry 1회, refresh 불가/실패 시 `clearToken()`, logout 실패 시 로컬 token 정리 흐름을 고정 | auth Playwright 회귀 테스트로 보호 API 401, refresh 실패, invalid refresh body, logout 실패 경로 검증 | 5번 |
 | Quote/Build 소유권 | 부분완료 | `requirements`, `builds`, `build_items` 저장/조회/변경을 현재 로그인 사용자 기준으로 수정 | 타인 requirement/build/history/detail/change-part 접근 시 404 contract test 통과 | 1번 |
 | 구매 상담/추천 | 부분완료 | 자연어 입력, 요구사항 저장, RAG/Tool 근거, 추천 2~3개, 추천 적용까지 실제 DB 기준 E2E 연결 | 로그인 사용자 기준으로 build-chat 또는 requirement flow가 추천 결과를 만들고 견적초안/Build로 이어짐 | 1번, 2번, 3번 |
 | 내 견적함 | 미완료 | `/my/quotes`의 `quoteMock` 제거, `GET /api/builds/history` 실제 API 연결, loading/error/empty/success 처리 | 로그인 사용자별 저장 Build 목록이 화면에 표시되고 테스트가 있음 | 1번, 2번 |
@@ -61,9 +66,9 @@ MVP 완료 기준:
 | 관리자 AS | 미완료 | `/admin/as-tickets`, `/admin/as-tickets/:ticketId` mock/static 제거, 실제 API 연결, 담당자 배정, 상태 저장 구현 | 목록/상세/update가 실제 API로 동작하고 no-op 버튼이 없음 | 4번, 5번 |
 | AS 상태 전이/audit | 미완료 | `PATCH /api/admin/as-tickets/{id}` 허용 전이, 금지 전이 409, `resolvedAt`, `assignedAdminId`, `admin_audit_logs` 기록 구현 | 상태 전이 성공/실패/audit log 테스트 통과 | 4번, 5번 |
 | AdminShell | 부분완료 | 8개 메뉴와 route는 있으나 owner별 list/detail 정책 공유 필요 | nav label/order/route가 2/3/4번 담당 화면과 충돌 없음 | 5번, 2/3/4번 |
-| AdminDashboard | 부분완료 | dashboard 지표가 실제 도메인 데이터 변화와 맞는지 최종 smoke | `agentRunning`, `openTickets`, `priceJobsRunning`, `degraded`가 실제 DB 기준 표시됨 | 5번 |
+| AdminDashboard | 완료 | dashboard 지표가 실제 도메인 데이터 변화와 맞는지 최종 smoke | `agentRunning`, `openTickets`, `priceJobsRunning`, `degraded`가 실제 DB 기준 표시됨 | 5번 |
 | Redis/RabbitMQ/Mailpit | smoke 완료 | 실제 기능이 붙으면 connection smoke에서 기능 smoke로 승격 | OAuth code, queue job, email 중 실제 사용 기능 기준 smoke 통과 | 5번, 관련 owner |
-| CI/OpenAPI | 부분완료 | 새 API가 생길 때 `tools/validate_openapi.py` 필수 path/schema에 즉시 반영 | OpenAPI 검증이 누락 API를 잡고 CI에서 실패시킴 | 5번 |
+| CI/OpenAPI | 완료 | 새 API가 생길 때 `tools/validate_openapi.py` 필수 path/schema에 즉시 반영 | OpenAPI 검증이 누락 API를 잡고 CI에서 실패시킴 | 5번 |
 | 최종 E2E | 미완료 | 실제 서버+DB로 MVP 전체 흐름을 한 번에 검증 | 로그인부터 관리자 확인까지 1회 이상 성공하고 결과 문서화 | 전체, 5번 검증 |
 
 ## MVP 이후 기능 구현을 끝내기 위한 작업
@@ -103,7 +108,17 @@ MVP 완료 기준:
 | --- | --- | --- |
 | 1 | 현재 사용자 소유권 정리 | 여러 사용자가 쓰는 서비스에서 가장 치명적인 계약 위반을 먼저 막아야 함 |
 | 2 | mock/static 화면 제거 | MVP 시연에서 실제 데이터 흐름을 보여주기 위한 필수 조건 |
-| 3 | 상태 전이/409/ErrorResponse 정리 | 실패 상황이 계약대로 동작해야 PR 이후 회귀를 막을 수 있음 |
+| 3 | 상태 전이/409/ErrorResponse 정리 | 공통 API client 오류 보존은 완료됐고, 도메인별 409/상태 전이 계약을 서버와 화면에서 닫아야 함 |
 | 4 | 가격 알림/AS/관리자 실제 API 연결 | MVP E2E의 후반부를 닫는 작업 |
 | 5 | 최종 E2E와 검증 명령 고정 | 프로젝트 완료 판정을 객관적으로 만들기 위한 마지막 단계 |
 
+| 인프라 | 확장 대상 MVP 기능 | MVP 기능 자체 존재 여부 | 해당 인프라 연동 여부 | 판단 |
+| --- | --- | --- | --- | --- |
+| Redis | Google OAuth one-time code | 계약에는 있음, 구현은 없음 | 미연동 | OAuth를 MVP에 넣으면 Redis 필요 |
+| Redis | LLM/RAG cache, quota | AI/RAG 기능은 있음 | 미연동 | MVP 필수라기보다 성능/제한 확장 |
+| RabbitMQ | AI 구매 상담 queue | 있음 | 미연동 | 확장 가능, 현재는 동기 처리 |
+| RabbitMQ | AS Chat/Agent queue | 있음 | 미연동 | 확장 가능, 현재는 동기/SSE 처리 |
+| RabbitMQ | 가격 수집 job queue | 일부 있음 | 미연동 | 확장 가능, 현재는 DB row/API/스케줄러 중심 |
+| RabbitMQ | 메일 발송 queue | 메일 기능 없음 | 미연동 | 가격 알림 메일 구현 후 가능 |
+| Mailpit | 가격 알림 메일 | 가격 알림 기능은 일부 있음, 메일 발송 없음 | 미연동 | MVP에 가격 알림 이메일을 넣으면 필요 |
+| Mailpit | 회원가입 인증 메일 | 현재 계약/구현 없음 | 미연동 | MVP 이후 또는 팀 결정 필요 |

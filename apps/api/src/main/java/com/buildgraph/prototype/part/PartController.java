@@ -19,6 +19,7 @@ public class PartController {
     private final PartQueryService partQueryService;
     private final ToolCheckService toolCheckService;
     private final NaverShoppingOfferService naverShoppingOfferService;
+    private final PartCompatibleCandidateService compatibleCandidateService;
     private final DanawaPriceSnapshotService danawaPriceSnapshotService;
     private final DanawaPriceTrendService danawaPriceTrendService;
     private final ManufacturerReleaseIntakeService manufacturerReleaseIntakeService;
@@ -31,6 +32,7 @@ public class PartController {
             PartQueryService partQueryService,
             ToolCheckService toolCheckService,
             NaverShoppingOfferService naverShoppingOfferService,
+            PartCompatibleCandidateService compatibleCandidateService,
             DanawaPriceSnapshotService danawaPriceSnapshotService,
             DanawaPriceTrendService danawaPriceTrendService,
             ManufacturerReleaseIntakeService manufacturerReleaseIntakeService,
@@ -42,6 +44,7 @@ public class PartController {
         this.partQueryService = partQueryService;
         this.toolCheckService = toolCheckService;
         this.naverShoppingOfferService = naverShoppingOfferService;
+        this.compatibleCandidateService = compatibleCandidateService;
         this.danawaPriceSnapshotService = danawaPriceSnapshotService;
         this.danawaPriceTrendService = danawaPriceTrendService;
         this.manufacturerReleaseIntakeService = manufacturerReleaseIntakeService;
@@ -62,10 +65,11 @@ public class PartController {
             @RequestParam(value = "page", required = false) Integer page,
             @RequestParam(value = "size", required = false) Integer size,
             @RequestParam(value = "sort", required = false) String sort,
+            @RequestParam(value = "compatibilitySource", required = false) String compatibilitySource,
             @RequestHeader(value = "Authorization", required = false) String authorization
     ) {
-        currentUserService.requireUser(authorization);
-        return partQueryService.parts(category, query, manufacturer, status, minPrice, maxPrice, page, size, sort);
+        CurrentUserService.CurrentUser user = currentUserService.requireUser(authorization);
+        return partQueryService.parts(user, category, query, manufacturer, status, minPrice, maxPrice, page, size, sort, compatibilitySource);
     }
 
     @GetMapping("/parts/{id}")
@@ -87,6 +91,15 @@ public class PartController {
     ) {
         currentUserService.requireUser(authorization);
         return partQueryService.priceHistory(id, days, source, limit);
+    }
+
+    @PostMapping("/parts/compatible-candidates")
+    Map<String, Object> compatibleCandidates(
+            @RequestBody(required = false) Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        CurrentUserService.CurrentUser user = currentUserService.requireUser(authorization);
+        return compatibleCandidateService.compatibleCandidates(user, request);
     }
 
     @GetMapping("/admin/parts")

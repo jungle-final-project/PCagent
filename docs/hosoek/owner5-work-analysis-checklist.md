@@ -735,7 +735,7 @@ AdminShell nav 분석 결과:
 - [x] 계약 문서 동기화 여부를 확인했다. `docs/API_CONTRACT.md`, `docs/ROUTE_OWNERSHIP.md`, `docs/openapi.yaml`에는 새 API와 route owner 변경이 반영되어 있다.
 - [x] 공동계약서 위반 가능성이 있는 항목을 구분했다.
   - [ ] 5번 단독 PR이라면 owner 범위 위반 가능성이 있다. 이 브랜치는 1번 owner 영역인 `build`, `features/quote`, 홈 화면과 2번 owner 영역인 `quote`, `features/parts`, 셀프 견적 화면을 직접 수정한다. 1번/2번 작업 또는 명시적 리뷰가 있으면 허용 가능하고, 5번 단독 작업이면 계약 위반이다.
-  - [ ] 새 API 2개가 `docs/openapi.yaml`에는 들어갔지만 `tools/validate_openapi.py`의 `REQUIRED_PATHS`와 request schema 검사 목록에는 포함되지 않았다. CI의 OpenAPI 검증이 새 API 누락을 잡지 못하므로 검증 계약 보강이 필요하다.
+  - [x] 새 API 2개가 `docs/openapi.yaml`에는 들어갔지만 `tools/validate_openapi.py`의 `REQUIRED_PATHS`와 request schema 검사 목록에는 포함되지 않았다. 2026-07-01 `POST /api/ai/build-chat`, `PUT /api/quote-drafts/current/apply-ai-build`를 CI 필수 path/request schema 검사에 추가했다.
   - [ ] `HomePage.tsx` 안에 `featuredBuilds`, `popularPartDeals` 같은 domain mock/static 데이터가 직접 들어 있다. 유지하려면 "홈 마케팅용 정적 데이터"로 합의해야 하고, mock 데이터라면 `features/quote/mocks`로 옮기는 것이 계약에 맞다.
 - [x] 위반으로 보지 않는 항목을 확인했다.
   - [x] 페이지 컴포넌트가 공통 `api()`를 직접 호출하지 않고 `quoteApi.ts`, `partsApi.ts` wrapper를 사용한다.
@@ -754,6 +754,22 @@ AdminShell nav 분석 결과:
 - [x] `origin/main` 병합 후 현재 브랜치가 `feat/aiChatImprove`이고, 마지막 커밋이 `fix: 로그인 후 헤더 사용자 표시를 유지`임을 확인했다.
 - [x] 현재 unstaged 변경은 `docs/hosoek/owner5-work-analysis-checklist.md` 1개뿐이며, 코드/API/OpenAPI 추가 변경은 없다.
 - [x] 이번 커밋 메시지는 구매 상담 기능 구현이 아니라 공동계약서 감사와 커밋 메시지 요청 전 점검 기록을 남기는 문서 커밋으로 분리한다.
+
+#### 2026-07-01 OpenAPI CI 필수 API 보강 기록
+
+- [x] `POST /api/ai/build-chat`를 `tools/validate_openapi.py`의 `REQUIRED_PATHS`와 `POST_JSON_REQUEST_SCHEMAS`에 추가했다.
+- [x] `PUT /api/quote-drafts/current/apply-ai-build`를 `tools/validate_openapi.py`의 `REQUIRED_PATHS`와 `PUT_JSON_REQUEST_SCHEMAS`에 추가했다.
+- [x] `AiBuildChatRequest`, `AiBuildChatResponse`, `AiBuildApplyRequest`, `QuoteDraftDto`를 필수 schema 목록에 추가했다.
+- [x] `POST` 전용 검사에 머물러 있던 request schema 검증을 `PUT`도 검사할 수 있게 보강했다.
+- [x] GitHub Actions의 OpenAPI 검증 단계에서 `python -m unittest tools.test_validate_openapi`도 실행하도록 추가했다.
+- [x] `/private/tmp/buildgraph-openapi-check/bin/python -m unittest tools.test_validate_openapi` 통과.
+- [x] `/private/tmp/buildgraph-openapi-check/bin/python tools/validate_openapi.py` 통과. 52 paths.
+
+#### 2026-07-01 AS 접수 업로드 샘플 생성 기록
+
+- [x] AS 접수 화면에서 업로드 테스트에 사용할 JSONL 샘플 [as-upload-sample.jsonl](/Users/juhoseok/Desktop/prototype/docs/hosoek/as-upload-sample.jsonl)을 추가했다.
+- [x] 샘플 내용은 게임 중 GPU 온도 상승, 드라이버 경고, 프레임 드랍 증상을 재현하는 12개 timestamp 관측치로 구성했다.
+- [x] `python3` JSONL 파싱 검증 통과. 12 rows.
 
 #### 2026-07-01 1번/4번 완료도 재감사 기록
 
@@ -869,11 +885,94 @@ AdminShell nav 분석 결과:
 - [x] 검증: `cd apps/web && npm run test -- home.spec.ts` 통과.
 - [x] 추가 검증: `cd apps/web && npm run test`, `cd apps/web && npm run build`, `git diff --check` 통과.
 
+#### 2026-07-01 공통 API Client 인증/오류 처리 마감
+
+- [x] Playwright 회귀 테스트를 먼저 추가했다.
+  - [x] refresh token 없이 보호 API가 401을 반환하면 access token, refresh token, cached user를 정리한다.
+  - [x] `/api/auth/refresh`가 실패 응답을 반환하면 원래 보호 API를 재시도하지 않고 token/user를 정리한다.
+  - [x] refresh 응답 body에 `accessToken` 또는 `refreshToken`이 없으면 refresh 실패로 보고 token/user를 정리한다.
+  - [x] `ErrorResponse.details`가 있는 오류 응답을 `ApiError.details`에 보존한다.
+  - [x] logout API가 실패해도 프론트 token/user를 정리하고 `/login`으로 이동한다.
+- [x] `ApiError`가 `status`, `path`, `code`, `message`, `details`를 보존하도록 확장했다.
+- [x] access token 만료 401에서 refresh retry는 1회만 수행하고, refresh 성공 시 원래 요청을 1회 재시도하도록 정책을 고정했다.
+- [x] refresh token 없음, refresh 실패, refresh 응답 이상, refresh network 실패 시 `clearToken()`으로 로그인 상태를 정리하도록 수정했다.
+- [x] `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout`, `/api/auth/exchange`, `/api/users`, `/api/auth/google/*`는 refresh retry 제외 대상으로 유지했다.
+- [x] 검증: `cd apps/web && npm run test -- auth.spec.ts` 통과.
+- [x] 추가 검증: `cd apps/web && npm run test`, `cd apps/web && npm run build`, `git diff --check` 통과.
+
 #### 2026-07-01 커밋 메시지 요청 전 점검 기록
 
 - [x] 현재 브랜치가 `main`이고, 마지막 커밋이 `Merge pull request #26 from jungle-final-project/feat/popular-part-detail-links`임을 확인했다.
 - [x] 현재 변경은 구매 상담 AI 세션 사용자별 저장소 분리, 로그인 만료 오류 UX, 관련 Playwright 테스트, 남은 작업 최종 정리 문서, 오래된 hoseok/hosoek 문서 자산 삭제로 구분된다.
 - [x] 코드/테스트 변경과 문서 정리 변경은 성격이 달라 별도 커밋으로 나누는 것이 적절하다.
+
+#### 2026-07-01 Build 관계 그래프 커밋 메시지 요청 전 점검
+
+- [x] 현재 브랜치가 `main`이고, `origin/main`보다 5커밋 앞선 상태임을 확인했다.
+- [x] 마지막 커밋은 `676b7c9 docs: MVP 완료 상태와 인프라 연동 판단을 정리`다.
+- [x] 미커밋 변경은 `POST /api/build-graphs/resolve` 백엔드 API, OpenAPI/API 계약, React Flow 기반 견적 관계도 UI, Home/SelfQuote 연동, Playwright/JUnit 테스트로 구분된다.
+- [x] `@xyflow/react` 의존성은 견적 관계도 시각화를 위해 추가된 프론트 런타임 의존성이다.
+- [x] 백엔드 API/계약과 프론트 관계도 UI는 서로 연결되지만 리뷰 범위가 커서 별도 커밋으로 나누는 것이 적절하다.
+- [x] 5번 체크리스트 갱신은 커밋 메시지 요청 전 점검 기록으로 별도 문서 커밋에 포함한다.
+
+#### 2026-07-01 AI 추천 장바구니 즉시 반영 점검
+
+- [x] 현재 브랜치가 `main`이고, `origin/main`보다 7커밋 앞선 상태임을 확인했다.
+- [x] 마지막 커밋은 `a095198 feat: 견적 관계도를 홈과 셀프 견적에 표시`다.
+- [x] 미커밋 변경은 홈 추천 카드와 챗봇 추천 적용 후 `PUT /api/quote-drafts/current/apply-ai-build` 응답을 React Query `['quote-draft', 'current']` 캐시에 즉시 반영하는 프론트 수정이다.
+- [x] stale GET이 늦게 돌아오는 상황에서도 사용자가 별도 제거 동작을 하지 않아도 `/self-quote`에서 적용된 장바구니가 보이도록 Playwright 회귀 테스트를 추가했다.
+- [x] 이 변경은 build graph API가 아니라 AI 추천 적용 후 quote draft cache 동기화 문제를 고치는 fix 커밋으로 분리한다.
+
+#### 2026-07-01 Build 관계 그래프 판정 근거 구체화
+
+- [x] 현재 브랜치가 `main`이고, `origin/main`보다 8커밋 앞선 상태임을 확인했다.
+- [x] 마지막 커밋은 `ada4f7e fix: AI 추천 적용 후 견적 장바구니를 즉시 표시`다.
+- [x] `BuildGraphService`가 ToolCheckService details를 사용해 소켓, RAM 규격, 쿨러 소켓, 전력 여유, GPU 길이, 쿨러 높이를 관계별 `PASS/WARN/FAIL`로 다시 구분하도록 보강했다.
+- [x] 그래프 node detail에 CPU 소켓, 메인보드 소켓/메모리/Wi-Fi, RAM 용량/모듈 수, GPU 전력/길이, PSU 정격 출력, 케이스 GPU 허용 길이, 쿨러 높이를 표시하도록 정리했다.
+- [x] React Flow 그래프의 `PASS/WARN/FAIL` 문구를 사용자 친화적인 `여유 있음/간섭 주의/장착 불가` 라벨로 표시했다.
+- [x] JUnit 테스트에 정상 여유, warning 여유, socket/power/size 실패 케이스를 추가해 edge label과 summary를 검증했다.
+
+#### 2026-07-01 Build 관계 그래프 제약 노드 라벨 보정
+
+- [x] 현재 브랜치가 `main`이고, `origin/main`보다 9커밋 앞선 상태임을 확인했다.
+- [x] 마지막 커밋은 `fae7c2b feat: 빌드 관계 그래프 판정 근거를 구체화`다.
+- [x] 제약 노드가 `전력 여유`, `장착 규격`, `기본 호환성` 같은 generic label 대신 `정격 850W`, 실제 케이스명, 실제 메인보드명을 표시하도록 보정했다.
+- [x] `BuildGraphServiceTest`에서 `constraint-power`, `constraint-size`, `constraint-compatibility` label을 검증하도록 추가했다.
+- [x] 홈 Playwright fixture와 assertion도 실제 제약 노드 라벨 기준으로 맞추고 generic 문구가 노출되지 않는지 확인한다.
+
+#### 2026-07-01 그래프 노드 호환 후보 API와 패널 점검
+
+- [x] 현재 브랜치가 `main`이고, `origin/main`보다 10커밋 앞선 상태임을 확인했다.
+- [x] 마지막 커밋은 `647bfbd fix: 빌드 그래프 제약 노드 라벨을 실제 부품 기준으로 표시`다.
+- [x] `POST /api/parts/compatible-candidates` API를 추가해 AI 추천 조합 또는 현재 견적초안 기준으로 같은 카테고리 호환 후보를 계산한다.
+- [x] 후보 계산은 서버가 부품을 DB에서 다시 조회하고, 해당 카테고리 교체 후 `ToolCheckService.checkBuild` 결과의 관련 tool만 사용해 `PASS/WARN/FAIL`을 판단한다.
+- [x] 그래프 노드 클릭 시 선택 부품 상세와 호환 후보 패널을 표시하고, 홈 AI 추천에서는 읽기 전용, 셀프 견적에서는 `담기/교체` 동작으로 연결한다.
+- [x] OpenAPI/API 계약/route ownership과 controller/service/JUnit, Home/SelfQuote Playwright fixture를 함께 갱신했다.
+
+#### 2026-07-01 그래프 노드 호환 후보 프론트 분리 점검
+
+- [x] 현재 브랜치가 `main`이고, `origin/main`보다 11커밋 앞선 상태임을 확인했다.
+- [x] 마지막 커밋은 `dc91fcc feat: 현재 조합 기준 호환 부품 후보 API를 추가`다.
+- [x] 미커밋 변경은 API 계약이 아니라 `BuildDependencyGraph`에서 노드 선택 시 호환 후보 패널을 보여주는 프론트 연결 작업이다.
+- [x] 홈 AI 추천 그래프는 `AI_BUILD` source와 build items를 넘겨 읽기 전용 후보 목록을 표시한다.
+- [x] 셀프 견적 그래프는 `QUOTE_DRAFT_CURRENT` source와 현재 장바구니 선택 상태를 넘겨 후보의 `담기/교체` 버튼을 견적초안 담기 흐름에 연결한다.
+- [x] Home/SelfQuote Playwright fixture는 후보 API 요청, 선택 부품 상세 표시, 읽기 전용 표시, 후보 담기 동작을 검증한다.
+
+#### 2026-07-01 그래프 호환 후보 체크리스트 문서 커밋 점검
+
+- [x] 현재 브랜치가 `main`이고, `origin/main`보다 12커밋 앞선 상태임을 확인했다.
+- [x] 마지막 커밋은 `946625a feat: 그래프 노드에서 호환 부품 후보를 표시`다.
+- [x] 미커밋 변경은 `docs/hosoek/owner5-work-analysis-checklist.md`의 작업 점검 기록 1개 파일뿐이다.
+- [x] 기능 코드, API 계약, 테스트 변경은 이미 직전 커밋에 포함되어 있어 이번 커밋은 문서 기록 정리로 분리한다.
+
+#### 2026-07-01 그래프 호환 후보 패널 배치 보정 점검
+
+- [x] 현재 브랜치가 `main`이고, `origin/main`보다 12커밋 앞선 상태임을 확인했다.
+- [x] 마지막 커밋은 `946625a feat: 그래프 노드에서 호환 부품 후보를 표시`다.
+- [x] 미커밋 코드 변경은 `BuildDependencyGraph`의 선택 노드 상세와 호환 후보 목록을 그래프 캔버스 내부 패널로 분리하는 UI 보정이다.
+- [x] 기존 우측 aside는 관계 edge 선택 설명과 판정 근거 확인 영역으로 유지하고, node 선택 시 `graph-node-candidate-panel`에서 부품 상세와 후보 목록을 함께 보여준다.
+- [x] Home/SelfQuote Playwright 테스트는 새 패널 test id를 기준으로 선택 부품 상세, 읽기 전용 후보, 담기/교체 동작을 검증하도록 맞춘다.
+- [x] 모바일 홈 테스트는 챗봇 추천 후 관계도와 후보 패널을 열어도 가로 overflow가 생기지 않는지 확인한다.
 
 ## 우선순위
 
@@ -887,7 +986,7 @@ AdminShell nav 분석 결과:
 - [x] 401/403 권한 분기 확인
 - [x] PR 전 기본 검증 명령 실행
 - [x] 1번 Auth/User 구현 후 `api.ts`, `RequireAdmin`, admin guard 기본 연동 검토
-- [ ] `api.ts` refresh retry, logout API 호출, `ErrorResponse` 보존 구현
+- [x] `api.ts` refresh retry, logout API 호출, `ErrorResponse` 보존 구현
 
 ### P1
 

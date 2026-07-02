@@ -270,6 +270,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/build-graphs/resolve:
+    post:
+      summary: Build 관계 그래프 계산
+      description: AI 추천 조합 또는 현재 셀프견적 장바구니를 기준으로 부품 간 호환성, 전력, 규격, 성능, 가격 관계 그래프를 반환한다. 서버는 전달된 가격/부품명을 신뢰하지 않고 partId와 현재 quote draft를 기준으로 DB를 다시 조회한다.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BuildGraphResolveRequest"
+      responses:
+        "200":
+          description: 관계 그래프 응답
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildGraphResolveResponse"
+        "400":
+          description: source, partId, category 등 request validation 실패
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: 활성 부품 또는 사용자 견적초안을 찾을 수 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/parts:
     get:
       summary: 부품 목록
@@ -307,7 +338,13 @@ paths:
           name: sort
           schema:
             type: string
-            enum: [category, price_asc, price_desc, name]
+            enum: [category, price_asc, price_desc, name, compatibility]
+        - in: query
+          name: compatibilitySource
+          description: 특정 category 조회에서 현재 견적초안 기준 호환성 상태를 PartDto.compatibility에 포함한다. sort=compatibility와 함께 사용할 수 있다.
+          schema:
+            type: string
+            enum: [QUOTE_DRAFT_CURRENT]
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/Size"
       responses:
@@ -317,6 +354,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PartPage"
+  /api/parts/compatible-candidates:
+    post:
+      summary: 현재 조합 기준 호환 부품 후보
+      description: 그래프 노드 클릭 시 같은 카테고리 후보를 현재 AI_BUILD 또는 현재 견적초안 기준으로 Tool 검증해 반환한다. FAIL 후보는 기본 목록에서 제외하고 rejectedCount에 반영한다.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompatiblePartCandidateRequest"
+      responses:
+        "200":
+          description: 호환 후보 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompatiblePartCandidateResponse"
   /api/parts/{id}:
     get:
       summary: 부품 상세
@@ -2388,6 +2444,21 @@ components:
     AiBuildChatAnswerType:
       type: string
       enum: [BUDGET, PART, GENERAL]
+    BuildGraphSource:
+      type: string
+      enum: [AI_BUILD, QUOTE_DRAFT_CURRENT]
+    BuildGraphView:
+      type: string
+      enum: [FOCUSED, FULL]
+    BuildGraphMode:
+      type: string
+      enum: [BUILD_OVERVIEW, PART_IMPACT, ISSUE_PATH, DRAFT_ACTION]
+    BuildGraphNodeType:
+      type: string
+      enum: [PART, CONSTRAINT, ISSUE, ACTION]
+    BuildGraphEdgeType:
+      type: string
+      enum: [REQUIRES, AFFECTS, BLOCKS, SUGGESTS]
     AiDraftActionType:
       type: string
       enum: [ADD_PART_TO_DRAFT, REPLACE_DRAFT_PART, REMOVE_DRAFT_PART, UPDATE_DRAFT_QUANTITY, ASK_FOLLOW_UP]
@@ -2444,6 +2515,133 @@ components:
           type: string
           nullable: true
           description: 저장 가능한 Agent root가 있을 때만 채워진다. 홈 챗봇 단독 대화는 null일 수 있다.
+    BuildGraphResolveRequest:
+      type: object
+      required: [source]
+      properties:
+        source:
+          $ref: "#/components/schemas/BuildGraphSource"
+        view:
+          $ref: "#/components/schemas/BuildGraphView"
+        items:
+          type: array
+          description: AI_BUILD source에서만 사용한다. 서버는 partId 기준으로 현재 DB 가격과 attributes를 다시 조회한다.
+          items:
+            type: object
+            required: [partId, category, quantity]
+            properties:
+              partId:
+                type: string
+              category:
+                $ref: "#/components/schemas/PartCategory"
+              quantity:
+                type: integer
+                minimum: 1
+                maximum: 9
+        budgetWon:
+          type: integer
+          nullable: true
+        focus:
+          $ref: "#/components/schemas/BuildGraphFocusDto"
+    BuildGraphFocusDto:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          $ref: "#/components/schemas/BuildGraphMode"
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        partId:
+          type: string
+        tool:
+          type: string
+          enum: [compatibility, power, size, performance, price]
+    BuildGraphResolveResponse:
+      type: object
+      required: [mode, summary, nodes, edges, focusNodeIds, insights, toolResults]
+      properties:
+        mode:
+          $ref: "#/components/schemas/BuildGraphMode"
+        summary:
+          type: string
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/BuildGraphNodeDto"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/BuildGraphEdgeDto"
+        focusNodeIds:
+          type: array
+          items:
+            type: string
+        insights:
+          type: array
+          items:
+            $ref: "#/components/schemas/BuildGraphInsightDto"
+        toolResults:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolResultDto"
+    BuildGraphNodeDto:
+      type: object
+      required: [id, type, label, status]
+      properties:
+        id:
+          type: string
+        type:
+          $ref: "#/components/schemas/BuildGraphNodeType"
+        category:
+          type: string
+          nullable: true
+        label:
+          type: string
+        status:
+          $ref: "#/components/schemas/ToolStatus"
+        detail:
+          type: string
+          nullable: true
+        partId:
+          type: string
+          nullable: true
+        price:
+          type: integer
+          nullable: true
+    BuildGraphEdgeDto:
+      type: object
+      required: [id, source, target, type, status, label, summary]
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+        target:
+          type: string
+        type:
+          $ref: "#/components/schemas/BuildGraphEdgeType"
+        status:
+          $ref: "#/components/schemas/ToolStatus"
+        label:
+          type: string
+        summary:
+          type: string
+    BuildGraphInsightDto:
+      type: object
+      required: [id, status, title, description, relatedNodeIds]
+      properties:
+        id:
+          type: string
+        status:
+          $ref: "#/components/schemas/ToolStatus"
+        title:
+          type: string
+        description:
+          type: string
+        relatedNodeIds:
+          type: array
+          items:
+            type: string
     AiBuildRecommendationDto:
       type: object
       required: [id, tier, label, title, summary, totalPrice, badges, budgetWon, budgetLabel, tierLabel, appliedPartCategories, items, toolResults, warnings, confidence]
@@ -2734,6 +2932,10 @@ components:
           nullable: true
           allOf:
             - $ref: "#/components/schemas/PartExternalOfferDto"
+        compatibility:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PartCompatibilityDto"
     PartExternalOfferDto:
       type: object
       properties:
@@ -2758,6 +2960,88 @@ components:
           type: string
           format: date-time
           nullable: true
+    PartCompatibilityDto:
+      type: object
+      required: [status, statusLabel, summary, checkedTools]
+      properties:
+        status:
+          $ref: "#/components/schemas/ToolStatus"
+        statusLabel:
+          type: string
+          enum: [호환됨, 간섭 주의, 안 맞음]
+        summary:
+          type: string
+        checkedTools:
+          type: array
+          items:
+            type: string
+            enum: [compatibility, power, size, performance, price]
+    CompatiblePartCandidateRequest:
+      type: object
+      required: [source, category]
+      properties:
+        source:
+          $ref: "#/components/schemas/BuildGraphSource"
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        items:
+          type: array
+          description: AI_BUILD source에서만 사용한다. QUOTE_DRAFT_CURRENT에서는 서버가 현재 로그인 사용자의 견적초안을 직접 읽는다.
+          items:
+            $ref: "#/components/schemas/CompatibleCandidateItemInput"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 5
+    CompatibleCandidateItemInput:
+      type: object
+      required: [partId, category, quantity]
+      properties:
+        partId:
+          type: string
+          format: uuid
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 9
+    CompatiblePartCandidateResponse:
+      type: object
+      required: [category, items, rejectedCount, warnings]
+      properties:
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CompatiblePartCandidateDto"
+        rejectedCount:
+          type: integer
+          minimum: 0
+        warnings:
+          type: array
+          items:
+            type: string
+    CompatiblePartCandidateDto:
+      type: object
+      required: [part, status, statusLabel, summary, checkedTools]
+      properties:
+        part:
+          $ref: "#/components/schemas/PartDto"
+        status:
+          $ref: "#/components/schemas/ToolStatus"
+        statusLabel:
+          type: string
+          enum: [여유 있음, 간섭 주의, 장착 불가]
+        summary:
+          type: string
+        checkedTools:
+          type: array
+          items:
+            type: string
+            enum: [compatibility, power, size, performance, price]
     AdminPartDto:
       type: object
       required: [id, category, name, price, status, attributes, toolReady, missingRequiredFields]

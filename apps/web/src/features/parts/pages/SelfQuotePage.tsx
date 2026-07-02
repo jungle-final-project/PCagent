@@ -1,17 +1,21 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Bell, CheckCircle2, PackageCheck, Search, ShoppingCart, SlidersHorizontal, X } from 'lucide-react';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Bell, CheckCircle2, PackageCheck, Search, ShoppingCart, SlidersHorizontal, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { CategorySidebar, DataTable, MetricCard, Panel, Screen } from '../../../components/ui';
+import { CategorySidebar, DataTable, Panel, Screen } from '../../../components/ui';
 import { AUTH_CHANGED_EVENT, getToken } from '../../../lib/api';
 import { AiBuildAssistant } from '../../quote/components/AiBuildAssistant';
+import { BuildDependencyGraph } from '../../quote/components/BuildDependencyGraph';
 import {
   AI_SELECTED_BUILD_CHANGED_EVENT,
   PART_CATEGORY_LABELS,
   clearSelectedAiBuild,
   readSelectedAiBuild,
+  type BuildGraphFocus,
+  type PartCategory,
   type AiSelectedBuild
 } from '../../quote/aiSelection';
+import { resolveBuildGraph } from '../../quote/quoteApi';
 import { partImageUrl, partShortSpec } from '../partDisplay';
 import { deleteQuoteDraftItem, getCurrentQuoteDraft, getPartPriceHistory, listParts, patchQuoteDraftItem, putQuoteDraftItem } from '../partsApi';
 import type { PartRow, PartSearchParams, QuoteDraftItem } from '../types';
@@ -35,15 +39,19 @@ export function SelfQuotePage() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [category, setCategory] = useState<string>(() => normalizeCategory(searchParams.get('category')));
+  const initialCategory = normalizeCategory(searchParams.get('category'));
+  const [category, setCategory] = useState<string>(() => initialCategory);
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState<PartSearchParams['sort']>('category');
+  const [sort, setSort] = useState<PartSearchParams['sort']>(() => defaultSortForCategory(initialCategory));
   const [page, setPage] = useState(() => normalizePage(searchParams.get('page')));
   const [aiBuild, setAiBuild] = useState<AiSelectedBuild | null>(() => readSelectedAiBuild());
+  const [pendingPartActionId, setPendingPartActionId] = useState<string | null>(null);
   const hasToken = Boolean(getToken());
-  const { data, isError, isLoading } = useQuery({
-    queryKey: ['parts', 'self-quote', category, query, sort, page],
-    queryFn: () => listParts({ category, q: query, page, size: PAGE_SIZE, sort }),
+  const compatibilitySource = category ? 'QUOTE_DRAFT_CURRENT' : undefined;
+  const { data, isError, isFetching, isLoading, isPlaceholderData } = useQuery({
+    queryKey: ['parts', 'self-quote', category, query, sort, compatibilitySource, page],
+    queryFn: () => listParts({ category, q: query, page, size: PAGE_SIZE, sort, compatibilitySource }),
+    placeholderData: keepPreviousData,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true
   });
@@ -72,11 +80,31 @@ export function SelfQuotePage() {
   const toIndex = total === 0 ? 0 : Math.min((safePage + 1) * PAGE_SIZE, total);
   const draftItems = quoteDraft?.items ?? [];
   const selectedTotal = quoteDraft?.totalPrice ?? 0;
+  const aiBuildDisplayTotal = currentPriceTotalForAiBuild(aiBuild, draftItems);
   const selectedPartIds = new Set(draftItems.map((part) => part.partId));
+  const graphFocus = quoteGraphFocus(category);
+  const graphQuery = useQuery({
+    queryKey: ['build-graph', 'quote-draft-current', quoteGraphSignature(quoteDraft?.items ?? []), graphFocus.mode, graphFocus.category],
+    queryFn: () => resolveBuildGraph({
+      source: 'QUOTE_DRAFT_CURRENT',
+      view: 'FOCUSED',
+      focus: graphFocus
+    }),
+    placeholderData: keepPreviousData,
+    enabled: hasToken && !isQuoteDraftLoading
+  });
+  const showPartsSkeleton = isLoading && !data;
+  const showPartsRefreshing = isFetching && Boolean(data);
 
   useEffect(() => {
     const nextCategory = normalizeCategory(searchParams.get('category'));
-    setCategory((current) => current === nextCategory ? current : nextCategory);
+    setCategory((current) => {
+      if (current === nextCategory) {
+        return current;
+      }
+      setSort(defaultSortForCategory(nextCategory));
+      return nextCategory;
+    });
     const nextPage = normalizePage(searchParams.get('page'));
     setPage((current) => current === nextPage ? current : nextPage);
   }, [searchParams]);
@@ -84,6 +112,7 @@ export function SelfQuotePage() {
   const selectCategory = (nextCategory: string) => {
     const normalizedCategory = normalizeCategory(nextCategory);
     setCategory(normalizedCategory);
+    setSort(defaultSortForCategory(normalizedCategory));
     setPage(0);
     setSearchParams((current) => {
       const nextParams = new URLSearchParams(current);
@@ -132,11 +161,11 @@ export function SelfQuotePage() {
   }, [setSearchParams, totalPages]);
 
   useEffect(() => {
-    if (!data || page === safePage) {
+    if (!data || isPlaceholderData || page === safePage) {
       return;
     }
     movePage(safePage);
-  }, [data, movePage, page, safePage]);
+  }, [data, isPlaceholderData, movePage, page, safePage]);
 
   useEffect(() => {
     const syncSelectedBuild = () => setAiBuild(readSelectedAiBuild());
@@ -155,7 +184,11 @@ export function SelfQuotePage() {
       navigate(`/login?redirect=${encodeURIComponent(`${location.pathname}${location.search}`)}`);
       return;
     }
-    addMutation.mutate({ partId: part.id, quantity: 1 });
+    setPendingPartActionId(part.id);
+    addMutation.mutate(
+      { partId: part.id, quantity: 1 },
+      { onSettled: () => setPendingPartActionId(null) }
+    );
   };
 
   const removePart = (partId: string) => {
@@ -163,7 +196,10 @@ export function SelfQuotePage() {
       navigate(`/login?redirect=${encodeURIComponent(`${location.pathname}${location.search}`)}`);
       return;
     }
-    deleteMutation.mutate(partId);
+    setPendingPartActionId(partId);
+    deleteMutation.mutate(partId, {
+      onSettled: () => setPendingPartActionId(null)
+    });
   };
 
   const updateQuantity = (partId: string, quantity: number) => {
@@ -217,12 +253,30 @@ export function SelfQuotePage() {
           <AiSelectedBuildPanel
             build={aiBuild}
             selectedPartIds={selectedPartIds}
+            displayTotal={aiBuildDisplayTotal}
             onClear={() => {
               clearSelectedAiBuild();
               setAiBuild(null);
             }}
           />
         ) : null}
+
+        <BuildDependencyGraph
+          graph={graphQuery.data}
+          isLoading={graphQuery.isLoading || (hasToken && isQuoteDraftLoading)}
+          isRefreshing={graphQuery.isFetching && Boolean(graphQuery.data)}
+          isError={graphQuery.isError}
+          totalPrice={selectedTotal}
+          title="견적 관계도"
+          subtitle="장바구니에 담긴 부품이 서로 어떤 조건으로 연결되는지 확인합니다."
+          onCategorySelect={selectCategory}
+          candidateContext={{
+            source: 'QUOTE_DRAFT_CURRENT',
+            readOnly: false,
+            selectedPartIds,
+            onSelectPart: addPart
+          }}
+        />
 
         <div className="grid gap-5 xl:grid-cols-[216px_minmax(0,1fr)_320px]">
           <CategorySidebar items={selfQuoteCategories} activeValue={category} onSelect={selectCategory} />
@@ -239,7 +293,7 @@ export function SelfQuotePage() {
                   <SlidersHorizontal size={17} className="text-slate-400" />
                   <span className="sr-only">정렬 기준</span>
                   <select aria-label="정렬 기준" value={sort} onChange={(event) => updateSort(event.target.value as PartSearchParams['sort'])} className="min-w-0 flex-1 bg-transparent text-sm font-bold text-slate-700 outline-none">
-                    <option value="category">카테고리순</option>
+                    {category ? <option value="compatibility">호환성순</option> : <option value="category">카테고리순</option>}
                     <option value="price_asc">가격 낮은순</option>
                     <option value="price_desc">가격 높은순</option>
                     <option value="name">이름순</option>
@@ -249,41 +303,54 @@ export function SelfQuotePage() {
                   전체 보기
                 </button>
               </div>
-              {isLoading ? <div className="rounded-md border border-commerce-line p-5 text-sm text-slate-500">부품 목록을 불러오는 중입니다.</div> : null}
-              {isError ? <div className="rounded-md border border-orange-200 bg-orange-50 p-5 text-sm text-orange-700">부품 목록 API를 불러오지 못했습니다.</div> : null}
-              {!isLoading && !isError ? (
-                <>
-                  <div className="mb-3 flex flex-col gap-2 text-xs font-bold text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-                    <span>{total.toLocaleString()}개 중 {fromIndex.toLocaleString()}-{toIndex.toLocaleString()}개 표시</span>
-                    <span>페이지 {safePage + 1} / {totalPages}</span>
+              {showPartsSkeleton ? <PartsTableSkeleton showCompatibility={Boolean(category)} /> : null}
+              {isError && !data ? <div className="rounded-md border border-orange-200 bg-orange-50 p-5 text-sm text-orange-700">부품 목록 API를 불러오지 못했습니다.</div> : null}
+              {!showPartsSkeleton && data ? (
+                <div className="relative">
+                  {isError ? <div className="mb-3 rounded-md border border-orange-200 bg-orange-50 p-3 text-xs font-bold text-orange-700">새 부품 목록을 불러오지 못해 이전 목록을 유지합니다.</div> : null}
+                  <div className={showPartsRefreshing ? 'pointer-events-none opacity-45 transition-opacity duration-150' : 'transition-opacity duration-150'}>
+                    <div className="mb-3 flex flex-col gap-2 text-xs font-bold text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+                      <span>{total.toLocaleString()}개 중 {fromIndex.toLocaleString()}-{toIndex.toLocaleString()}개 표시</span>
+                      <span>페이지 {safePage + 1} / {totalPages}</span>
+                    </div>
+                    <DataTable
+                      columns={partTableColumns(Boolean(category))}
+                      rows={partRows(parts, selectedPartIds, addPart, removePart, pendingPartActionId, Boolean(category))}
+                    />
+                    <div className="mt-4 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => movePage(safePage - 1)}
+                        disabled={safePage === 0 || showPartsRefreshing}
+                        className="rounded-md border border-commerce-line bg-white px-3 py-2 text-sm font-black text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                      >
+                        이전
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => movePage(safePage + 1)}
+                        disabled={safePage >= totalPages - 1 || showPartsRefreshing}
+                        className="rounded-md border border-commerce-line bg-white px-3 py-2 text-sm font-black text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                      >
+                        다음
+                      </button>
+                    </div>
                   </div>
-                  <DataTable columns={['product', 'manufacturer', 'supplier', 'price', 'action']} rows={partRows(parts, selectedPartIds, addPart)} />
-                  <div className="mt-4 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => movePage(safePage - 1)}
-                      disabled={safePage === 0}
-                      className="rounded-md border border-commerce-line bg-white px-3 py-2 text-sm font-black text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
-                    >
-                      이전
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => movePage(safePage + 1)}
-                      disabled={safePage >= totalPages - 1}
-                      className="rounded-md border border-commerce-line bg-white px-3 py-2 text-sm font-black text-slate-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
-                    >
-                      다음
-                    </button>
-                  </div>
-                </>
+                  {showPartsRefreshing ? (
+                    <div className="absolute inset-x-0 top-11 z-10 flex justify-center">
+                      <div className="rounded-full border border-blue-100 bg-white/95 px-3 py-1.5 text-xs font-black text-brand-blue shadow-product">
+                        목록 업데이트 중
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
             </Panel>
           </section>
 
           <aside className="min-w-0 xl:sticky xl:top-5 xl:self-start">
             <Panel title="견적 장바구니" subtitle="선택한 부품 총액과 검증 진입점을 확인합니다.">
-              <MetricCard label="견적 합계" value={`${selectedTotal.toLocaleString()}원`} />
+              <QuoteTotalCard totalPrice={selectedTotal} />
               <div className="mt-4 space-y-2">
                 {!hasToken ? (
                   <div className="rounded-md border border-dashed border-slate-300 p-4 text-sm text-slate-500">
@@ -326,10 +393,17 @@ export function SelfQuotePage() {
                   <PackageCheck size={17} />
                   Tool 검증하기
                 </button>
-                <Link to="/builds/00000000-0000-4000-8000-000000002001" className="flex min-h-11 items-center justify-center gap-2 rounded-md border border-commerce-line bg-white px-4 py-3 text-center text-sm font-black text-commerce-ink hover:border-commerce-ink">
-                  <AlertTriangle size={17} className="text-commerce-amber" />
-                  구매하기
-                </Link>
+                {draftItems.length > 0 ? (
+                  <Link to="/checkout" className="flex min-h-11 items-center justify-center gap-2 rounded-md border border-commerce-line bg-white px-4 py-3 text-center text-sm font-black text-commerce-ink hover:border-commerce-ink">
+                    <ShoppingCart size={17} className="text-commerce-amber" />
+                    구매하기
+                  </Link>
+                ) : (
+                  <button type="button" disabled className="flex w-full min-h-11 cursor-not-allowed items-center justify-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-center text-sm font-black text-slate-300">
+                    <ShoppingCart size={17} />
+                    구매하기
+                  </button>
+                )}
               </div>
             </Panel>
           </aside>
@@ -343,10 +417,12 @@ export function SelfQuotePage() {
 function AiSelectedBuildPanel({
   build,
   selectedPartIds,
+  displayTotal,
   onClear
 }: {
   build: AiSelectedBuild;
   selectedPartIds: Set<string>;
+  displayTotal: AiBuildDisplayTotal;
   onClear: () => void;
 }) {
   const duplicateCount = build.items.filter((item) => selectedPartIds.has(item.partId)).length;
@@ -374,7 +450,8 @@ function AiSelectedBuildPanel({
         <div className="flex flex-wrap items-center gap-2">
           <div className="rounded-md bg-white px-4 py-3 text-right">
             <div className="text-xs font-bold text-slate-500">AI 조합 합계</div>
-            <div className="text-lg font-black text-commerce-sale">{build.totalPrice.toLocaleString()}원</div>
+            <div data-testid="ai-selected-build-current-total" className="text-lg font-black text-commerce-sale">{displayTotal.totalPrice.toLocaleString()}원</div>
+            <div className="mt-1 text-[11px] font-bold text-slate-500">{displayTotalLabel(displayTotal)}</div>
           </div>
           <button
             type="button"
@@ -421,47 +498,205 @@ function AiSelectedBuildPanel({
   );
 }
 
-function partRows(parts: PartRow[], selectedPartIds: Set<string>, onAddPart: (part: PartRow) => void) {
-  return parts.map((part) => ({
-    product: <PartProductCell part={part} />,
-    manufacturer: part.manufacturer ?? '-',
-    supplier: <SupplierCell part={part} />,
-    price: `${part.price.toLocaleString()}원`,
-    action: (
-      <button
-        type="button"
-        aria-label={`${part.name} 견적 담기`}
-        disabled={selectedPartIds.has(part.id)}
-        onClick={() => onAddPart(part)}
-        className="rounded-md bg-commerce-ink px-3 py-2 text-xs font-black text-white transition hover:bg-slate-700 disabled:bg-slate-300"
-      >
-        {selectedPartIds.has(part.id) ? '담김' : '담기'}
-      </button>
-    )
-  }));
+type AiBuildDisplayTotal = {
+  totalPrice: number;
+  matchedItemCount: number;
+  itemCount: number;
+};
+
+function currentPriceTotalForAiBuild(aiBuild: AiSelectedBuild | null, draftItems: QuoteDraftItem[]): AiBuildDisplayTotal {
+  if (!aiBuild) {
+    return { totalPrice: 0, matchedItemCount: 0, itemCount: 0 };
+  }
+  const draftItemsByPartId = new Map(draftItems.map((item) => [item.partId, item]));
+  let matchedItemCount = 0;
+  const totalPrice = aiBuild.items.reduce((sum, item) => {
+    const draftItem = draftItemsByPartId.get(item.partId);
+    if (draftItem) {
+      matchedItemCount += 1;
+      return sum + draftItem.currentPrice * draftItem.quantity;
+    }
+    return sum + item.price * item.quantity;
+  }, 0);
+  return {
+    totalPrice,
+    matchedItemCount,
+    itemCount: aiBuild.items.length
+  };
+}
+
+function displayTotalLabel(total: AiBuildDisplayTotal) {
+  if (total.itemCount > 0 && total.matchedItemCount === total.itemCount) {
+    return '현재 저장가 기준';
+  }
+  if (total.matchedItemCount > 0) {
+    return '현재 저장가 일부 반영';
+  }
+  return '추천 시점 기준';
+}
+
+function QuoteTotalCard({ totalPrice }: { totalPrice: number }) {
+  return (
+    <div className="rounded-md border border-commerce-line bg-white p-4 shadow-sm">
+      <div className="text-xs font-bold text-slate-500">견적 합계</div>
+      <div className="mt-2 text-2xl font-black tracking-tight text-brand-blue">{totalPrice.toLocaleString()}원</div>
+    </div>
+  );
+}
+
+function compatibilityBadgeClassName(status: NonNullable<PartRow['compatibility']>['status']) {
+  if (status === 'PASS') {
+    return 'border-emerald-100 bg-emerald-50 text-emerald-700';
+  }
+  if (status === 'WARN') {
+    return 'border-amber-100 bg-amber-50 text-amber-700';
+  }
+  return 'border-red-100 bg-red-50 text-red-700';
+}
+
+function compatibilityStatusLabel(status: NonNullable<PartRow['compatibility']>['status']) {
+  if (status === 'PASS') {
+    return '호환됨';
+  }
+  if (status === 'WARN') {
+    return '간섭 주의';
+  }
+  return '안 맞음';
+}
+
+function PartsTableSkeleton({ showCompatibility }: { showCompatibility: boolean }) {
+  const columns = partTableColumns(showCompatibility);
+  return (
+    <div>
+      <div className="mb-3 flex flex-col gap-2 text-xs font-bold text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+        <span>부품 목록 준비 중</span>
+        <span>페이지 계산 중</span>
+      </div>
+      <div className="overflow-x-auto rounded-md border border-commerce-line bg-white">
+        <table className="w-full min-w-[760px] border-collapse bg-white text-left text-xs">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              {columns.map((column) => <th key={column} className="border-b border-commerce-line px-3 py-3 font-black uppercase tracking-wide">{column}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 5 }).map((_, rowIndex) => (
+              <tr key={rowIndex} className="border-b border-slate-100 last:border-0">
+                {columns.map((column, columnIndex) => (
+                  <td key={column} className="px-3 py-3 align-middle">
+                    <div className={`h-4 rounded bg-slate-100 ${columnIndex === 0 ? 'w-48' : columnIndex === 4 ? 'w-16' : 'w-24'}`} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <div className="h-9 w-14 rounded-md border border-slate-200 bg-slate-50" />
+        <div className="h-9 w-14 rounded-md border border-slate-200 bg-slate-50" />
+      </div>
+    </div>
+  );
+}
+
+function partTableColumns(showCompatibility: boolean) {
+  return showCompatibility
+    ? ['product', 'manufacturer', 'supplier', 'price', 'compatibility', 'action']
+    : ['product', 'manufacturer', 'supplier', 'price', 'action'];
+}
+
+function partRows(
+  parts: PartRow[],
+  selectedPartIds: Set<string>,
+  onAddPart: (part: PartRow) => void,
+  onRemovePart: (partId: string) => void,
+  pendingPartActionId: string | null,
+  showCompatibility: boolean
+) {
+  return parts.map((part) => {
+    const isSelected = selectedPartIds.has(part.id);
+    const isPending = pendingPartActionId === part.id;
+    const row = {
+      product: <PartProductCell part={part} />,
+      manufacturer: part.manufacturer ?? '-',
+      supplier: <SupplierCell part={part} />,
+      price: `${part.price.toLocaleString()}원`,
+      action: (
+        <button
+          type="button"
+          aria-label={isSelected ? `${part.name} 견적에서 제거` : `${part.name} 견적 담기`}
+          disabled={isPending}
+          onClick={() => isSelected ? onRemovePart(part.id) : onAddPart(part)}
+          className={`rounded-md px-3 py-2 text-xs font-black transition focus:outline-none focus:ring-2 focus:ring-brand-blue disabled:cursor-wait disabled:opacity-60 ${
+            isSelected
+              ? 'border border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100'
+              : 'bg-commerce-ink text-white hover:bg-slate-700'
+          }`}
+        >
+          {isPending ? (isSelected ? '빼는 중' : '담는 중') : isSelected ? '빼기' : '담기'}
+        </button>
+      )
+    };
+    return showCompatibility
+      ? {
+          ...row,
+          compatibility: <CompatibilityStatusCell part={part} />
+        }
+      : row;
+  });
+}
+
+function CompatibilityStatusCell({ part }: { part: PartRow }) {
+  const compatibility = part.compatibility;
+  if (!compatibility) {
+    return (
+      <div className="min-w-[112px]">
+        <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-black text-slate-500">평가 중</span>
+      </div>
+    );
+  }
+  return (
+    <div className="min-w-[132px]">
+      <span className={`inline-flex rounded-md border px-2 py-1 text-[11px] font-black ${compatibilityBadgeClassName(compatibility.status)}`}>
+        {compatibility.statusLabel || compatibilityStatusLabel(compatibility.status)}
+      </span>
+      <div className="mt-1 line-clamp-2 max-w-[180px] break-keep text-[11px] leading-4 text-slate-500">{compatibility.summary}</div>
+    </div>
+  );
 }
 
 function PriceTrendBadge({ partId }: { partId: string }) {
-  const { data, isLoading, isError } = useQuery({
+  const { data } = useQuery({
     queryKey: ['parts', partId, 'price-history', 'all-sources'],
-    queryFn: () => getPartPriceHistory(partId, { days: 3650, limit: 60 })
+    queryFn: () => getPartPriceHistory(partId, { days: 3650, limit: 60 }),
+    staleTime: 60_000
   });
-  if (isLoading) {
-    return <div className="mt-2 text-[11px] text-slate-400">가격 기록 확인 중</div>;
+  const points = [...(data?.items ?? [])]
+    .filter((point) => Number.isFinite(point.price))
+    .sort((first, second) => Date.parse(first.collectedAt) - Date.parse(second.collectedAt));
+
+  if (points.length < 2) {
+    return null;
   }
-  if (isError || !data) {
-    return <div className="mt-2 text-[11px] text-slate-400">가격 기록 없음</div>;
+
+  const previousPrice = points[points.length - 2]?.price ?? 0;
+  const latestPrice = points[points.length - 1]?.price ?? 0;
+  if (previousPrice <= 0 || latestPrice <= 0) {
+    return null;
   }
-  const sampleCount = data.summary.sampleCount;
-  if (sampleCount < 2) {
-    return <div className="mt-2 text-[11px] text-slate-500">가격 기록 {sampleCount}개</div>;
+
+  const change = latestPrice - previousPrice;
+  if (change === 0) {
+    return null;
   }
-  const change = data.summary.changeAmount;
-  const tone = change > 0 ? 'text-orange-700' : change < 0 ? 'text-emerald-700' : 'text-slate-500';
+
+  const changeRatePercent = (change / previousPrice) * 100;
+  const tone = change > 0 ? 'text-orange-700' : 'text-emerald-700';
   const sign = change > 0 ? '+' : '';
   return (
     <div className={`mt-2 text-[11px] font-bold ${tone}`}>
-      {sampleCount}회 기록 · {sign}{change.toLocaleString()}원 ({sign}{data.summary.changeRatePercent.toFixed(2)}%)
+      직전 기록 대비 {sign}{change.toLocaleString()}원 ({sign}{changeRatePercent.toFixed(2)}%)
     </div>
   );
 }
@@ -494,6 +729,44 @@ function DraftQuantityStepper({ item, onChange, disabled }: { item: QuoteDraftIt
 
 function allowsQuantity(category: string) {
   return category === 'RAM' || category === 'STORAGE';
+}
+
+function quoteGraphFocus(category: string): BuildGraphFocus {
+  if (isPartCategory(category)) {
+    return {
+      mode: 'PART_IMPACT',
+      category,
+      tool: graphToolForCategory(category)
+    };
+  }
+  return {
+    mode: 'ISSUE_PATH'
+  };
+}
+
+function quoteGraphSignature(items: QuoteDraftItem[]) {
+  if (items.length === 0) {
+    return 'empty';
+  }
+  return items
+    .map((item) => `${item.partId}:${item.quantity}:${item.lineTotal}`)
+    .sort()
+    .join('|');
+}
+
+function isPartCategory(category: string): category is PartCategory {
+  return Object.keys(PART_CATEGORY_LABELS).includes(category);
+}
+
+function defaultSortForCategory(category: string): PartSearchParams['sort'] {
+  return category ? 'compatibility' : 'category';
+}
+
+function graphToolForCategory(category: PartCategory): BuildGraphFocus['tool'] {
+  if (category === 'GPU' || category === 'PSU') return 'power';
+  if (category === 'CASE' || category === 'COOLER') return 'size';
+  if (category === 'CPU' || category === 'MOTHERBOARD' || category === 'RAM') return 'compatibility';
+  return undefined;
 }
 
 function PartProductCell({ part }: { part: PartRow }) {

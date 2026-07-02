@@ -1,7 +1,7 @@
 # 다나와 월별 가격 추이 수동 매칭 리포트
 
-작성일: 2026-07-01  
-수집 source: `DANAWA_PRICE_TREND`  
+작성일: 2026-07-01
+수집 source: `DANAWA_PRICE_TREND`
 수집 방식: 다나와 상품 상세의 공개 `getProductPriceList.ajax.php` 6개월 그래프 포인트 + 현재가 포인트 저장
 
 ## 요약
