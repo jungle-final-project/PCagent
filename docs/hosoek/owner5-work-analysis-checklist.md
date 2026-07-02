@@ -1065,3 +1065,14 @@ AdminShell nav 분석 결과:
 | Redis 임시 저장소 | 구글 로그인 임시 코드, AI 결과 캐시, 사용량 제한 정책 검토 | 1번/3번 이후 |
 | RabbitMQ 작업 대기열 | AI 추천/분석 작업, 부품 가격 수집 작업을 대기열에 넣고 처리하는 정책 검토 | 2번/3번 이후 |
 | Mailpit 개발용 메일함 | 가격 알림 메일이나 회원가입 인증 메일이 잘 오는지 확인 | 1번/2번 이후 |
+
+## 2026-07-03 부품 목록 externalOffer 이미지 누락 수정
+
+- [x] `/self-quote?category=PSU`에서 `가격 낮은순`, `가격 높은순`, `이름순` 정렬 시 제품 이미지가 기본 PSU 아이콘으로 떨어지는 원인을 확인했다.
+- [x] 원인: `/api/parts`가 `compatibilitySource=QUOTE_DRAFT_CURRENT`와 일반 정렬을 함께 처리할 때 이미 DTO로 변환된 `externalOffer`를 raw DB row처럼 재매핑해 `externalOffer`를 `null`로 만드는 문제였다.
+- [x] `PartCompatibleCandidateServiceTest`에 API DTO 형태 row의 `externalOffer.imageUrl`, `supplierName`, `offerUrl`, `source`가 호환성 평가 이후에도 유지되는 회귀 테스트를 추가했다.
+- [x] `PartCompatibleCandidateService.partRowsWithCompatibility()`가 API DTO row는 보존하고 raw DB row만 기존 `partMap()` 변환을 타도록 수정했다.
+- [x] 검증: `apps/api ./gradlew test --tests com.buildgraph.prototype.part.PartCompatibleCandidateServiceTest --no-daemon` 통과.
+- [x] 검증: `apps/api ./gradlew test --tests com.buildgraph.prototype.part.PartQueryServiceTest --no-daemon` 통과.
+- [x] 검증: `apps/api ./gradlew test --no-daemon` 통과.
+- [x] 검증: `git diff --check` 통과.
