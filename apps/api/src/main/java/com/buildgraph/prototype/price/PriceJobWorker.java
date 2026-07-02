@@ -1,6 +1,8 @@
 package com.buildgraph.prototype.price;
 
 import com.buildgraph.prototype.common.RabbitQueueConfig;
+import com.buildgraph.prototype.part.DanawaPriceSnapshotService;
+import com.buildgraph.prototype.part.NaverShoppingOfferService;
 import java.util.Map;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
@@ -8,9 +10,17 @@ import org.springframework.stereotype.Component;
 @Component
 public class PriceJobWorker {
     private final PriceQueryService priceQueryService;
+    private final NaverShoppingOfferService naverShoppingOfferService;
+    private final DanawaPriceSnapshotService danawaPriceSnapshotService;
 
-    public PriceJobWorker(PriceQueryService priceQueryService) {
+    public PriceJobWorker(
+            PriceQueryService priceQueryService,
+            NaverShoppingOfferService naverShoppingOfferService,
+            DanawaPriceSnapshotService danawaPriceSnapshotService
+    ) {
         this.priceQueryService = priceQueryService;
+        this.naverShoppingOfferService = naverShoppingOfferService;
+        this.danawaPriceSnapshotService = danawaPriceSnapshotService;
     }
 
     @RabbitListener(queues = RabbitQueueConfig.PRICE_REFRESH_QUEUE)
@@ -18,6 +28,8 @@ public class PriceJobWorker {
         String priceJobId = requiredText(payload.get("priceJobId"));
         try {
             priceQueryService.startPriceJob(priceJobId);
+            naverShoppingOfferService.refreshOffers(null, null, true);
+            danawaPriceSnapshotService.refreshSnapshots(null, null, true);
             priceQueryService.completePriceJob(priceJobId);
         } catch (RuntimeException error) {
             priceQueryService.failPriceJob(priceJobId, safeReason(error));
