@@ -39,6 +39,33 @@ export type PartPage = {
   total: number;
 };
 
+export type HomeRecommendedPart = {
+  recommendationId: string;
+  rankPosition: number;
+  part: PartRow;
+  scoreSource?: string | null;
+  modelVersion?: string | null;
+  reasonTags?: string[];
+};
+
+export type HomeRecommendedPartsResponse = {
+  items: HomeRecommendedPart[];
+  generatedAt: string;
+  fallbackUsed: boolean;
+};
+
+export type RecommendationEventRequest = {
+  eventType: 'IMPRESSION' | 'CLICK' | 'DETAIL_VIEW' | 'SAVE' | 'CHANGE_ADOPTED' | 'ADD_BUILD_TO_DRAFT' | 'ORDER_INTENT' | 'REJECT' | 'CHANGE_REVERTED';
+  sourceSurface: string;
+  recommendationId?: string;
+  partId?: string;
+  buildId?: string;
+  category?: string;
+  rankPosition?: number;
+  idempotencyKey?: string;
+  eventPayload?: Record<string, unknown>;
+};
+
 export type PartSearchParams = {
   category?: string;
   q?: string;

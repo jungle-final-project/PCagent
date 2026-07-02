@@ -9,6 +9,8 @@ import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
 import com.buildgraph.prototype.part.ToolBuildPart;
 import com.buildgraph.prototype.part.ToolCheckService;
+import com.buildgraph.prototype.recommendation.CandidateReranker;
+import com.buildgraph.prototype.recommendation.NoopCandidateReranker;
 import com.buildgraph.prototype.user.CurrentUserService;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -55,13 +57,25 @@ public class BuildChatService {
     private final ToolCheckService toolCheckService;
     private final AiChatEngine aiChatEngine;
     private final BuildChatCacheService buildChatCacheService;
+    private final CandidateReranker candidateReranker;
 
     @Autowired
-    public BuildChatService(JdbcTemplate jdbcTemplate, ToolCheckService toolCheckService, AiChatEngine aiChatEngine, BuildChatCacheService buildChatCacheService) {
+    public BuildChatService(
+            JdbcTemplate jdbcTemplate,
+            ToolCheckService toolCheckService,
+            AiChatEngine aiChatEngine,
+            BuildChatCacheService buildChatCacheService,
+            CandidateReranker candidateReranker
+    ) {
         this.jdbcTemplate = jdbcTemplate;
         this.toolCheckService = toolCheckService;
         this.aiChatEngine = aiChatEngine;
         this.buildChatCacheService = buildChatCacheService;
+        this.candidateReranker = candidateReranker;
+    }
+
+    public BuildChatService(JdbcTemplate jdbcTemplate, ToolCheckService toolCheckService, AiChatEngine aiChatEngine, BuildChatCacheService buildChatCacheService) {
+        this(jdbcTemplate, toolCheckService, aiChatEngine, buildChatCacheService, new NoopCandidateReranker());
     }
 
     public Map<String, Object> chat(Map<String, Object> request) {
@@ -104,6 +118,7 @@ public class BuildChatService {
                 userId
         ), requestedAiProfile);
         Map<String, Object> response = responseMap(engineResponse, body);
+        candidateReranker.recordShadowScores(body, response, userId, requestedAiProfile);
         log.debug("Build Chat response generated: userId={}, requestedAiProfile={}, cacheStore=true", userId, requestedAiProfile);
         buildChatCacheService.store(body, requestedAiProfile, userId, response);
         return response;

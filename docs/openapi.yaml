@@ -270,6 +270,86 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/recommendation-events:
+    post:
+      summary: 추천 행동 이벤트 수집
+      description: 추천 노출, 클릭, 저장, 변경 적용, 거절 등 학습용 이벤트를 저장한다. AS 확정 negative label은 관리자 전용 API만 사용한다.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecommendationEventRequest"
+      responses:
+        "201":
+          description: 저장된 추천 이벤트
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendationEventDto"
+  /api/recommendations/home-parts:
+    get:
+      summary: 홈 추천 부품 랭킹
+      description: 홈 하단 인기 부품 랭킹 카드에 표시할 ACTIVE 내부 자산 4개를 반환한다. XGBoost scorer가 실패하면 deterministic fallback 랭킹을 반환한다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            default: 4
+            minimum: 1
+            maximum: 12
+      responses:
+        "200":
+          description: 홈 추천 부품 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HomeRecommendedPartsResponse"
+  /api/admin/recommendation-feedback/as-tickets/{id}:
+    post:
+      summary: AS 티켓 기반 추천 negative label 확정
+      description: 관리자가 AS 원인이 추천 조합/부품 선택과 관련 있다고 확정한 경우에만 학습 이벤트를 남긴다. as_tickets 상태와 cause_candidates, upgrade_candidates는 수정하지 않는다.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminAsRecommendationFeedbackRequest"
+      responses:
+        "201":
+          description: 저장된 AS 확정 negative 이벤트
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendationEventDto"
+  /api/admin/recommendation-models:
+    get:
+      summary: 추천 reranker 모델 버전 조회
+      description: XGBoost shadow scoring과 batch 학습으로 생성된 모델 버전/metric을 조회한다.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 모델 버전 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecommendationModelVersionsResponse"
   /api/build-graphs/resolve:
     post:
       summary: Build 관계 그래프 계산
@@ -2530,6 +2610,173 @@ components:
           type: string
           nullable: true
           description: 저장 가능한 Agent root가 있을 때만 채워진다. 홈 챗봇 단독 대화는 null일 수 있다.
+    RecommendationEventType:
+      type: string
+      enum: [IMPRESSION, CLICK, DETAIL_VIEW, SAVE, CHANGE_ADOPTED, ADD_BUILD_TO_DRAFT, ORDER_INTENT, REJECT, CHANGE_REVERTED]
+    RecommendationEventRequest:
+      type: object
+      required: [eventType]
+      properties:
+        eventType:
+          $ref: "#/components/schemas/RecommendationEventType"
+        sourceSurface:
+          type: string
+          example: BUILD_CHAT
+        recommendationId:
+          type: string
+          nullable: true
+        buildId:
+          type: string
+          format: uuid
+          nullable: true
+        partId:
+          type: string
+          format: uuid
+          nullable: true
+        asTicketId:
+          type: string
+          format: uuid
+          nullable: true
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        rankPosition:
+          type: integer
+          nullable: true
+        idempotencyKey:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+        eventPayload:
+          type: object
+          additionalProperties: true
+    AdminAsRecommendationFeedbackRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+        relatedPartId:
+          type: string
+          format: uuid
+          nullable: true
+        recommendationId:
+          type: string
+          nullable: true
+        category:
+          $ref: "#/components/schemas/PartCategory"
+        metadata:
+          type: object
+          additionalProperties: true
+    RecommendationEventDto:
+      type: object
+      required: [id, eventType, labelScore, sourceSurface, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventType:
+          type: string
+        labelScore:
+          type: number
+        sourceSurface:
+          type: string
+        recommendationId:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        rankPosition:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    HomeRecommendedPartsResponse:
+      type: object
+      required: [items, generatedAt, fallbackUsed]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/HomeRecommendedPartDto"
+        generatedAt:
+          type: string
+          format: date-time
+        fallbackUsed:
+          type: boolean
+          description: XGBoost scorer를 쓰지 못해 deterministic fallback 랭킹을 사용했는지 여부
+    HomeRecommendedPartDto:
+      type: object
+      required: [recommendationId, rankPosition, part, scoreSource, reasonTags]
+      properties:
+        recommendationId:
+          type: string
+        rankPosition:
+          type: integer
+        part:
+          $ref: "#/components/schemas/PartDto"
+        scoreSource:
+          type: string
+          enum: [XGBOOST, FALLBACK]
+        modelVersion:
+          type: string
+          nullable: true
+        reasonTags:
+          type: array
+          items:
+            type: string
+    RecommendationModelVersionsResponse:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecommendationModelVersionDto"
+        page:
+          type: integer
+        size:
+          type: integer
+        total:
+          type: integer
+    RecommendationModelVersionDto:
+      type: object
+      required: [id, modelName, modelVersion, algorithm, status, metrics, featureSchema, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        modelName:
+          type: string
+        modelVersion:
+          type: string
+        algorithm:
+          type: string
+        artifactPath:
+          type: string
+          nullable: true
+        status:
+          type: string
+        trainedFrom:
+          type: string
+          nullable: true
+        trainedTo:
+          type: string
+          nullable: true
+        metrics:
+          type: object
+          additionalProperties: true
+        featureSchema:
+          type: object
+          additionalProperties: true
+        activatedAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
     BuildGraphResolveRequest:
       type: object
       required: [source]

@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 import com.buildgraph.prototype.agent.AiChatEngine;
 import com.buildgraph.prototype.agent.AiProfileConfig;
 import com.buildgraph.prototype.part.ToolCheckService;
+import com.buildgraph.prototype.recommendation.CandidateReranker;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -22,6 +23,7 @@ class BuildChatServiceWiringTest {
             .withBean(ToolCheckService.class, () -> mock(ToolCheckService.class))
             .withBean(AiChatEngine.class, () -> mock(AiChatEngine.class))
             .withBean(AiProfileConfig.class, () -> mock(AiProfileConfig.class))
+            .withBean(CandidateReranker.class, () -> mock(CandidateReranker.class))
             .withBean(StringRedisTemplate.class, () -> mock(StringRedisTemplate.class))
             .withBean(BuildChatCacheService.class)
             .withBean(BuildChatService.class);
