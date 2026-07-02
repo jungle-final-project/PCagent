@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,9 +19,16 @@ except Exception:  # pragma: no cover - optional for prototype environments
 
 KST = timezone(timedelta(hours=9))
 DEFAULT_CONFIG_PATH = Path("agent-config.json")
+REGISTER_PATH = "/api/agent/devices/register"
+REGISTERED_STATUS = "REGISTERED"
+UNREGISTERED_STATUS = "UNREGISTERED"
 
 
 class ConfigError(ValueError):
+    pass
+
+
+class RegisterError(RuntimeError):
     pass
 
 
@@ -46,8 +56,8 @@ class AgentConfig:
 
     def registration_status(self) -> str:
         if self.agent_token:
-            return "registered token present"
-        return "unregistered"
+            return REGISTERED_STATUS
+        return UNREGISTERED_STATUS
 
 
 def required_config_text(data: dict[str, Any], field: str) -> str:
@@ -69,7 +79,7 @@ def optional_config_text(data: dict[str, Any], field: str) -> str | None:
     return value or None
 
 
-def load_config(path: Path) -> AgentConfig:
+def read_config_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"Config file not found: {path}")
     try:
@@ -79,6 +89,11 @@ def load_config(path: Path) -> AgentConfig:
         raise ConfigError(f"Config file is not valid JSON: {path}: {exception.msg}") from exception
     if not isinstance(data, dict):
         raise ConfigError("Config file root must be a JSON object.")
+    return data
+
+
+def load_config(path: Path) -> AgentConfig:
+    data = read_config_json(path)
     return AgentConfig.from_dict(data)
 
 
@@ -92,6 +107,79 @@ def print_doctor(config_path: Path) -> None:
     print("config: ok")
     print(f"apiBaseUrl: {config.api_base_url}")
     print(f"registration: {config.registration_status()}")
+
+
+def register_endpoint(api_base_url: str) -> str:
+    return api_base_url.rstrip("/") + REGISTER_PATH
+
+
+def registration_idempotency_key(config: AgentConfig) -> str:
+    digest = hashlib.sha256(config.device_fingerprint_hash.encode("utf-8")).hexdigest()
+    return f"agent-register-{digest[:32]}"
+
+
+def register_request_body(config: AgentConfig) -> dict[str, str]:
+    return {
+        "activationToken": config.activation_token,
+        "deviceFingerprintHash": config.device_fingerprint_hash,
+        "registrationIdempotencyKey": registration_idempotency_key(config),
+        "osVersion": config.os_version,
+        "agentVersion": config.agent_version,
+        "policyVersion": config.policy_version,
+    }
+
+
+def call_register(config: AgentConfig, timeout_seconds: int = 15) -> str:
+    request_body = json.dumps(register_request_body(config)).encode("utf-8")
+    request = urllib.request.Request(
+        register_endpoint(config.api_base_url),
+        data=request_body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            response_body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exception:
+        detail = exception.read().decode("utf-8", errors="replace").strip()
+        message = detail or exception.reason
+        raise RegisterError(f"Register request failed with HTTP {exception.code}: {message}") from exception
+    except urllib.error.URLError as exception:
+        raise RegisterError(f"Register request failed: {exception.reason}") from exception
+
+    try:
+        payload = json.loads(response_body)
+    except json.JSONDecodeError as exception:
+        raise RegisterError("Register response is not valid JSON.") from exception
+    if not isinstance(payload, dict):
+        raise RegisterError("Register response root must be a JSON object.")
+
+    agent_token = payload.get("agentToken")
+    if not isinstance(agent_token, str) or not agent_token.strip():
+        raise RegisterError("Register response is missing agentToken.")
+    return agent_token.strip()
+
+
+def save_agent_token(config_path: Path, agent_token: str) -> None:
+    if not agent_token.strip():
+        raise ConfigError("agentToken must be a non-empty string.")
+    data = read_config_json(config_path)
+    data["agentToken"] = agent_token.strip()
+    with config_path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+
+
+def register_agent(config_path: Path) -> None:
+    config = load_config(config_path)
+    agent_token = call_register(config)
+    save_agent_token(config_path, agent_token)
+    print(REGISTERED_STATUS)
+    print(f"agentToken: saved to {config_path}")
 
 
 def metric_snapshot(ts: datetime, index: int) -> dict:
@@ -169,6 +257,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     doctor = sub.add_parser("doctor", help="validate config without registering or uploading")
     doctor.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
 
+    register = sub.add_parser("register", help="register this device and save the returned agent token")
+    register.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+
     args = parser.parse_args(argv)
 
     try:
@@ -182,9 +273,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print_status(args.config)
         elif args.command == "doctor":
             print_doctor(args.config)
+        elif args.command == "register":
+            register_agent(args.config)
     except ConfigError as exception:
         print(f"config error: {exception}", file=sys.stderr)
         return 2
+    except RegisterError as exception:
+        print(f"register error: {exception}", file=sys.stderr)
+        return 3
     return 0
 
 

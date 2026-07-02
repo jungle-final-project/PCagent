@@ -1,13 +1,29 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from buildgraph_agent import ConfigError, load_config, main
+
+
+class FakeHttpResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> "FakeHttpResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
 
 
 class AgentConfigTest(unittest.TestCase):
@@ -59,9 +75,9 @@ class AgentConfigTest(unittest.TestCase):
             exit_code = main(["status", "--config", str(path)])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(output.getvalue().strip(), "unregistered")
+        self.assertEqual(output.getvalue().strip(), "UNREGISTERED")
 
-    def test_status_with_agent_token_is_registered_token_present(self) -> None:
+    def test_status_with_agent_token_is_registered(self) -> None:
         path = self.write_config(self.valid_config(agentToken="agent-token"))
         output = io.StringIO()
 
@@ -69,7 +85,62 @@ class AgentConfigTest(unittest.TestCase):
             exit_code = main(["status", "--config", str(path)])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(output.getvalue().strip(), "registered token present")
+        self.assertEqual(output.getvalue().strip(), "REGISTERED")
+
+    def test_register_posts_without_authorization_and_saves_agent_token(self) -> None:
+        path = self.write_config(self.valid_config())
+        captured_requests = []
+
+        def fake_urlopen(request: object, timeout: int) -> FakeHttpResponse:
+            captured_requests.append((request, timeout))
+            return FakeHttpResponse(
+                {
+                    "deviceId": "device-1",
+                    "status": "ACTIVE",
+                    "agentToken": "raw-agent-token",
+                    "tokenType": "Bearer",
+                }
+            )
+
+        output = io.StringIO()
+        with patch("buildgraph_agent.urllib.request.urlopen", side_effect=fake_urlopen):
+            with redirect_stdout(output):
+                exit_code = main(["register", "--config", str(path)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("REGISTERED", output.getvalue())
+        self.assertEqual(len(captured_requests), 1)
+
+        request, timeout = captured_requests[0]
+        self.assertEqual(timeout, 15)
+        self.assertEqual(request.full_url, "http://localhost:8080/api/agent/devices/register")
+        self.assertIsNone(request.get_header("Authorization"))
+
+        request_body = json.loads(request.data.decode("utf-8"))
+        expected_registration_key = "agent-register-" + hashlib.sha256(
+            b"fingerprint-hash"
+        ).hexdigest()[:32]
+        self.assertEqual(
+            request_body,
+            {
+                "activationToken": "demo-agent-activation-token",
+                "deviceFingerprintHash": "fingerprint-hash",
+                "registrationIdempotencyKey": expected_registration_key,
+                "osVersion": "Windows 11",
+                "agentVersion": "0.1.0",
+                "policyVersion": "policy-v1",
+            },
+        )
+
+        saved_config = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved_config["agentToken"], "raw-agent-token")
+
+        status_output = io.StringIO()
+        with redirect_stdout(status_output):
+            status_exit_code = main(["status", "--config", str(path)])
+
+        self.assertEqual(status_exit_code, 0)
+        self.assertEqual(status_output.getvalue().strip(), "REGISTERED")
 
 
 if __name__ == "__main__":
