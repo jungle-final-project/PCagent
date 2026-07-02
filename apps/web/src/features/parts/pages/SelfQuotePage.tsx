@@ -668,8 +668,8 @@ function CompatibilityStatusCell({ part }: { part: PartRow }) {
 
 function PriceTrendBadge({ partId }: { partId: string }) {
   const { data } = useQuery({
-    queryKey: ['parts', partId, 'price-history', 'NAVER_SHOPPING_SEARCH'],
-    queryFn: () => getPartPriceHistory(partId, { days: 3650, source: 'NAVER_SHOPPING_SEARCH', limit: 60 }),
+    queryKey: ['parts', partId, 'price-history', 'all-sources'],
+    queryFn: () => getPartPriceHistory(partId, { days: 3650, limit: 60 }),
     staleTime: 60_000
   });
   const points = [...(data?.items ?? [])]

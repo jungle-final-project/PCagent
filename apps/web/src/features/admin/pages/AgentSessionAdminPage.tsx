@@ -5,14 +5,19 @@ import { getAgentSession, getRagEvidence } from '../adminApi';
 import type { AgentSessionDetail, LlmGeneration, RagEvidenceDetail, ToolInvocation } from '../adminApi';
 
 export function AgentSessionAdminPage() {
-  const { id = '00000000-0000-4000-8000-000000003001' } = useParams();
+  const { id } = useParams();
   const {
     data: session,
     isError,
     isLoading
   } = useQuery({
     queryKey: ['admin-agent-session', id],
-    queryFn: () => getAgentSession(id)
+    queryFn: () => getAgentSession(id ?? ''),
+    enabled: Boolean(id),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === 'QUEUED' || status === 'RUNNING' || status === 'RAG_SEARCHED' || status === 'TOOLS_CALLED' || status === 'SUMMARY_READY' ? 2000 : false;
+    }
   });
 
   const evidenceQueries = useQueries({
@@ -21,6 +26,14 @@ export function AgentSessionAdminPage() {
       queryFn: () => getRagEvidence(evidenceId)
     }))
   });
+
+  if (!id) {
+    return (
+      <AdminShell title="Agent / RAG / Tool 근거 상세">
+        <StateMessage type="info" title="Agent 세션을 선택하세요" body="운영 대시보드의 Agent 세션 목록에서 상세 항목을 선택해야 합니다." />
+      </AdminShell>
+    );
+  }
 
   if (isLoading) {
     return (

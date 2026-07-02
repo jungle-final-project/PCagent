@@ -4,6 +4,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.server.ResponseStatusException;
@@ -28,6 +30,14 @@ import org.springframework.web.server.ResponseStatusException;
 class AdminControllerTest {
     private static final String ADMIN_TOKEN = "Bearer jwt-admin-token";
     private static final String USER_TOKEN = "Bearer jwt-user-token";
+    private static final CurrentUserService.CurrentUser ADMIN = new CurrentUserService.CurrentUser(
+            2L,
+            "00000000-0000-4000-8000-000000001002",
+            "admin@example.com",
+            "Admin User",
+            "ADMIN",
+            null
+    );
 
     @Autowired
     private MockMvc mockMvc;
@@ -59,6 +69,7 @@ class AdminControllerTest {
                 .thenThrow(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "로그인이 필요합니다."));
         when(currentUserService.requireAdmin(USER_TOKEN))
                 .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "관리자 권한이 필요합니다."));
+        when(currentUserService.requireAdmin(ADMIN_TOKEN)).thenReturn(ADMIN);
     }
 
     @Test
@@ -151,5 +162,44 @@ class AdminControllerTest {
                 .andExpect(jsonPath("$.items[0].createdAt").value("2026-06-29T10:45:00Z"));
 
         verify(adminQueryService).auditLogs();
+    }
+
+    @Test
+    void updateAsTicketStoresSupportDecisionForAdminToken() throws Exception {
+        when(ticketQueryService.update("ticket-public-id", Map.of(
+                "supportDecision", "REMOTE_POSSIBLE",
+                "reviewStatus", "APPROVED",
+                "adminNote", "Remote support link sent."
+        ), ADMIN)).thenReturn(Map.of(
+                "id", "ticket-public-id",
+                "status", "OPEN",
+                "analysisStatus", "RULE_READY",
+                "reviewStatus", "APPROVED",
+                "supportDecision", "REMOTE_POSSIBLE",
+                "adminNote", "Remote support link sent."
+        ));
+
+        mockMvc.perform(patch("/api/admin/as-tickets/ticket-public-id")
+                        .header("Authorization", ADMIN_TOKEN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "supportDecision": "REMOTE_POSSIBLE",
+                                  "reviewStatus": "APPROVED",
+                                  "adminNote": "Remote support link sent."
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("ticket-public-id"))
+                .andExpect(jsonPath("$.analysisStatus").value("RULE_READY"))
+                .andExpect(jsonPath("$.reviewStatus").value("APPROVED"))
+                .andExpect(jsonPath("$.supportDecision").value("REMOTE_POSSIBLE"));
+
+        verify(currentUserService).requireAdmin(ADMIN_TOKEN);
+        verify(ticketQueryService).update("ticket-public-id", Map.of(
+                "supportDecision", "REMOTE_POSSIBLE",
+                "reviewStatus", "APPROVED",
+                "adminNote", "Remote support link sent."
+        ), ADMIN);
     }
 }

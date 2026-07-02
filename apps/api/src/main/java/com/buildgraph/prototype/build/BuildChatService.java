@@ -8,6 +8,7 @@ import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
 import com.buildgraph.prototype.part.ToolBuildPart;
 import com.buildgraph.prototype.part.ToolCheckService;
+import com.buildgraph.prototype.user.CurrentUserService;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -17,6 +18,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -47,16 +49,40 @@ public class BuildChatService {
     private final JdbcTemplate jdbcTemplate;
     private final ToolCheckService toolCheckService;
     private final AiChatEngine aiChatEngine;
+    private final BuildChatCacheService buildChatCacheService;
 
     public BuildChatService(JdbcTemplate jdbcTemplate, ToolCheckService toolCheckService, AiChatEngine aiChatEngine) {
+        this(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
+    }
+
+    @Autowired
+    public BuildChatService(JdbcTemplate jdbcTemplate, ToolCheckService toolCheckService, AiChatEngine aiChatEngine, BuildChatCacheService buildChatCacheService) {
         this.jdbcTemplate = jdbcTemplate;
         this.toolCheckService = toolCheckService;
         this.aiChatEngine = aiChatEngine;
+        this.buildChatCacheService = buildChatCacheService;
     }
 
     public Map<String, Object> chat(Map<String, Object> request) {
+        return chat(request, (String) null);
+    }
+
+    public Map<String, Object> chat(Map<String, Object> request, String requestedAiProfile) {
+        return chat(request, requestedAiProfile, null);
+    }
+
+    public Map<String, Object> chat(Map<String, Object> request, CurrentUserService.CurrentUser user) {
+        return chat(request, null, user);
+    }
+
+    public Map<String, Object> chat(Map<String, Object> request, String requestedAiProfile, CurrentUserService.CurrentUser user) {
         Map<String, Object> body = request == null ? Map.of() : request;
         String message = requireText(body.get("message"), "message는 필수입니다.");
+        Long userId = user == null ? null : user.internalId();
+        var cachedResponse = buildChatCacheService.lookup(body, requestedAiProfile, userId);
+        if (cachedResponse.isPresent()) {
+            return cachedResponse.get();
+        }
         AiChatEngineResponse engineResponse = aiChatEngine.respondLlmRequired(new AiChatEngineRequest(
                 message,
                 "HOME",
@@ -64,9 +90,11 @@ public class BuildChatService {
                 text(body.get("buildId")),
                 text(body.get("draftId")),
                 body,
-                null
-        ));
-        return responseMap(engineResponse, body);
+                userId
+        ), requestedAiProfile);
+        Map<String, Object> response = responseMap(engineResponse, body);
+        buildChatCacheService.store(body, requestedAiProfile, userId, response);
+        return response;
     }
 
     static Integer parseBudgetWon(String message) {
