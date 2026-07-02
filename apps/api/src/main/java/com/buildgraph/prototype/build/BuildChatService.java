@@ -21,11 +21,14 @@ import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class BuildChatService {
+    private static final Logger log = LoggerFactory.getLogger(BuildChatService.class);
     private static final Pattern BUDGET_MANWON = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:만원|만)");
     private static final Pattern BUDGET_WON = Pattern.compile("(\\d{6,})\\s*원?");
     private static final Pattern QUANTITY_PATTERN = Pattern.compile("(\\d+)\\s*(?:개|장|ea|pcs|개로)");
@@ -51,10 +54,6 @@ public class BuildChatService {
     private final AiChatEngine aiChatEngine;
     private final BuildChatCacheService buildChatCacheService;
 
-    public BuildChatService(JdbcTemplate jdbcTemplate, ToolCheckService toolCheckService, AiChatEngine aiChatEngine) {
-        this(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
-    }
-
     @Autowired
     public BuildChatService(JdbcTemplate jdbcTemplate, ToolCheckService toolCheckService, AiChatEngine aiChatEngine, BuildChatCacheService buildChatCacheService) {
         this.jdbcTemplate = jdbcTemplate;
@@ -79,6 +78,12 @@ public class BuildChatService {
         Map<String, Object> body = request == null ? Map.of() : request;
         String message = requireText(body.get("message"), "message는 필수입니다.");
         Long userId = user == null ? null : user.internalId();
+        log.debug(
+                "Build Chat request received: userId={}, requestedAiProfile={}, cacheLookup=true, cacheService={}",
+                userId,
+                requestedAiProfile,
+                buildChatCacheService.getClass().getName()
+        );
         var cachedResponse = buildChatCacheService.lookup(body, requestedAiProfile, userId);
         if (cachedResponse.isPresent()) {
             return cachedResponse.get();
@@ -93,6 +98,7 @@ public class BuildChatService {
                 userId
         ), requestedAiProfile);
         Map<String, Object> response = responseMap(engineResponse, body);
+        log.debug("Build Chat response generated: userId={}, requestedAiProfile={}, cacheStore=true", userId, requestedAiProfile);
         buildChatCacheService.store(body, requestedAiProfile, userId, response);
         return response;
     }

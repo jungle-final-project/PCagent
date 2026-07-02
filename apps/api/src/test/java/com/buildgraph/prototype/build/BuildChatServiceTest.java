@@ -49,7 +49,7 @@ class BuildChatServiceTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         ToolCheckService toolCheckService = mock(ToolCheckService.class);
         AiChatEngine aiChatEngine = mock(AiChatEngine.class);
-        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
         when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class))).thenReturn(buildResponse());
         when(toolCheckService.checkBuild(anyList(), anyInt())).thenReturn(List.of(Map.of(
                 "tool", "price",
@@ -77,7 +77,7 @@ class BuildChatServiceTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         ToolCheckService toolCheckService = mock(ToolCheckService.class);
         AiChatEngine aiChatEngine = mock(AiChatEngine.class);
-        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
         when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class))).thenReturn(partResponse());
 
         Map<String, Object> response = service.chat(Map.of(
@@ -100,7 +100,7 @@ class BuildChatServiceTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         ToolCheckService toolCheckService = mock(ToolCheckService.class);
         AiChatEngine aiChatEngine = mock(AiChatEngine.class);
-        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
         when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), eq("BUILD_CHAT_54_MINI_FAST"))).thenReturn(buildResponse());
         when(toolCheckService.checkBuild(anyList(), anyInt())).thenReturn(List.of());
 
@@ -114,7 +114,7 @@ class BuildChatServiceTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         ToolCheckService toolCheckService = mock(ToolCheckService.class);
         AiChatEngine aiChatEngine = mock(AiChatEngine.class);
-        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
         when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class))).thenReturn(partResponse());
 
         Map<String, Object> response = service.chat(Map.of(
@@ -136,7 +136,7 @@ class BuildChatServiceTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         ToolCheckService toolCheckService = mock(ToolCheckService.class);
         AiChatEngine aiChatEngine = mock(AiChatEngine.class);
-        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
         when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class))).thenReturn(partResponse());
 
         Map<String, Object> response = service.chat(Map.of("message", "GPU 추천해줘"));
@@ -151,7 +151,7 @@ class BuildChatServiceTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         ToolCheckService toolCheckService = mock(ToolCheckService.class);
         AiChatEngine aiChatEngine = mock(AiChatEngine.class);
-        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
         when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class)))
                 .thenThrow(new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED, "OPENAI_API_KEY가 필요합니다."));
 
