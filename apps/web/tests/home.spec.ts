@@ -356,6 +356,50 @@ async function mockHomePartsApi(page: Page) {
     }
   }));
 
+  const recommendedOrder = ['home-gpu-rtx5070', 'home-cpu-ryzen7', 'home-ram-ddr5-32', 'home-psu-850-popular'];
+  await page.route('**/api/recommendations/home-parts**', async (route) => {
+    const items = recommendedOrder
+      .map((id, index) => {
+        const part = homeParts.find((candidate) => candidate.id === id);
+        if (!part) return null;
+        return {
+          recommendationId: `home-part-${part.id}`,
+          rankPosition: index,
+          part,
+          scoreSource: 'FALLBACK',
+          reasonTags: ['benchmark', 'image']
+        };
+      })
+      .filter(Boolean);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items,
+        generatedAt: '2026-07-03T10:00:00Z',
+        fallbackUsed: true
+      })
+    });
+  });
+
+  await page.route('**/api/recommendation-events', async (route) => {
+    const body = route.request().postDataJSON() as { eventType?: string; sourceSurface?: string; recommendationId?: string; category?: string; rankPosition?: number };
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: `event-${body.eventType ?? 'unknown'}-${body.rankPosition ?? 0}`,
+        eventType: body.eventType,
+        labelScore: body.eventType === 'IMPRESSION' ? 0 : 1,
+        sourceSurface: body.sourceSurface,
+        recommendationId: body.recommendationId,
+        category: body.category,
+        rankPosition: body.rankPosition,
+        createdAt: '2026-07-03T10:00:00Z'
+      })
+    });
+  });
+
   await page.route('**/api/parts**', async (route) => {
     const url = new URL(route.request().url());
     const category = url.searchParams.get('category');

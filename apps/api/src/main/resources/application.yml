@@ -138,6 +138,13 @@ ai:
       max-output-tokens: ${BUILD_CHAT_54_MINI_FAST_MAX_OUTPUT_TOKENS:850}
       recent-message-limit: ${BUILD_CHAT_54_MINI_FAST_RECENT_MESSAGE_LIMIT:0}
 
+recommendation:
+  reranker:
+    enabled: ${RECOMMENDATION_RERANKER_ENABLED:false}
+    shadow-enabled: ${RECOMMENDATION_RERANKER_SHADOW_ENABLED:true}
+    endpoint: ${RECOMMENDATION_RERANKER_ENDPOINT:http://localhost:8091/score}
+    timeout-ms: ${RECOMMENDATION_RERANKER_TIMEOUT_MS:1200}
+
 part:
   price-refresh:
     enabled: ${PART_PRICE_REFRESH_ENABLED:true}

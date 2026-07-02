@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -20,7 +20,7 @@ import {
 import { Screen } from '../../../components/ui';
 import { AUTH_CHANGED_EVENT } from '../../../lib/api';
 import { partImageUrl } from '../../parts/partDisplay';
-import { applyAiBuildToQuoteDraft, getPart, listParts } from '../../parts/partsApi';
+import { applyAiBuildToQuoteDraft, getPart, listHomeRecommendedParts, listParts, recordRecommendationEvent } from '../../parts/partsApi';
 import type { PartRow } from '../../parts/types';
 import { AiBuildAssistant } from '../components/AiBuildAssistant';
 import { BuildDependencyGraph } from '../components/BuildDependencyGraph';
@@ -62,16 +62,6 @@ type FeaturedBuildPartSearch = {
 type FeaturedBuildResolvedPart = {
   search: FeaturedBuildPartSearch;
   part: PartRow;
-};
-
-type PopularPart = {
-  rank: number;
-  label: string;
-  category: string;
-  searchQuery: string;
-  sale: string;
-  detail: string;
-  icon: LucideIcon;
 };
 
 type RecommendationTab = 'popular' | 'ai';
@@ -157,13 +147,6 @@ const featuredBuilds: FeaturedBuild[] = [
       { category: 'COOLER', searchQuery: 'Dark Rock Pro 5' }
     ]
   }
-];
-
-const popularPartDeals: PopularPart[] = [
-  { rank: 1, label: 'RTX 5070 QHD 그래픽카드', category: 'GPU', searchQuery: 'RTX 5070', sale: 'SALE', detail: 'QHD 고주사율 후보', icon: Monitor },
-  { rank: 2, label: 'Ryzen 7 작업용 CPU', category: 'CPU', searchQuery: 'Ryzen 7', sale: 'BEST', detail: '게임/개발 균형형', icon: Cpu },
-  { rank: 3, label: 'DDR5 32GB 메모리', category: 'RAM', searchQuery: 'DDR5 32GB', sale: 'LOW', detail: '멀티태스킹 표준', icon: Database },
-  { rank: 4, label: 'ATX 3.1 850W 파워', category: 'PSU', searchQuery: 'ATX 3.1 850W', sale: 'PASS', detail: '전력 여유 확보', icon: Zap }
 ];
 
 export function HomePage() {
@@ -656,13 +639,56 @@ function aiBuildTone(build: AiRecommendedBuild) {
 }
 
 function PopularPartsSection() {
-  const popularPartQueries = useQueries({
-    queries: popularPartDeals.map((part) => ({
-      queryKey: ['parts', 'home-popular-ranking', part.category, part.searchQuery],
-      queryFn: () => listParts({ category: part.category, q: part.searchQuery, page: 0, size: 1, sort: 'price_desc' }),
-      staleTime: 60_000
-    }))
+  const eventSessionId = useRef(`home-parts-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const recordedImpressions = useRef(new Set<string>());
+  const homePartsQuery = useQuery({
+    queryKey: ['recommendations', 'home-parts', 4],
+    queryFn: () => listHomeRecommendedParts(4),
+    staleTime: 60_000
   });
+  const homeParts = homePartsQuery.data?.items ?? [];
+  const displayItems: Array<(typeof homeParts)[number] | null> = homePartsQuery.isLoading
+    ? Array.from({ length: 4 }, () => null)
+    : homeParts;
+
+  useEffect(() => {
+    homeParts.forEach((item) => {
+      const key = item.recommendationId;
+      if (recordedImpressions.current.has(key)) {
+        return;
+      }
+      recordedImpressions.current.add(key);
+      void recordRecommendationEvent({
+        eventType: 'IMPRESSION',
+        sourceSurface: 'HOME_RECOMMENDED_PARTS',
+        recommendationId: item.recommendationId,
+        partId: item.part.id,
+        category: item.part.category,
+        rankPosition: item.rankPosition,
+        idempotencyKey: `${eventSessionId.current}:impression:${item.recommendationId}`,
+        eventPayload: {
+          scoreSource: item.scoreSource,
+          reasonTags: item.reasonTags
+        }
+      }).catch(() => undefined);
+    });
+  }, [homeParts]);
+
+  function recordClick(item: (typeof homeParts)[number]) {
+    void recordRecommendationEvent({
+      eventType: 'CLICK',
+      sourceSurface: 'HOME_RECOMMENDED_PARTS',
+      recommendationId: item.recommendationId,
+      partId: item.part.id,
+      category: item.part.category,
+      rankPosition: item.rankPosition,
+      idempotencyKey: `${eventSessionId.current}:click:${item.recommendationId}`,
+      eventPayload: {
+        scoreSource: item.scoreSource,
+        reasonTags: item.reasonTags
+      }
+    }).catch(() => undefined);
+  }
 
   return (
     <section className="panel p-5 sm:p-6">
@@ -670,26 +696,32 @@ function PopularPartsSection() {
         <div>
           <div className="text-xs font-black text-brand-blue">Part ranking</div>
           <h2 className="mt-1 text-xl font-black text-commerce-ink">인기 부품 랭킹</h2>
-          <p className="mt-1 text-sm text-slate-500">셀프 견적에서 자주 비교하는 내부 자산입니다.</p>
+          <p className="mt-1 text-sm text-slate-500">내부 자산 품질과 사용자 반응을 반영해 추천하는 부품입니다.</p>
         </div>
         <Link to="/self-quote" aria-label="셀프 견적 전체 보기" className="text-sm font-black text-brand-blue hover:underline">셀프 견적 전체 보기</Link>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {popularPartDeals.map((part, index) => {
-          const matchedPart = popularPartQueries[index]?.data?.items[0];
+        {displayItems.map((item, index) => {
+          const matchedPart = item?.part ?? null;
           const partDetailPath = matchedPart ? `/parts/${matchedPart.id}` : '.';
+          const saleLabel = index === 0 ? 'BEST' : matchedPart?.benchmarkSummary ? 'PASS' : '추천';
 
           return (
             <Link
-              key={part.label}
+              key={matchedPart?.id ?? `home-part-loading-${index}`}
               to={partDetailPath}
-              aria-label={`인기 부품 ${part.rank}번 보기`}
+              aria-label={`인기 부품 ${index + 1}번 보기`}
               aria-disabled={matchedPart ? undefined : true}
+              onClick={() => {
+                if (matchedPart && item) {
+                  recordClick(item);
+                }
+              }}
               className={`group rounded-lg border border-commerce-line bg-white p-4 transition hover:-translate-y-0.5 hover:border-commerce-ink hover:shadow-product focus:outline-none focus:ring-4 focus:ring-blue-100 ${matchedPart ? '' : 'pointer-events-none cursor-wait opacity-70'}`}
             >
               <div className="mb-3 flex items-center justify-between">
-                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-commerce-ink text-xs font-black text-white">{part.rank}</span>
-                <span className={`rounded px-2 py-1 text-[11px] font-black ${part.sale === 'SALE' ? 'bg-commerce-sale text-white' : 'bg-slate-100 text-slate-700'}`}>{part.sale}</span>
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-commerce-ink text-xs font-black text-white">{index + 1}</span>
+                <span className={`rounded px-2 py-1 text-[11px] font-black ${index === 0 ? 'bg-commerce-sale text-white' : 'bg-slate-100 text-slate-700'}`}>{saleLabel}</span>
               </div>
               <div className="grid h-56 w-full place-items-center overflow-hidden rounded-md border border-commerce-line bg-slate-50 text-brand-blue">
                 {matchedPart ? (
@@ -699,25 +731,39 @@ function PopularPartsSection() {
                     className="block h-full w-full object-contain p-3"
                   />
                 ) : (
-                  <part.icon size={30} />
+                  <PackageCheck size={30} />
                 )}
               </div>
-              <div className="mt-3 text-xs font-black text-brand-blue">{part.category}</div>
-              <h3 className="mt-1 min-h-10 text-sm font-black leading-5 text-commerce-ink">{matchedPart?.name ?? part.label}</h3>
-              <p className="mt-1 text-xs text-slate-500">{part.detail}</p>
+              <div className="mt-3 text-xs font-black text-brand-blue">{matchedPart?.category ?? '추천'}</div>
+              <h3 className="mt-1 min-h-10 text-sm font-black leading-5 text-commerce-ink">{matchedPart?.name ?? '추천 부품을 불러오는 중'}</h3>
+              <p className="mt-1 text-xs text-slate-500">{matchedPart ? homePartDetail(matchedPart) : '내부 자산 랭킹 계산 중입니다.'}</p>
               <div className="mt-3 flex items-center justify-between gap-2">
                 <span className="text-lg font-black text-commerce-ink">{matchedPart ? `${matchedPart.price.toLocaleString()}원` : '가격 확인 중'}</span>
                 <div className="flex items-center gap-1 text-[11px] font-bold text-amber-600">
                   <Star size={12} fill="currentColor" />
-                  인기
+                  추천
                 </div>
               </div>
             </Link>
           );
         })}
       </div>
+      {homePartsQuery.isError ? (
+        <p className="mt-3 text-xs font-bold text-amber-600">추천 부품을 불러오지 못했습니다. 잠시 후 다시 확인해 주세요.</p>
+      ) : null}
     </section>
   );
+}
+
+function homePartDetail(part: PartRow) {
+  const score = part.benchmarkSummary?.score;
+  if (score !== undefined && score !== null) {
+    return `${part.manufacturer ?? part.category} · 벤치/스펙 점수 ${score}`;
+  }
+  if (part.externalOffer?.supplierName) {
+    return `${part.manufacturer ?? part.category} · ${part.externalOffer.supplierName} 기준`;
+  }
+  return `${part.manufacturer ?? part.category} · 내부 자산 추천`;
 }
 
 function WorkflowPanel() {

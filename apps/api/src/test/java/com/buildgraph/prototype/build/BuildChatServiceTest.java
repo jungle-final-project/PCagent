@@ -21,6 +21,7 @@ import com.buildgraph.prototype.agent.AiChatEngineResponse;
 import com.buildgraph.prototype.agent.AiChatIntent;
 import com.buildgraph.prototype.part.ToolBuildPart;
 import com.buildgraph.prototype.part.ToolCheckService;
+import com.buildgraph.prototype.recommendation.CandidateReranker;
 import com.buildgraph.prototype.user.CurrentUserService;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -171,6 +172,23 @@ class BuildChatServiceTest {
         service.chat(Map.of("message", "추천 조합 장바구니에 넣어줘"));
 
         verify(aiChatEngine).respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class));
+    }
+
+    @Test
+    void buildChatRecordsShadowScoresAfterGeneratingFreshAiResponse() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        ToolCheckService toolCheckService = mock(ToolCheckService.class);
+        AiChatEngine aiChatEngine = mock(AiChatEngine.class);
+        BuildChatCacheService cacheService = BuildChatCacheService.disabled();
+        CandidateReranker candidateReranker = mock(CandidateReranker.class);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, cacheService, candidateReranker);
+        when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class))).thenReturn(buildResponse());
+        when(toolCheckService.checkBuild(anyList(), anyInt())).thenReturn(List.of());
+
+        Map<String, Object> response = service.chat(Map.of("message", "200만원 게임용 PC 추천"));
+
+        assertThat(response).containsEntry("answerType", "BUDGET");
+        verify(candidateReranker).recordShadowScores(anyMap(), anyMap(), eq(null), eq(null));
     }
 
     @Test

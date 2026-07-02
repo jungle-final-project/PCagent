@@ -107,10 +107,12 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 |---|---|
 | 담당 화면 route | `/support/ai-chat`, `/admin/agent-sessions`, `/admin/agent-sessions/:id`, `/admin/tool-invocations`, `/admin/tool-invocations/:id`, `/admin/rag-evidence`, `/admin/rag-evidence/:id` |
 | frontend files | `features/support/**` 중 AS AI Chat 화면/API, `features/admin/agent/**`, `features/admin/evidence/**` |
-| backend packages | `agent`, `rag` |
-| DB tables | `agent_sessions`, `tool_invocations`, `rag_evidence`, `as_chat_sessions`, `as_chat_messages`, `llm_generations` |
-| API endpoints | `POST /api/ai/build-chat`, `GET /api/ai/as-chat`, `POST /api/ai/as-chat`, `POST /api/ai/as-chat/stream`, `POST /api/ai/agent-sessions`, `POST /api/ai/agent-sessions/{id}/run`, `GET /api/ai/agent-sessions/{id}`, `GET /api/rag/search`, `GET /api/rag/evidence/{id}`, `GET /api/admin/agent-sessions`, `GET /api/admin/agent-sessions/{id}`, `GET /api/admin/tool-invocations`, `GET /api/admin/tool-invocations/{id}`, `GET /api/admin/rag-evidence`, `GET /api/admin/rag-evidence/{id}` |
+| backend packages | `agent`, `rag`, `recommendation` |
+| DB tables | `agent_sessions`, `tool_invocations`, `rag_evidence`, `as_chat_sessions`, `as_chat_messages`, `llm_generations`, `recommendation_events`, `recommendation_model_versions`, `recommendation_shadow_scores` |
+| API endpoints | `POST /api/ai/build-chat`, `GET /api/recommendations/home-parts`, `POST /api/recommendation-events`, `POST /api/admin/recommendation-feedback/as-tickets/{id}`, `GET /api/admin/recommendation-models`, `GET /api/ai/as-chat`, `POST /api/ai/as-chat`, `POST /api/ai/as-chat/stream`, `POST /api/ai/agent-sessions`, `POST /api/ai/agent-sessions/{id}/run`, `GET /api/ai/agent-sessions/{id}`, `GET /api/rag/search`, `GET /api/rag/evidence/{id}`, `GET /api/admin/agent-sessions`, `GET /api/admin/agent-sessions/{id}`, `GET /api/admin/tool-invocations`, `GET /api/admin/tool-invocations/{id}`, `GET /api/admin/rag-evidence`, `GET /api/admin/rag-evidence/{id}` |
 | 협업자 | 추천 결과 UI는 1번, Tool 판정 로직은 2번, AS 원인 후보는 4번 |
+
+XGBoost reranker 1차는 Build Chat에서 shadow scoring만 수행하고, 홈 하단 추천부품은 `GET /api/recommendations/home-parts`에서 보이는 랭킹으로 사용한다. 3번은 추천 이벤트 수집, 모델 버전/점수 기록, Python batch 도구를 담당한다. Tool `FAIL` 후보를 되살리거나 기존 견적 추천 순서를 바꾸지 않는다. AS feedback은 4번의 `as_tickets`를 읽어 관리자 확정 negative 이벤트만 남기며, 티켓 상태와 후보 JSON은 수정하지 않는다.
 
 ### 4번: PC Agent/AS
 

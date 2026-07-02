@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import math
+import os
 import statistics
 import sys
 import time
@@ -33,6 +34,12 @@ def main() -> int:
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each selected case N times")
     parser.add_argument("--slow-threshold-ms", type=int, default=10_000, help="Latency threshold for slow-case reporting")
     parser.add_argument("--fail-on-slow", action="store_true", help="Return non-zero when any case reaches slow-threshold-ms")
+    parser.add_argument("--include-shadow-summary", action="store_true", help="Append recommendation_shadow_scores rows created during this run")
+    parser.add_argument(
+        "--shadow-db-dsn",
+        default=os.environ.get("RECOMMENDATION_BENCHMARK_DB_DSN", "postgresql://buildgraph:buildgraph@localhost:5432/buildgraph"),
+        help="PostgreSQL DSN used only when --include-shadow-summary is set",
+    )
     parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
 
@@ -48,6 +55,7 @@ def main() -> int:
             raise RuntimeError(f"no cases matched case id(s)={sorted(selected_ids)}")
     repeat_count = max(1, args.repeat)
     profiles = args.profiles or DEFAULT_PROFILES
+    benchmark_started_at = dt.datetime.now(dt.timezone.utc)
     token = login(args.base_url, args.user_email, args.user_password)
     results = [
         run_case(args.base_url, token, args.variant_label, profile, case, repeat_index, repeat_count, args.slow_threshold_ms)
@@ -55,7 +63,8 @@ def main() -> int:
         for case in cases
         for repeat_index in range(1, repeat_count + 1)
     ]
-    output = write_report(Path(args.output_dir), results, args.slow_threshold_ms, args.report_suffix)
+    shadow_summary = collect_shadow_summary(args.shadow_db_dsn, benchmark_started_at) if args.include_shadow_summary else None
+    output = write_report(Path(args.output_dir), results, args.slow_threshold_ms, args.report_suffix, shadow_summary)
     print(output)
     all_success = all(result["success"] for result in results)
     no_slow_cases = all(result["latencyMs"] < args.slow_threshold_ms for result in results)
@@ -105,6 +114,7 @@ def run_case(
     direction_ok = direction_preserved(base_url, token, response, case)
     forbidden_candidate_ok = forbidden_candidates_absent(response, case)
     action_payload_ok = action_payload_valid(response, case)
+    required_terms_ok = required_response_terms_present(response, case)
     answer_type_ok = response and response.get("answerType") == case.get("expectedAnswerType")
     min_builds_ok = build_count >= case.get("expectedMinBuilds", 0)
     warning_ok = not case.get("expectWarning") or bool(response and response.get("warnings"))
@@ -118,6 +128,7 @@ def run_case(
         and direction_ok
         and forbidden_candidate_ok
         and action_payload_ok
+        and required_terms_ok
         and warning_ok
     )
     return {
@@ -137,6 +148,7 @@ def run_case(
         "directionOk": direction_ok,
         "forbiddenCandidateOk": forbidden_candidate_ok,
         "actionPayloadOk": action_payload_ok,
+        "requiredTermsOk": required_terms_ok,
         "slowOk": latency_ms < slow_threshold_ms,
         "warningOk": warning_ok,
         "error": error,
@@ -269,6 +281,27 @@ def action_payload_valid(response: dict | None, case: dict) -> bool:
             return bool(payload.get("targetPrice"))
         return True
     return False
+
+
+def required_response_terms_present(response: dict | None, case: dict) -> bool:
+    terms = case.get("requiredResponseTerms") or []
+    if not terms:
+        return True
+    if not response:
+        return False
+    haystack = normalize_for_contains(json.dumps(response, ensure_ascii=False))
+    return all(normalize_for_contains(str(term)) in haystack for term in terms)
+
+
+def normalize_for_contains(value: str) -> str:
+    return (
+        value.upper()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace("(", "")
+        .replace(")", "")
+    )
 
 
 def current_item(case: dict) -> dict:
@@ -461,6 +494,7 @@ def write_report(
     results: list[dict],
     slow_threshold_ms: int = 10_000,
     report_suffix: str | None = None,
+    shadow_summary: dict | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = "" if not report_suffix else "-" + safe_filename(report_suffix)
@@ -479,8 +513,8 @@ def write_report(
         "",
         f"- slowThresholdMs: {slow_threshold_ms}",
         "",
-        "| variant | profile | successRate | avgLatencyMs | p95LatencyMs | maxLatencyMs | slowCases | slowOkRate | schemaValidRate | directionOkRate | categoryOkRate | actionPayloadOkRate |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| variant | profile | successRate | avgLatencyMs | p95LatencyMs | maxLatencyMs | slowCases | slowOkRate | schemaValidRate | directionOkRate | categoryOkRate | actionPayloadOkRate | requiredTermsOkRate |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for (variant, profile), rows in grouped.items():
         latencies = [row["latencyMs"] for row in rows]
@@ -492,8 +526,31 @@ def write_report(
             f"{ratio(row['schemaValid'] for row in rows):.1%} | "
             f"{ratio(row['directionOk'] for row in rows):.1%} | "
             f"{ratio(row['categoryOk'] for row in rows):.1%} | "
-            f"{ratio(row['actionPayloadOk'] for row in rows):.1%} |"
+            f"{ratio(row['actionPayloadOk'] for row in rows):.1%} | "
+            f"{ratio(row['requiredTermsOk'] for row in rows):.1%} |"
         )
+
+    if shadow_summary is not None:
+        lines.extend([
+            "",
+            "## XGBoost Shadow Scoring",
+            "",
+            f"- queryStatus: {shadow_summary.get('status')}",
+            f"- startedAt: {shadow_summary.get('startedAt')}",
+            f"- shadowScoreRows: {shadow_summary.get('shadowScoreRows', 0)}",
+            f"- distinctModelVersions: {shadow_summary.get('distinctModelVersions', 0)}",
+        ])
+        if shadow_summary.get("error"):
+            lines.append(f"- error: {str(shadow_summary.get('error')).replace('|', '/')}")
+        model_rows = shadow_summary.get("models") or []
+        if model_rows:
+            lines.extend([
+                "",
+                "| modelName | modelVersion | rows |",
+                "|---|---|---:|",
+            ])
+            for row in model_rows:
+                lines.append(f"| {row['modelName']} | {row['modelVersion']} | {row['rows']} |")
 
     lines.extend([
         "",
@@ -512,8 +569,8 @@ def write_report(
         "",
         "## Cases",
         "",
-        "| variant | profile | case | repeat | ok | latencyMs | answerType | builds | actions | hardConstraint | categoryOk | directionOk | forbiddenOk | actionPayloadOk | warningOk | error |",
-        "|---|---|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---|",
+        "| variant | profile | case | repeat | ok | latencyMs | answerType | builds | actions | hardConstraint | categoryOk | directionOk | forbiddenOk | actionPayloadOk | requiredTermsOk | warningOk | error |",
+        "|---|---|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ])
     for row in results:
         error = (row["error"] or "").replace("|", "/")
@@ -521,7 +578,7 @@ def write_report(
             f"| {row['variant']} | {row['profile']} | {row['caseId']} | {row['repeat']} | {yes(row['success'])} | "
             f"{row['latencyMs']} | {row['answerType']} | {row['buildCount']} | {row['actionTypes']} | "
             f"{yes(row['hardConstraintOk'])} | {yes(row['categoryOk'])} | {yes(row['directionOk'])} | "
-            f"{yes(row['forbiddenCandidateOk'])} | {yes(row['actionPayloadOk'])} | {yes(row['warningOk'])} | {error} |"
+            f"{yes(row['forbiddenCandidateOk'])} | {yes(row['actionPayloadOk'])} | {yes(row['requiredTermsOk'])} | {yes(row['warningOk'])} | {error} |"
         )
 
     lines.extend([
@@ -535,6 +592,52 @@ def write_report(
     ])
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output_path
+
+
+def collect_shadow_summary(db_dsn: str, started_at: dt.datetime) -> dict:
+    summary = {
+        "status": "NOT_QUERIED",
+        "startedAt": started_at.isoformat(),
+        "shadowScoreRows": 0,
+        "distinctModelVersions": 0,
+        "models": [],
+    }
+    try:
+        import psycopg
+
+        with psycopg.connect(db_dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*), COUNT(DISTINCT model_version_id)
+                    FROM recommendation_shadow_scores
+                    WHERE created_at >= %s
+                    """,
+                    (started_at,),
+                )
+                count_row = cursor.fetchone()
+                summary["shadowScoreRows"] = int(count_row[0] or 0)
+                summary["distinctModelVersions"] = int(count_row[1] or 0)
+                cursor.execute(
+                    """
+                    SELECT mv.model_name, mv.model_version, COUNT(*)
+                    FROM recommendation_shadow_scores s
+                    JOIN recommendation_model_versions mv ON mv.id = s.model_version_id
+                    WHERE s.created_at >= %s
+                    GROUP BY mv.model_name, mv.model_version
+                    ORDER BY COUNT(*) DESC, mv.model_version
+                    """,
+                    (started_at,),
+                )
+                summary["models"] = [
+                    {"modelName": row[0], "modelVersion": row[1], "rows": int(row[2])}
+                    for row in cursor.fetchall()
+                ]
+        summary["status"] = "OK"
+    except Exception as exc:  # noqa: BLE001 - benchmark report should capture DB/tooling failures
+        summary["status"] = "FAILED"
+        summary["error"] = str(exc)
+    return summary
 
 
 def login(base_url: str, email: str, password: str) -> str:
