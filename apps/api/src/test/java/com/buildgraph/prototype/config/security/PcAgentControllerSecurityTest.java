@@ -90,6 +90,7 @@ class PcAgentControllerSecurityTest {
         when(pcAgentAsService.register(anyMap())).thenReturn(Map.of(
                 "deviceId", "device-public-id",
                 "agentToken", AGENT_TOKEN,
+                "tokenType", "Bearer",
                 "status", "ACTIVE"
         ));
 
@@ -108,7 +109,11 @@ class PcAgentControllerSecurityTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.deviceId").value("device-public-id"))
                 .andExpect(jsonPath("$.agentToken").value(AGENT_TOKEN))
-                .andExpect(jsonPath("$.status").value("ACTIVE"));
+                .andExpect(jsonPath("$.tokenType").value("Bearer"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.deviceInternalId").doesNotExist())
+                .andExpect(jsonPath("$.userInternalId").doesNotExist())
+                .andExpect(jsonPath("$.agentTokenHash").doesNotExist());
 
         verify(pcAgentAsService).register(anyMap());
         verifyNoInteractions(agentTokenAuthenticationService);
@@ -210,6 +215,77 @@ class PcAgentControllerSecurityTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
 
         verifyNoInteractions(agentIdempotencyService);
+        verifyNoInteractions(pcAgentAsService);
+    }
+
+    @Test
+    void duplicateConsentIdempotencyKeyReplaysStoredResponse() throws Exception {
+        AgentPrincipal principal = authenticateAgent();
+        when(agentIdempotencyService.reserve(eq(principal), anyString(), anyString(), eq("consent-key"), anyString()))
+                .thenReturn(AgentIdempotencyDecision.proceed(401L))
+                .thenReturn(AgentIdempotencyDecision.replay(
+                        200,
+                        "{\"id\":\"consent-public-id\",\"accepted\":true}",
+                        MediaType.APPLICATION_JSON_VALUE
+                ));
+        when(pcAgentAsService.saveConsent(eq(principal), anyMap(), eq("consent-key"))).thenReturn(Map.of(
+                "id", "consent-public-id",
+                "accepted", true
+        ));
+
+        mockMvc.perform(post("/api/agent/consents")
+                        .header("Authorization", "Bearer " + AGENT_TOKEN)
+                        .header("Idempotency-Key", "consent-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "consentType": "SERVER_UPLOAD",
+                                  "policyVersion": "policy-v1",
+                                  "accepted": true
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("consent-public-id"))
+                .andExpect(jsonPath("$.accepted").value(true));
+
+        mockMvc.perform(post("/api/agent/consents")
+                        .header("Authorization", "Bearer " + AGENT_TOKEN)
+                        .header("Idempotency-Key", "consent-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "consentType": "SERVER_UPLOAD",
+                                  "policyVersion": "policy-v1",
+                                  "accepted": true
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("consent-public-id"))
+                .andExpect(jsonPath("$.accepted").value(true));
+
+        verify(pcAgentAsService).saveConsent(eq(principal), anyMap(), eq("consent-key"));
+    }
+
+    @Test
+    void consentSameIdempotencyKeyWithDifferentBodyReturnsConflict() throws Exception {
+        AgentPrincipal principal = authenticateAgent();
+        when(agentIdempotencyService.reserve(eq(principal), anyString(), anyString(), eq("consent-key"), anyString()))
+                .thenReturn(AgentIdempotencyDecision.conflict());
+
+        mockMvc.perform(post("/api/agent/consents")
+                        .header("Authorization", "Bearer " + AGENT_TOKEN)
+                        .header("Idempotency-Key", "consent-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "consentType": "SERVER_UPLOAD",
+                                  "policyVersion": "policy-v2",
+                                  "accepted": false
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CONFLICT_STATE"));
+
         verifyNoInteractions(pcAgentAsService);
     }
 

@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.buildgraph.prototype.common.MockData;
@@ -85,7 +87,34 @@ class PcAgentAsServiceTest {
 
         assertThat(response.get("agentToken")).isEqualTo("raw-agent-token");
         assertThat(response.get("deviceId")).isEqualTo("device-public-id");
+        assertThat(response).containsOnlyKeys("deviceId", "status", "agentToken", "tokenType");
+        assertThat(response.get("tokenType")).isEqualTo("Bearer");
         assertThat(tokenHash).isNotEqualTo("raw-agent-token");
+    }
+
+    @Test
+    void registerRejectsMissingActivationTokenBeforeIssuingToken() {
+        PcAgentAsService guardedService = new PcAgentAsService(
+                jdbcTemplate,
+                tokenHasher,
+                CLOCK,
+                () -> {
+                    throw new AssertionError("token must not be generated when activationToken is missing");
+                }
+        );
+
+        assertThatThrownBy(() -> guardedService.register(MockData.map(
+                "deviceFingerprintHash", "fingerprint-hash",
+                "registrationIdempotencyKey", "register-1",
+                "osVersion", "Windows 11",
+                "agentVersion", "0.1.0",
+                "policyVersion", "policy-v1"
+        )))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
+                        .isEqualTo(HttpStatus.BAD_REQUEST));
+
+        verifyNoInteractions(jdbcTemplate);
     }
 
     @Test
@@ -207,6 +236,21 @@ class PcAgentAsServiceTest {
     }
 
     @Test
+    void saveConsentRejectsMissingAcceptedFlag() {
+        assertThatThrownBy(() -> service.saveConsent(
+                AGENT,
+                MockData.map(
+                        "consentType", "SERVER_UPLOAD",
+                        "policyVersion", "policy-v1"
+                ),
+                "consent-key"
+        ))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
+                        .isEqualTo(HttpStatus.BAD_REQUEST));
+    }
+
+    @Test
     void heartbeatUpdatesDeviceLastSeenAndStoresHeartbeat() {
         Instant seenAt = Instant.parse("2026-07-02T00:00:00Z");
         when(jdbcTemplate.queryForMap(
@@ -246,6 +290,82 @@ class PcAgentAsServiceTest {
         assertThat(response.get("deviceId")).isEqualTo("device-public-id");
         assertThat(response.get("status")).isEqualTo("ACTIVE");
         assertThat(response.get("lastSeenAt")).isEqualTo(seenAt);
+        assertThat(response).containsOnlyKeys(
+                "id",
+                "deviceId",
+                "status",
+                "lastSeenAt",
+                "receivedAt",
+                "pendingCommands"
+        );
+    }
+
+    @Test
+    void repeatedHeartbeatUpdatesDeviceAndStoresSeparateHeartbeatRows() {
+        Instant firstSeenAt = Instant.parse("2026-07-02T00:00:00Z");
+        Instant secondSeenAt = Instant.parse("2026-07-02T00:00:05Z");
+        when(jdbcTemplate.queryForMap(
+                contains("UPDATE agent_devices"),
+                eq("0.1.1"),
+                eq("policy-v2"),
+                eq(10L),
+                eq(20L)
+        )).thenReturn(
+                MockData.map("status", "ACTIVE", "last_seen_at", firstSeenAt),
+                MockData.map("status", "ACTIVE", "last_seen_at", secondSeenAt)
+        );
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO agent_heartbeats"),
+                eq(10L),
+                eq("0.1.1"),
+                eq("RUNNING"),
+                eq("VISIBLE"),
+                eq("policy-v2"),
+                eq("heartbeat-key")
+        )).thenReturn(
+                MockData.map("id", "heartbeat-public-id-1", "received_at", firstSeenAt),
+                MockData.map("id", "heartbeat-public-id-2", "received_at", secondSeenAt)
+        );
+
+        Map<String, Object> firstResponse = service.heartbeat(
+                AGENT,
+                MockData.map(
+                        "agentVersion", "0.1.1",
+                        "serviceStatus", "RUNNING",
+                        "trayStatus", "VISIBLE",
+                        "policyVersion", "policy-v2"
+                ),
+                "heartbeat-key"
+        );
+        Map<String, Object> secondResponse = service.heartbeat(
+                AGENT,
+                MockData.map(
+                        "agentVersion", "0.1.1",
+                        "serviceStatus", "RUNNING",
+                        "trayStatus", "VISIBLE",
+                        "policyVersion", "policy-v2"
+                ),
+                "heartbeat-key"
+        );
+
+        assertThat(firstResponse.get("lastSeenAt")).isEqualTo(firstSeenAt);
+        assertThat(secondResponse.get("lastSeenAt")).isEqualTo(secondSeenAt);
+        verify(jdbcTemplate, times(2)).queryForMap(
+                contains("UPDATE agent_devices"),
+                eq("0.1.1"),
+                eq("policy-v2"),
+                eq(10L),
+                eq(20L)
+        );
+        verify(jdbcTemplate, times(2)).queryForMap(
+                contains("INSERT INTO agent_heartbeats"),
+                eq(10L),
+                eq("0.1.1"),
+                eq("RUNNING"),
+                eq("VISIBLE"),
+                eq("policy-v2"),
+                eq("heartbeat-key")
+        );
     }
 
     @Test
@@ -317,6 +437,22 @@ class PcAgentAsServiceTest {
                 eq(200L),
                 eq("GPU temperature spike")
         );
+    }
+
+    @Test
+    void uploadLogsRejectsMissingServerUploadConsent() {
+        when(jdbcTemplate.queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L)))
+                .thenReturn(0);
+
+        assertThatThrownBy(() -> service.uploadLogs(
+                AGENT,
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
+                MockData.map("rangeMinutes", 30),
+                "upload-key"
+        ))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
+                        .isEqualTo(HttpStatus.BAD_REQUEST));
     }
 
     @Test
