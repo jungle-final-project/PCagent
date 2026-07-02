@@ -48,6 +48,7 @@ public class BuildChatService {
             "CASE", "케이스",
             "COOLER", "쿨러"
     );
+    private static final List<String> BLOCKING_FAIL_TOOLS = List.of("compatibility", "power", "size");
 
     private final JdbcTemplate jdbcTemplate;
     private final ToolCheckService toolCheckService;
@@ -140,13 +141,14 @@ public class BuildChatService {
 
     private Map<String, Object> responseMap(AiChatEngineResponse engineResponse, Map<String, Object> request) {
         List<String> warnings = new ArrayList<>();
+        List<AiChatEngineResponse.PartRecommendation> safePartRecommendations = failSafePartRecommendations(engineResponse.partRecommendations(), request, warnings);
         List<Map<String, Object>> builds = switch (engineResponse.intent()) {
             case FULL_BUILD_RECOMMEND -> engineBuilds(engineResponse, warnings);
-            case PART_RECOMMEND, BUILD_MODIFY -> changedCurrentBuilds(engineResponse, request, warnings);
+            case PART_RECOMMEND, BUILD_MODIFY -> changedCurrentBuilds(engineResponse, request, safePartRecommendations, warnings);
             default -> engineBuilds(engineResponse, warnings);
         };
-        Map<String, Object> partRecommendation = partRecommendation(engineResponse.partRecommendations());
-        List<Map<String, Object>> actions = draftActions(engineResponse, request);
+        Map<String, Object> partRecommendation = partRecommendation(safePartRecommendations);
+        List<Map<String, Object>> actions = draftActions(engineResponse, request, safePartRecommendations);
         warnings.addAll(buildWarnings(builds));
         warnings.addAll(stringList(engineResponse.parsedContext().get("warnings")));
         return MockData.map(
@@ -168,7 +170,12 @@ public class BuildChatService {
         }
         List<Map<String, Object>> result = new ArrayList<>();
         for (int index = 0; index < recommendations.size(); index += 1) {
-            result.add(engineBuildMap(recommendations.get(index), index, engineResponse, warnings));
+            Map<String, Object> build = engineBuildMap(recommendations.get(index), index, engineResponse, warnings);
+            if (hasBlockingToolFailure(objectMaps(build.get("toolResults")))) {
+                warnings.add("Tool 검증에서 장착/호환/전력 불가로 판정된 추천 조합을 제외했습니다.");
+                continue;
+            }
+            result.add(build);
         }
         return result;
     }
@@ -218,16 +225,16 @@ public class BuildChatService {
     private List<Map<String, Object>> changedCurrentBuilds(
             AiChatEngineResponse engineResponse,
             Map<String, Object> request,
+            List<AiChatEngineResponse.PartRecommendation> options,
             List<String> warnings
     ) {
-        List<AiChatEngineResponse.PartRecommendation> options = engineResponse.partRecommendations();
         if (options == null || options.isEmpty()) {
-            return engineBuilds(engineResponse, warnings);
+            return List.of();
         }
         String category = options.get(0).category();
         List<AiBuildCandidate> baseBuilds = currentBuilds(request.get("currentBuilds"), warnings);
         if (baseBuilds.isEmpty()) {
-            return engineBuilds(engineResponse, warnings);
+            return List.of();
         }
         List<PartCandidate> replacements = options.stream().map(this::partCandidate).toList();
         List<Map<String, Object>> updatedBuilds = new ArrayList<>();
@@ -259,7 +266,11 @@ public class BuildChatService {
         );
     }
 
-    private List<Map<String, Object>> draftActions(AiChatEngineResponse engineResponse, Map<String, Object> request) {
+    private List<Map<String, Object>> draftActions(
+            AiChatEngineResponse engineResponse,
+            Map<String, Object> request,
+            List<AiChatEngineResponse.PartRecommendation> safePartRecommendations
+    ) {
         Map<String, Object> currentQuoteDraft = objectMap(request.get("currentQuoteDraft"));
         if (currentQuoteDraft.isEmpty()) {
             return List.of();
@@ -288,13 +299,13 @@ public class BuildChatService {
         }
 
         if ("CHEAPER".equals(priceDirection) || isBudgetIntent(message)) {
-            List<Map<String, Object>> actions = replacementActions(engineResponse, draftItems, true);
+            List<Map<String, Object>> actions = replacementActions(safePartRecommendations, draftItems, true);
             return actions.isEmpty()
                     ? List.of(askFollowUpAction("예산 조정 후보가 부족합니다.", "CPU/GPU/RAM처럼 낮추고 싶은 부품을 알려주면 교체안을 제안할 수 있습니다."))
                     : actions;
         }
 
-        List<Map<String, Object>> actions = replacementActions(engineResponse, draftItems, false);
+        List<Map<String, Object>> actions = replacementActions(safePartRecommendations, draftItems, false);
         if (!actions.isEmpty()) {
             return actions;
         }
@@ -303,11 +314,10 @@ public class BuildChatService {
     }
 
     private List<Map<String, Object>> replacementActions(
-            AiChatEngineResponse engineResponse,
+            List<AiChatEngineResponse.PartRecommendation> recommendations,
             List<Map<String, Object>> draftItems,
             boolean multiple
     ) {
-        List<AiChatEngineResponse.PartRecommendation> recommendations = engineResponse.partRecommendations();
         if (recommendations == null || recommendations.isEmpty()) {
             return List.of();
         }
@@ -332,6 +342,85 @@ public class BuildChatService {
             ));
         }
         return actions;
+    }
+
+    private List<AiChatEngineResponse.PartRecommendation> failSafePartRecommendations(
+            List<AiChatEngineResponse.PartRecommendation> recommendations,
+            Map<String, Object> request,
+            List<String> warnings
+    ) {
+        if (recommendations == null || recommendations.isEmpty()) {
+            return List.of();
+        }
+        Map<String, Object> currentQuoteDraft = objectMap(request.get("currentQuoteDraft"));
+        List<Map<String, Object>> draftItems = objectMaps(currentQuoteDraft.get("items"));
+        if (draftItems.isEmpty()) {
+            return recommendations;
+        }
+        List<AiChatEngineResponse.PartRecommendation> safe = new ArrayList<>();
+        int excluded = 0;
+        for (AiChatEngineResponse.PartRecommendation recommendation : recommendations) {
+            List<PartCandidate> nextParts = replacementPreviewParts(draftItems, recommendation);
+            List<String> localWarnings = new ArrayList<>();
+            List<Map<String, Object>> toolResults = toolResults(nextParts, totalPrice(nextParts), localWarnings);
+            if (hasBlockingToolFailure(toolResults)) {
+                excluded += 1;
+                continue;
+            }
+            safe.add(recommendation);
+        }
+        if (excluded > 0) {
+            warnings.add("Tool FAIL 후보 " + excluded + "개를 추천/적용 후보에서 제외했습니다.");
+        }
+        return safe;
+    }
+
+    private List<PartCandidate> replacementPreviewParts(List<Map<String, Object>> draftItems, AiChatEngineResponse.PartRecommendation recommendation) {
+        String category = recommendation.category();
+        List<PartCandidate> nextParts = new ArrayList<>();
+        boolean replaced = false;
+        for (Map<String, Object> item : draftItems) {
+            if (category.equals(text(item.get("category")))) {
+                if (!replaced) {
+                    nextParts.add(partCandidate(recommendation));
+                    replaced = true;
+                }
+                continue;
+            }
+            PartCandidate draftPart = partCandidateFromDraftItem(item);
+            if (draftPart != null) {
+                nextParts.add(draftPart);
+            }
+        }
+        if (!replaced) {
+            nextParts.add(partCandidate(recommendation));
+        }
+        return nextParts;
+    }
+
+    private PartCandidate partCandidateFromDraftItem(Map<String, Object> item) {
+        String partId = text(item.get("partId"));
+        String category = text(item.get("category"));
+        if (partId == null || category == null) {
+            return null;
+        }
+        return new PartCandidate(
+                null,
+                partId,
+                category,
+                firstText(text(item.get("name")), categoryLabel(category)),
+                text(item.get("manufacturer")),
+                firstNumber(item.get("currentPrice"), item.get("price"), item.get("unitPriceAtAdd"), item.get("lineTotal")) == null
+                        ? 0
+                        : firstNumber(item.get("currentPrice"), item.get("price"), item.get("unitPriceAtAdd"), item.get("lineTotal")),
+                objectMap(item.get("attributes"))
+        );
+    }
+
+    private boolean hasBlockingToolFailure(List<Map<String, Object>> toolResults) {
+        return toolResults.stream()
+                .anyMatch(result -> "FAIL".equals(text(result.get("status")))
+                        && BLOCKING_FAIL_TOOLS.contains(text(result.get("tool"))));
     }
 
     private Map<String, Object> removeAction(Map<String, Object> item) {
@@ -746,6 +835,16 @@ public class BuildChatService {
             return null;
         }
         return Integer.parseInt(text.replace(",", ""));
+    }
+
+    private static Integer firstNumber(Object... values) {
+        for (Object value : values) {
+            Integer number = numberValue(value);
+            if (number != null) {
+                return number;
+            }
+        }
+        return null;
     }
 
     private static Long longValue(Object value) {

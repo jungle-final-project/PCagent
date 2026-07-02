@@ -581,7 +581,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
             case "COOLER" -> filterByCoolerFit(context, parts);
             default -> parts;
         };
-        return filtered.isEmpty() ? parts : filtered;
+        return filtered;
     }
 
     private static List<AiChatEngineResponse.PartRecommendation> filterByCpuSocket(
@@ -593,7 +593,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
             return parts;
         }
         return parts.stream()
-                .filter(part -> sameIfPresent(attrText(part.attributes(), "socket"), motherboardSocket))
+                .filter(part -> sameRequired(attrText(part.attributes(), "socket"), motherboardSocket))
                 .toList();
     }
 
@@ -604,8 +604,8 @@ public class DefaultAiChatEngine implements AiChatEngine {
         String cpuSocket = attrText(draftItem(context, "CPU"), "socket");
         String memoryType = attrText(draftItem(context, "RAM"), "memoryType");
         return parts.stream()
-                .filter(part -> sameIfPresent(attrText(part.attributes(), "socket"), cpuSocket))
-                .filter(part -> sameIfPresent(attrText(part.attributes(), "memoryType"), memoryType))
+                .filter(part -> sameRequired(attrText(part.attributes(), "socket"), cpuSocket))
+                .filter(part -> sameRequired(attrText(part.attributes(), "memoryType"), memoryType))
                 .toList();
     }
 
@@ -618,7 +618,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
             return parts;
         }
         return parts.stream()
-                .filter(part -> sameIfPresent(attrText(part.attributes(), "memoryType"), motherboardMemoryType))
+                .filter(part -> sameRequired(attrText(part.attributes(), "memoryType"), motherboardMemoryType))
                 .toList();
     }
 
@@ -631,8 +631,8 @@ public class DefaultAiChatEngine implements AiChatEngine {
         Integer maxGpuLengthMm = attrNumber(currentCase, "maxGpuLengthMm");
         Integer psuCapacityW = firstPositiveNumber(attrNumber(currentPsu, "capacityW"), attrNumber(currentPsu, "wattage"));
         return parts.stream()
-                .filter(part -> lessOrEqualIfPresent(attrNumber(part.attributes(), "lengthMm"), maxGpuLengthMm))
-                .filter(part -> lessOrEqualIfPresent(attrNumber(part.attributes(), "requiredSystemPowerW"), psuCapacityW))
+                .filter(part -> lessOrEqualRequired(attrNumber(part.attributes(), "lengthMm"), maxGpuLengthMm))
+                .filter(part -> lessOrEqualRequired(attrNumber(part.attributes(), "requiredSystemPowerW"), psuCapacityW))
                 .toList();
     }
 
@@ -645,7 +645,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
             return parts;
         }
         return parts.stream()
-                .filter(part -> greaterOrEqualIfPresent(firstPositiveNumber(attrNumber(part.attributes(), "capacityW"), attrNumber(part.attributes(), "wattage")), requiredPsuW))
+                .filter(part -> greaterOrEqualRequired(firstPositiveNumber(attrNumber(part.attributes(), "capacityW"), attrNumber(part.attributes(), "wattage")), requiredPsuW))
                 .toList();
     }
 
@@ -657,9 +657,9 @@ public class DefaultAiChatEngine implements AiChatEngine {
         Integer coolerHeightMm = firstPositiveNumber(attrNumber(draftItem(context, "COOLER"), "heightMm"), attrNumber(draftItem(context, "COOLER"), "coolerHeightMm"));
         Integer psuDepthMm = attrNumber(draftItem(context, "PSU"), "depthMm");
         return parts.stream()
-                .filter(part -> greaterOrEqualIfPresent(attrNumber(part.attributes(), "maxGpuLengthMm"), gpuLengthMm))
-                .filter(part -> greaterOrEqualIfPresent(attrNumber(part.attributes(), "maxCpuCoolerHeightMm"), coolerHeightMm))
-                .filter(part -> greaterOrEqualIfPresent(attrNumber(part.attributes(), "maxPsuLengthMm"), psuDepthMm))
+                .filter(part -> greaterOrEqualRequired(attrNumber(part.attributes(), "maxGpuLengthMm"), gpuLengthMm))
+                .filter(part -> greaterOrEqualRequired(attrNumber(part.attributes(), "maxCpuCoolerHeightMm"), coolerHeightMm))
+                .filter(part -> greaterOrEqualRequired(attrNumber(part.attributes(), "maxPsuLengthMm"), psuDepthMm))
                 .toList();
     }
 
@@ -670,8 +670,8 @@ public class DefaultAiChatEngine implements AiChatEngine {
         String cpuSocket = attrText(draftItem(context, "CPU"), "socket");
         Integer maxCoolerHeightMm = attrNumber(draftItem(context, "CASE"), "maxCpuCoolerHeightMm");
         return parts.stream()
-                .filter(part -> socketSupported(part.attributes().get("socketSupport"), cpuSocket))
-                .filter(part -> lessOrEqualIfPresent(firstPositiveNumber(attrNumber(part.attributes(), "heightMm"), attrNumber(part.attributes(), "coolerHeightMm")), maxCoolerHeightMm))
+                .filter(part -> socketSupportedRequired(part.attributes().get("socketSupport"), cpuSocket))
+                .filter(part -> lessOrEqualRequired(firstPositiveNumber(attrNumber(part.attributes(), "heightMm"), attrNumber(part.attributes(), "coolerHeightMm")), maxCoolerHeightMm))
                 .toList();
     }
 
@@ -1137,16 +1137,16 @@ public class DefaultAiChatEngine implements AiChatEngine {
         return item;
     }
 
-    private static boolean sameIfPresent(String candidateValue, String requiredValue) {
-        return requiredValue == null || candidateValue == null || requiredValue.equalsIgnoreCase(candidateValue);
+    private static boolean sameRequired(String candidateValue, String requiredValue) {
+        return requiredValue == null || candidateValue != null && requiredValue.equalsIgnoreCase(candidateValue);
     }
 
-    private static boolean lessOrEqualIfPresent(Integer candidateValue, Integer maxValue) {
-        return maxValue == null || candidateValue == null || candidateValue <= maxValue;
+    private static boolean lessOrEqualRequired(Integer candidateValue, Integer maxValue) {
+        return maxValue == null || candidateValue != null && candidateValue <= maxValue;
     }
 
-    private static boolean greaterOrEqualIfPresent(Integer candidateValue, Integer minValue) {
-        return minValue == null || candidateValue == null || candidateValue >= minValue;
+    private static boolean greaterOrEqualRequired(Integer candidateValue, Integer minValue) {
+        return minValue == null || candidateValue != null && candidateValue >= minValue;
     }
 
     private static Integer firstPositiveNumber(Integer... values) {
@@ -1166,6 +1166,13 @@ public class DefaultAiChatEngine implements AiChatEngine {
             return list.stream().anyMatch(item -> socket.equalsIgnoreCase(String.valueOf(item)));
         }
         return String.valueOf(socketSupport).toUpperCase(Locale.ROOT).contains(socket.toUpperCase(Locale.ROOT));
+    }
+
+    private static boolean socketSupportedRequired(Object socketSupport, String socket) {
+        if (socket == null) {
+            return true;
+        }
+        return socketSupport != null && socketSupported(socketSupport, socket);
     }
 
     private static Map<String, Object> mostExpensiveDraftItem(Map<String, Object> context) {
