@@ -65,6 +65,15 @@ public class PcAgentController {
             @RequestParam(required = false) String rangeStartedAt,
             @RequestParam(required = false) String rangeEndedAt,
             @RequestParam(required = false) Integer schemaVersion,
+            @RequestParam(required = false) String incidentId,
+            @RequestParam(required = false) String triggerType,
+            @RequestParam(required = false) String symptomType,
+            @RequestParam(required = false) String detectedAt,
+            @RequestParam(required = false) String incidentStartedAt,
+            @RequestParam(required = false) String incidentEndedAt,
+            @RequestParam(required = false) String lastNormalBootAt,
+            @RequestParam(required = false) Boolean selectedByUser,
+            @RequestParam(required = false) String consentId,
             @RequestParam(required = false) String symptom,
             @RequestHeader("Idempotency-Key") String idempotencyKey
     ) {
@@ -76,6 +85,15 @@ public class PcAgentController {
                         "rangeStartedAt", rangeStartedAt,
                         "rangeEndedAt", rangeEndedAt,
                         "schemaVersion", schemaVersion,
+                        "incidentId", incidentId,
+                        "triggerType", triggerType,
+                        "symptomType", symptomType,
+                        "detectedAt", detectedAt,
+                        "incidentStartedAt", incidentStartedAt,
+                        "incidentEndedAt", incidentEndedAt,
+                        "lastNormalBootAt", lastNormalBootAt,
+                        "selectedByUser", selectedByUser,
+                        "consentId", consentId,
                         "symptom", symptom
                 ),
                 idempotencyKey

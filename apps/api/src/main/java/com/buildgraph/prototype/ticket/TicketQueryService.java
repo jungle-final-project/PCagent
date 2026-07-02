@@ -13,6 +13,7 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
@@ -24,7 +25,13 @@ public class TicketQueryService {
             "NOT_REQUIRED", "REQUIRED", "IN_REVIEW", "APPROVED", "REJECTED"
     );
     private static final Set<String> SUPPORT_DECISIONS = Set.of(
-            "SELF_SOLVABLE", "REMOTE_POSSIBLE", "VISIT_REQUIRED", "NEEDS_MORE_INFO"
+            "SELF_SOLVABLE",
+            "REMOTE_POSSIBLE",
+            "VISIT_REQUIRED",
+            "REPAIR_OR_REPLACE",
+            "NEEDS_MORE_INFO",
+            "MONITOR_ONLY",
+            "UNSUPPORTED"
     );
     private static final Set<String> RISK_LEVELS = Set.of("LOW", "MEDIUM", "HIGH");
     private static final Set<String> VISIT_TIME_SLOTS = Set.of("MORNING", "AFTERNOON", "EVENING");
@@ -143,6 +150,7 @@ public class TicketQueryService {
         return update(id, request, null);
     }
 
+    @Transactional
     public Map<String, Object> update(
             String id,
             Map<String, Object> request,
@@ -176,6 +184,17 @@ public class TicketQueryService {
         validateNullable("supportDecision", supportDecision, SUPPORT_DECISIONS);
         validateNullable("reviewStatus", reviewStatus, REVIEW_STATUSES);
         validateNullable("riskLevel", riskLevel, RISK_LEVELS);
+        String currentDecision = DbValueMapper.string(current, "support_decision");
+        boolean unsupportedException = isUnsupportedException(currentDecision, supportDecision);
+        String exceptionReason = request == null ? null : stringOrNull(request.get("exceptionApprovalReason"));
+        String exceptionScope = request == null ? null : stringOrNull(request.get("exceptionResponsibilityScope"));
+        String exceptionUserMessage = request == null ? null : stringOrNull(request.get("exceptionUserMessage"));
+        if (unsupportedException) {
+            requireExceptionField("exceptionApprovalReason", exceptionReason);
+            requireExceptionField("exceptionResponsibilityScope", exceptionScope);
+            requireExceptionField("exceptionUserMessage", exceptionUserMessage);
+        }
+        validateUnsupportedBookingPolicy(currentDecision, supportDecision, request, unsupportedException);
         Boolean autoResponseAllowed = request == null || request.get("autoResponseAllowed") == null
                 ? null
                 : parseBoolean("autoResponseAllowed", request.get("autoResponseAllowed"));
@@ -196,6 +215,24 @@ public class TicketQueryService {
                     id
             );
         }
+        if (unsupportedException) {
+            jdbcTemplate.update("""
+                    UPDATE as_tickets
+                    SET exception_approval_reason = ?,
+                        exception_responsibility_scope = ?,
+                        exception_user_message = ?,
+                        exception_approved_at = now(),
+                        exception_approved_by = ?,
+                        updated_at = now()
+                    WHERE public_id = ?::uuid
+                    """,
+                    exceptionReason,
+                    exceptionScope,
+                    exceptionUserMessage,
+                    admin == null ? null : admin.internalId(),
+                    id
+            );
+        }
         saveRemoteSupportIfRequested(id, request, admin);
         saveVisitSupportIfRequested(current, request);
         auditTicketUpdate(id, current, request, admin);
@@ -210,7 +247,10 @@ public class TicketQueryService {
                                log_upload_id,
                                status,
                                review_status,
-                               support_decision
+                               support_decision,
+                               exception_approval_reason,
+                               exception_responsibility_scope,
+                               exception_user_message
                         FROM as_tickets
                         WHERE deleted_at IS NULL
                           AND public_id = ?::uuid
@@ -318,7 +358,11 @@ public class TicketQueryService {
                     'beforeStatus', ?,
                     'afterStatus', COALESCE(?, ?),
                     'supportDecision', ?,
-                    'reviewStatus', ?
+                    'beforeSupportDecision', ?,
+                    'reviewStatus', ?,
+                    'exceptionApprovalReason', ?,
+                    'exceptionResponsibilityScope', ?,
+                    'exceptionUserMessage', ?
                   )
                 )
                 """,
@@ -328,8 +372,45 @@ public class TicketQueryService {
                 stringOrNull(request.get("status")),
                 DbValueMapper.string(current, "status"),
                 stringOrNull(request.get("supportDecision")),
-                stringOrNull(request.get("reviewStatus"))
+                DbValueMapper.string(current, "support_decision"),
+                stringOrNull(request.get("reviewStatus")),
+                stringOrNull(request.get("exceptionApprovalReason")),
+                stringOrNull(request.get("exceptionResponsibilityScope")),
+                stringOrNull(request.get("exceptionUserMessage"))
         );
+    }
+
+    private static boolean isUnsupportedException(String currentDecision, String requestedDecision) {
+        return "UNSUPPORTED".equals(currentDecision)
+                && requestedDecision != null
+                && !"UNSUPPORTED".equals(requestedDecision);
+    }
+
+    private static void validateUnsupportedBookingPolicy(
+            String currentDecision,
+            String requestedDecision,
+            Map<String, Object> request,
+            boolean unsupportedException
+    ) {
+        if (request == null) {
+            return;
+        }
+        boolean remoteRequested = stringOrNull(request.get("remoteSupportLink")) != null
+                || stringOrNull(request.get("remoteSupportUrl")) != null;
+        boolean visitRequested = Boolean.TRUE.equals(booleanOrNull(request.get("visitSupportRequired")));
+        if (!remoteRequested && !visitRequested) {
+            return;
+        }
+        String targetDecision = requestedDecision == null ? currentDecision : requestedDecision;
+        if ("UNSUPPORTED".equals(targetDecision) || ("UNSUPPORTED".equals(currentDecision) && !unsupportedException)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "UNSUPPORTED 티켓은 예외 승인 전 원격/방문 예약을 만들 수 없습니다.");
+        }
+    }
+
+    private static void requireExceptionField(String fieldName, String value) {
+        if (value == null || value.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, fieldName + " 값이 필요합니다.");
+        }
     }
 
     private void assignAdmin(String ticketId, String assignedAdminId) {
@@ -365,6 +446,15 @@ public class TicketQueryService {
                        t.cause_candidates,
                        t.upgrade_candidates,
                        t.admin_note,
+                       COALESCE(t.log_summary->>'summaryText', lu.summary) AS log_summary_text,
+                       t.incident_window,
+                       t.log_summary AS log_summary_detail,
+                       t.support_routing,
+                       t.ai_diagnosis_request,
+                       t.exception_approval_reason,
+                       t.exception_responsibility_scope,
+                       t.exception_user_message,
+                       t.exception_approved_at,
                        t.resolved_at,
                        t.created_at,
                        rs.session_url AS remote_support_link,
@@ -408,6 +498,15 @@ public class TicketQueryService {
                 "causeCandidates", DbValueMapper.json(row, "cause_candidates", List.of()),
                 "upgradeCandidates", DbValueMapper.json(row, "upgrade_candidates", List.of()),
                 "adminNote", DbValueMapper.string(row, "admin_note"),
+                "logSummary", DbValueMapper.string(row, "log_summary_text"),
+                "incidentWindow", DbValueMapper.json(row, "incident_window", Map.of()),
+                "logSummaryDetail", DbValueMapper.json(row, "log_summary_detail", Map.of()),
+                "supportRouting", DbValueMapper.json(row, "support_routing", Map.of()),
+                "aiDiagnosisRequest", DbValueMapper.json(row, "ai_diagnosis_request", Map.of()),
+                "exceptionApprovalReason", DbValueMapper.string(row, "exception_approval_reason"),
+                "exceptionResponsibilityScope", DbValueMapper.string(row, "exception_responsibility_scope"),
+                "exceptionUserMessage", DbValueMapper.string(row, "exception_user_message"),
+                "exceptionApprovedAt", DbValueMapper.timestamp(row, "exception_approved_at"),
                 "remoteSupportLink", DbValueMapper.string(row, "remote_support_link"),
                 "remoteSupportStatus", DbValueMapper.string(row, "remote_support_status"),
                 "visitSupportRequired", row.get("visit_support_id") != null,

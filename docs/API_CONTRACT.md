@@ -414,7 +414,7 @@ PC Agent token lifecycle API:
 | `POST` | `/api/agent/devices/register` | none, activation token only | 4번 | `{ "activationToken": "demo-agent-activation-token", "deviceFingerprintHash": "fingerprint-hash", "registrationIdempotencyKey": "agent-register-key", "osVersion": "Windows 11", "agentVersion": "0.1.0", "policyVersion": "policy-v1" }` | `{ "deviceId": "00000000-0000-4000-8000-000000009001", "status": "ACTIVE", "agentToken": "raw-token-returned-once", "tokenType": "Bearer" }` | `agent_devices` |
 | `POST` | `/api/agent/consents` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `{ "consentType": "SERVER_UPLOAD", "policyVersion": "policy-v1", "accepted": true }` | `{ "id": "00000000-0000-4000-8000-000000009101", "consentType": "SERVER_UPLOAD", "accepted": true, "policyVersion": "policy-v1" }` | `agent_consents`, `agent_idempotency_records` |
 | `POST` | `/api/agent/heartbeat` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `{ "agentVersion": "0.1.0", "serviceStatus": "RUNNING", "policyVersion": "policy-v1" }` | `{ "deviceId": "00000000-0000-4000-8000-000000009001", "status": "ACTIVE", "lastSeenAt": "2026-07-02T10:00:00Z" }` | `agent_devices`, `agent_heartbeats`, `agent_idempotency_records` |
-| `POST` | `/api/agent/log-uploads` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `multipart/form-data`: `file`, `rangeMinutes=30`, `schemaVersion`, `symptom` | `{ "uploadJobId": "00000000-0000-4000-8000-000000009201", "logUploadId": "00000000-0000-4000-8000-000000009301", "ticketId": "00000000-0000-4000-8000-000000009401", "analysisStatus": "RULE_READY", "reviewStatus": "REQUIRED", "supportDecision": "NEEDS_MORE_INFO" }` | `agent_upload_jobs`, `agent_log_uploads`, `as_tickets` |
+| `POST` | `/api/agent/log-uploads` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `multipart/form-data`: gzip `file`, `symptomType`, `detectedAt`, optional `incidentStartedAt`, `incidentEndedAt`, `lastNormalBootAt`, `symptom` | `{ "uploadJobId": "00000000-0000-4000-8000-000000009201", "logUploadId": "00000000-0000-4000-8000-000000009301", "ticketId": "00000000-0000-4000-8000-000000009401", "analysisStatus": "RULE_READY", "reviewStatus": "REQUIRED", "supportDecision": "REMOTE_POSSIBLE", "rangeMinutes": 20, "rawSamplesCount": 2 }` | `agent_upload_jobs`, `agent_log_uploads`, `as_tickets` |
 
 Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버는 raw `agentToken`을 저장하지 않고 hash만 저장한다. `/api/agent-logs/upload`는 웹 사용자가 JWT로 업로드하는 legacy/manual 경로이고, `/api/agent/log-uploads`는 PC Agent가 Agent token으로 업로드하는 경로다.
 
@@ -439,6 +439,24 @@ Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버
 `consentAccepted=false`이면 `400`을 반환한다. `true`일 때 서버가 `consent_accepted_at`을 저장한다.
 
 파일 검증 실패는 `400 FILE_VALIDATION_ERROR`를 반환하고 `agent_log_uploads` row를 만들지 않는다. 기준은 `DB_SCHEMA.md`의 로그 업로드 보안 정책을 따른다.
+
+`POST /api/agent/log-uploads`는 PC Agent 서버 업로드 경로다. 서버는 `rangeMinutes=30` 고정값을 사용하지 않고 `symptomType`과 incident metadata로 `incidentWindow`를 계산한다.
+
+| field | type | required | 설명 |
+|---|---|---:|---|
+| `file` | gzip file | yes | RawLog JSONL gzip. 각 line은 `schemaVersion`, `collectedAt`, `agentId`, `sequence`, `kind`, `payload`, `privacyFlags`를 포함해야 한다. |
+| `symptomType` | enum | no | 원격 6종, 방문 5종, 미지원 7종 코드. 없으면 증상 문구에서 보수적으로 추론한다. |
+| `detectedAt` | date-time | no | 증상 감지 시각. 없으면 서버 현재 시각을 쓴다. |
+| `incidentStartedAt` / `incidentEndedAt` | date-time | no | 사용자가 명시 선택한 window. 없으면 증상별 정책 window를 쓴다. |
+| `lastNormalBootAt` | date-time | no | 부팅 불가/원격 불가 유형에서 마지막 정상 부팅 이후 critical event 요약용 시작점이다. |
+| `rangeMinutes` | number | no | legacy fallback only. 신규 판단은 `incidentWindow` 기준이다. |
+
+서버 RawLog 정책:
+
+- JSONL 한 줄이라도 파싱 실패하거나 필수 필드가 없으면 전체 업로드를 `400 FILE_VALIDATION_ERROR`로 거절한다.
+- `privacyFlags.containsRawPath=true`인데 마스킹되지 않은 로그는 거절한다. 마스킹된 로그도 event message의 경로, email, token/password류 문자열은 서버 요약 전에 재마스킹한다.
+- `LogSummary`는 `incidentWindow` 안의 로그만 사용해 `timeline`, `anomalies`, `correlations`, `ruleSignals`, `dataQuality`, `evidenceRefs`, `rawSamples`를 만든다.
+- `rawSamples`는 `evidenceRefs`와 연결된 로그만 최대 20개까지 포함한다. `AiDiagnosisRequest`에는 원본 gzip, 전체 JSONL, 전체 프로세스 목록, 전체 파일 경로를 넣지 않는다.
 
 `PATCH /api/admin/as-tickets/{id}` 허용 상태 전이:
 
@@ -469,7 +487,7 @@ Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버
 | `status` | `OPEN`, `ASSIGNED`, `IN_PROGRESS`, `RESOLVED`, `CLOSED`, `CANCELLED` | 위 상태 전이표를 따른다. |
 | `assignedAdminId` | admin user `public_id` UUID | ADMIN role 사용자만 허용한다. |
 | `reviewStatus` | `NOT_REQUIRED`, `REQUIRED`, `IN_REVIEW`, `APPROVED`, `REJECTED` | 관리자 검토 상태다. |
-| `supportDecision` | `SELF_SOLVABLE`, `REMOTE_POSSIBLE`, `VISIT_REQUIRED`, `NEEDS_MORE_INFO` | 사용자 `/support/{ticketId}` 화면에도 노출된다. |
+| `supportDecision` | `SELF_SOLVABLE`, `REMOTE_POSSIBLE`, `VISIT_REQUIRED`, `REPAIR_OR_REPLACE`, `NEEDS_MORE_INFO`, `MONITOR_ONLY`, `UNSUPPORTED` | 사용자 `/support/{ticketId}` 화면에도 노출된다. |
 | `riskLevel` | `LOW`, `MEDIUM`, `HIGH` | 데모 화면 표시용 위험도다. |
 | `autoResponseAllowed` | boolean | 자동 안내 가능 여부다. |
 | `adminNote` | string | 사용자와 관리자 화면에 표시되는 관리자 메모다. |
@@ -477,6 +495,11 @@ Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버
 | `visitSupportRequired` | boolean | 방문 지원 예약 생성 여부다. |
 | `visitPreferredDate` | date string | `visitSupportRequired=true`일 때 사용할 수 있다. |
 | `visitTimeSlot` | `MORNING`, `AFTERNOON`, `EVENING` | 미입력 시 서버 기본값을 사용할 수 있다. |
+| `exceptionApprovalReason` | string | `UNSUPPORTED` 티켓을 원격/방문/수리 decision으로 전환할 때 필수다. |
+| `exceptionResponsibilityScope` | string | 예외 승인 시 책임 범위 기록이다. |
+| `exceptionUserMessage` | string | 예외 승인 후 사용자에게 안내할 문구다. |
+
+`UNSUPPORTED` 티켓은 기본적으로 원격/방문 예약을 만들 수 없다. 관리자가 `UNSUPPORTED -> REMOTE_POSSIBLE`, `UNSUPPORTED -> VISIT_REQUIRED`, `UNSUPPORTED -> REPAIR_OR_REPLACE`처럼 전환하려면 위 예외 승인 3개 필드를 함께 보내야 하며, 서버는 전환 후 decision과 예외 승인 필드를 `as_tickets`에 저장하고 `admin_audit_logs`에 남긴다.
 
 예시:
 
@@ -493,7 +516,7 @@ Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버
 }
 ```
 
-사용자 `GET /api/as-tickets/{id}`와 관리자 `GET /api/admin/as-tickets/{id}` 응답은 `analysisStatus`, `reviewStatus`, `supportDecision`, `riskLevel`, `autoResponseAllowed`, `adminNote`, `remoteSupportLink`, `remoteSupportStatus`, `visitSupportRequired`, `visitSupportStatus`, `visitPreferredDate`, `visitTimeSlot`을 포함할 수 있다.
+사용자 `GET /api/as-tickets/{id}`와 관리자 `GET /api/admin/as-tickets/{id}` 응답은 `analysisStatus`, `reviewStatus`, `supportDecision`, `riskLevel`, `autoResponseAllowed`, `adminNote`, `logSummary`, `incidentWindow`, `logSummaryDetail`, `supportRouting`, `aiDiagnosisRequest`, 예외 승인 필드, `remoteSupportLink`, `remoteSupportStatus`, `visitSupportRequired`, `visitSupportStatus`, `visitPreferredDate`, `visitTimeSlot`을 포함할 수 있다.
 
 ### Admin/Health
 
@@ -717,6 +740,15 @@ Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버
 | `AsTicketDto` | `causeCandidates` | `object[]` | no | `[]` |
 | `AsTicketDto` | `upgradeCandidates` | `object[]` | no | `[]` |
 | `AsTicketDto` | `adminNote` | `string` | yes | `확인 중` |
+| `AsTicketDto` | `logSummary` | `string` | yes | `IncidentWindow summary: 2/3 logs used...` |
+| `AsTicketDto` | `incidentWindow` | `object` | yes | `{ "symptomType": "REMOTE_DRIVER_OS", "startedAt": "2026-07-02T09:45:00Z" }` |
+| `AsTicketDto` | `logSummaryDetail` | `object` | yes | `{ "ruleSignals": [], "rawSamples": [] }` |
+| `AsTicketDto` | `supportRouting` | `object` | yes | `{ "recommendedDecision": "REMOTE_POSSIBLE" }` |
+| `AsTicketDto` | `aiDiagnosisRequest` | `object` | yes | `{ "ticketId": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "rawSamples": [] }` |
+| `AsTicketDto` | `exceptionApprovalReason` | `string` | yes | `Customer paid exception support.` |
+| `AsTicketDto` | `exceptionResponsibilityScope` | `string` | yes | `PC settings only.` |
+| `AsTicketDto` | `exceptionUserMessage` | `string` | yes | `Router hardware remains out of scope.` |
+| `AsTicketDto` | `exceptionApprovedAt` | `string` | yes | `2026-07-02T10:10:00Z` |
 | `AsTicketDto` | `resolvedAt` | `string` | yes | `null` |
 | `AdminDashboardDto` | `agentRunning` | `number` | no | `1` |
 | `AdminDashboardDto` | `openTickets` | `number` | no | `3` |

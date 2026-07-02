@@ -1,3 +1,33 @@
+# 2026-07-03 Agent AS B 서버 LogSummary/routing 구현
+
+## Current goal
+
+- `docs/agent-as/FINAL_SUPPORT_SCENARIOS.md` 기준 B 담당 범위만 구현한다.
+- 업로드 RawLog 검증, IncidentWindow 기반 LogSummary, rule routing, 관리자 최종 decision/예외 승인, LLM 요청 payload 제한을 서버에서 처리한다.
+- 커밋/푸시는 사용자 승인 전까지 진행하지 않는다.
+
+## Done
+
+- `PcAgentLogAnalyzer`를 추가해 RawLog 필수 필드 검증, JSONL 한 줄 파싱 실패 시 전체 실패, raw path 미마스킹 reject, event message 마스킹, IncidentWindow 필터링, rule 기반 `LogSummary`/`supportRouting`/`AiDiagnosisRequest` 생성을 구현했다.
+- 원격 6종, 방문 5종, 미지원 7종 routing rule을 추가했다.
+- `rawSamples`는 `evidenceRefs`와 연결된 로그만 최대 20개로 제한하고, sample payload의 긴 list를 잘라 전체 프로세스 목록이 LLM 요청에 들어가지 않게 했다.
+- `/api/agent/log-uploads`에서 최근 30분 고정 대신 증상별 IncidentWindow를 저장/연결하고, `agent_log_uploads`, `as_tickets`에 summary/routing/AI 요청 JSONB를 저장하도록 변경했다.
+- 관리자 `PATCH /api/admin/as-tickets/{id}`에서 `UNSUPPORTED` 기본 예약 차단과 예외 승인 필수 필드, audit metadata, 전환 후 decision 저장을 구현했다.
+- JPA entity, support decision enum, Flyway V56 migration, OpenAPI/API/DB 문서를 갱신했다.
+- 관련 단위 테스트를 추가/수정했다.
+
+## Remaining issues
+
+- 한글 경로 `C:\나만무\prototype`에서 Gradle test worker가 테스트 클래스를 `ClassNotFoundException`으로 로드하지 못하는 기존 문제가 재현됐다. 테스트 클래스 산출물은 존재하고 `javap` 로드는 가능하지만, Gradle `test` 태스크가 실행 단계 전에 중단된다.
+- 커밋/푸시는 하지 않았다.
+
+## Last verification
+
+- `cd apps\api; .\gradlew.bat compileTestJava --no-daemon` 성공.
+- `python tools\validate_openapi.py` 성공. 결과: `OpenAPI validation passed: 67 paths`.
+- `git diff --check` 성공.
+- 변경 범위 테스트 명령은 실패: `.\gradlew.bat test --tests PcAgentLogAnalyzerTest --tests PcAgentAsServiceTest --tests TicketQueryServiceTest --tests AgentAsJpaMappingTest --tests AgentAsMigrationContractTest --no-daemon`. 원인은 각 테스트 클래스 `ClassNotFoundException`이며 assertion 실패는 확인되지 않았다.
+
 # 2026-07-02 PCagent main Agent AS runtime QA
 
 ## Current goal

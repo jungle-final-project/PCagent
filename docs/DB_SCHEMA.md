@@ -943,12 +943,17 @@ Owner: 4번
 | `id` | `BIGINT` | no | - | 내부 PK |
 | `public_id` | `UUID` | no | - | 외부 ID |
 | `user_id` | `BIGINT` | no | `users.id` | 사용자 |
-| `range_minutes` | `INTEGER` | no | - | 로그 범위 |
+| `device_id` | `BIGINT` | yes | `agent_devices.id` | PC Agent 장치 |
+| `upload_job_id` | `BIGINT` | yes | `agent_upload_jobs.id` | Agent 업로드 job |
+| `range_minutes` | `INTEGER` | no | - | 계산된 incidentWindow 길이 |
 | `status` | `VARCHAR(30)` | no | - | log upload status |
 | `file_name` | `VARCHAR(255)` | no | - | 업로드 파일명 |
 | `file_size` | `BIGINT` | yes | - | 파일 크기 |
 | `storage_path` | `TEXT` | yes | - | 저장 위치 |
 | `summary` | `TEXT` | yes | - | 요약 |
+| `incident_window` | `JSONB` | yes | - | 로그 분석에 사용한 IncidentWindow |
+| `range_started_at` | `TIMESTAMPTZ` | yes | - | IncidentWindow 시작 |
+| `range_ended_at` | `TIMESTAMPTZ` | yes | - | IncidentWindow 종료 |
 | `consent_accepted_at` | `TIMESTAMPTZ` | no | - | 로그 업로드 동의 시각 |
 | `delete_after` | `TIMESTAMPTZ` | no | - | 보관 만료 시각 |
 | `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
@@ -957,24 +962,35 @@ Index:
 
 - unique: `agent_log_uploads.public_id`
 - index: `agent_log_uploads.user_id`
+- index: `agent_log_uploads.device_id`
+- index: `agent_log_uploads.upload_job_id`
 - index: `agent_log_uploads.status`
 - index: `agent_log_uploads.delete_after`
 - index: `agent_log_uploads.created_at`
+- index: `agent_log_uploads.range_started_at, range_ended_at`
 
 MVP 로그 업로드 보안 정책:
 
 | 항목 | MVP 기준 결정값 |
 |---|---|
 | 최대 파일 크기 | 10 MiB. 초과 시 API는 `400 FILE_VALIDATION_ERROR`를 반환하고 row를 만들지 않는다. |
-| 허용 MIME | `application/json`, `application/x-ndjson`, `text/plain`, `application/octet-stream` 중 확장자가 허용된 경우만 허용한다. |
-| 허용 확장자 | `.jsonl`, `.ndjson`만 허용한다. `.json`, `.log`, 압축 파일은 V1에서 제외한다. |
-| JSONL 검증 | 빈 파일 금지, 각 line은 UTF-8 JSON object여야 한다. line array, primitive, trailing comma, 파싱 실패 line이 있으면 전체 업로드 실패다. |
+| 허용 MIME | manual 업로드는 `application/json`, `application/x-ndjson`, `text/plain`, `application/octet-stream` 중 확장자 기준 허용. PC Agent 서버 업로드는 gzip JSONL만 허용한다. |
+| 허용 확장자 | manual 업로드는 `.jsonl`, `.ndjson`; PC Agent 서버 업로드는 `.gz`만 허용한다. |
+| JSONL 검증 | 빈 파일 금지, 각 line은 UTF-8 JSON object여야 한다. PC Agent RawLog line은 `schemaVersion`, `collectedAt`, `agentId`, `sequence`, `kind`, `payload`, `privacyFlags` 필수다. line array, primitive, trailing comma, 파싱 실패 line이 있으면 전체 업로드 실패다. |
 | line 수 제한 | 최대 20000 line. 초과 시 `400 FILE_VALIDATION_ERROR`다. |
-| PII 마스킹 | 저장 전에 email, 전화번호, access token, refresh token, Authorization header 형태 문자열을 마스킹한다. 마스킹 실패가 감지되면 저장하지 않고 `400 FILE_VALIDATION_ERROR`를 반환한다. |
+| PII 마스킹 | 저장/요약 전에 email, 경로, access token, refresh token, Authorization header, password/token류 문자열을 마스킹한다. `privacyFlags.containsRawPath=true`인데 마스킹되지 않았으면 `400 FILE_VALIDATION_ERROR`를 반환한다. |
 | 보관 기간 | `delete_after = created_at + 30 days`다. |
 | 삭제 배치 책임 | 4번 owner가 삭제 대상 선정 query를 관리하고, 5번 owner가 scheduler/infra 실행을 승인한다. |
 | 관리자 접근 기록 | 관리자가 업로드 상세 또는 연결 AS ticket 상세에서 로그 요약/원문 위치를 조회하면 `admin_audit_logs`에 `AGENT_LOG_VIEWED` action을 기록한다. |
-| 원문 노출 범위 | public API는 원문 로그를 반환하지 않고 `summary`, `status`, `fileName`, `createdAt`, `deleteAfter`만 반환한다. admin API도 V1에서는 원문 다운로드 API를 만들지 않는다. |
+| 원문 노출 범위 | public API는 원문 로그 전체를 반환하지 않는다. `LogSummary.rawSamples`는 `evidenceRefs`와 연결된 로그만 최대 20개까지 저장/노출할 수 있으며, LLM 요청에도 원본 gzip/전체 JSONL/전체 프로세스 목록/전체 파일 경로를 넣지 않는다. admin API도 V1에서는 원문 다운로드 API를 만들지 않는다. |
+
+PC Agent 서버 업로드 IncidentWindow 정책:
+
+| 그룹 | IncidentWindow |
+|---|---|
+| 원격 6종 | 발생 전 15분, 후 5분 |
+| BSOD/디스크/전원/thermal/방문 5종 | 발생 전 30분, 후 10분 |
+| 부팅 불가/원격 불가 | 마지막 정상 부팅 이후 critical event 요약. `lastNormalBootAt`이 없으면 서버 감지 시각 기준 최근 24시간 fallback |
 
 ### as_tickets
 
@@ -991,8 +1007,22 @@ Owner: 4번
 | `assigned_admin_id` | `BIGINT` | yes | `users.id` | 담당 관리자 |
 | `symptom` | `TEXT` | no | - | 증상 |
 | `status` | `VARCHAR(30)` | no | - | AS ticket status |
+| `analysis_status` | `VARCHAR(30)` | no | - | 분석 상태 |
+| `review_status` | `VARCHAR(30)` | no | - | 관리자 검토 상태 |
+| `support_decision` | `VARCHAR(50)` | yes | - | `SELF_SOLVABLE`, `REMOTE_POSSIBLE`, `VISIT_REQUIRED`, `REPAIR_OR_REPLACE`, `NEEDS_MORE_INFO`, `MONITOR_ONLY`, `UNSUPPORTED` |
+| `risk_level` | `VARCHAR(30)` | yes | - | `LOW`, `MEDIUM`, `HIGH` |
+| `auto_response_allowed` | `BOOLEAN` | no | - | 자동 안내 허용 여부 |
 | `cause_candidates` | `JSONB` | yes | - | 원인 후보 배열 |
 | `upgrade_candidates` | `JSONB` | yes | - | 업그레이드 후보 배열 |
+| `incident_window` | `JSONB` | yes | - | 티켓 생성 시 확정된 IncidentWindow |
+| `log_summary` | `JSONB` | yes | - | `timeline`, `anomalies`, `correlations`, `ruleSignals`, `dataQuality`, `evidenceRefs`, `rawSamples` |
+| `support_routing` | `JSONB` | yes | - | rule routing 결과 |
+| `ai_diagnosis_request` | `JSONB` | yes | - | LLM 입력용 서버 요약 요청 payload |
+| `exception_approval_reason` | `TEXT` | yes | - | `UNSUPPORTED` 예외 승인 사유 |
+| `exception_responsibility_scope` | `TEXT` | yes | - | 예외 승인 책임 범위 |
+| `exception_user_message` | `TEXT` | yes | - | 사용자 안내 문구 |
+| `exception_approved_at` | `TIMESTAMPTZ` | yes | - | 예외 승인 시각 |
+| `exception_approved_by` | `BIGINT` | yes | `users.id` | 예외 승인 관리자 |
 | `admin_note` | `TEXT` | yes | - | 관리자 메모 |
 | `resolved_at` | `TIMESTAMPTZ` | yes | - | 해결 시각 |
 | `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
@@ -1006,6 +1036,11 @@ Index:
 - index: `as_tickets.log_upload_id`
 - index: `as_tickets.status`
 - index: `as_tickets.assigned_admin_id`
+- index: `as_tickets.analysis_status`
+- index: `as_tickets.review_status`
+- index: `as_tickets.support_decision`
+- index: `as_tickets.risk_level`
+- index: `as_tickets.exception_approved_by`
 - index: `as_tickets.created_at`
 - index: `as_tickets.deleted_at`
 

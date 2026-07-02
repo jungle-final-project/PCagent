@@ -496,17 +496,21 @@ class PcAgentAsServiceTest {
                 eq(20L),
                 eq(10L),
                 eq(100L),
-                eq(30),
+                eq(20),
                 eq("agent-log.jsonl.gz"),
                 any(Long.class),
-                eq("agent-logs/device-public-id/agent-log.jsonl.gz")
+                eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
+                any(String.class),
+                any(String.class),
+                any(Timestamp.class),
+                any(Timestamp.class)
         )).thenReturn(MockData.map(
                 "log_upload_internal_id", 200L,
                 "log_upload_id", "log-upload-public-id",
                 "status", "UPLOADED",
                 "file_name", "agent-log.jsonl.gz",
                 "file_size", 65L,
-                "range_minutes", 30,
+                "range_minutes", 20,
                 "delete_after", Instant.parse("2026-08-01T00:00:00Z")
         ));
         when(jdbcTemplate.queryForMap(
@@ -517,14 +521,20 @@ class PcAgentAsServiceTest {
                 eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
                 any(String.class),
                 any(Long.class),
-                eq(Instant.parse("2026-08-01T00:00:00Z"))
+                eq(Timestamp.from(Instant.parse("2026-08-01T00:00:00Z")))
         )).thenReturn(MockData.map("log_bundle_id", "bundle-public-id"));
         when(jdbcTemplate.queryForMap(
                 contains("INSERT INTO as_tickets"),
+                any(String.class),
                 eq(20L),
                 eq(200L),
                 eq("GPU temperature spike"),
-                eq("HIGH"),
+                eq("REMOTE_POSSIBLE"),
+                eq("MEDIUM"),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
                 any(String.class),
                 any(String.class),
                 any(String.class)
@@ -533,14 +543,14 @@ class PcAgentAsServiceTest {
                 "status", "OPEN",
                 "analysis_status", "RULE_READY",
                 "review_status", "REQUIRED",
-                "support_decision", "NEEDS_MORE_INFO",
-                "risk_level", "HIGH"
+                "support_decision", "REMOTE_POSSIBLE",
+                "risk_level", "MEDIUM"
         ));
 
         Map<String, Object> response = service.uploadLogs(
                 AGENT,
-                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
-                MockData.map("rangeMinutes", 30, "symptom", "GPU temperature spike"),
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(driverErrorLogs())),
+                MockData.map("symptomType", "REMOTE_DRIVER_OS", "symptom", "GPU temperature spike"),
                 "upload-key"
         );
 
@@ -549,10 +559,11 @@ class PcAgentAsServiceTest {
         assertThat(response.get("ticketId")).isEqualTo("ticket-public-id");
         assertThat(response.get("analysisStatus")).isEqualTo("RULE_READY");
         assertThat(response.get("reviewStatus")).isEqualTo("REQUIRED");
-        assertThat(response.get("supportDecision")).isEqualTo("NEEDS_MORE_INFO");
-        assertThat(response.get("riskLevel")).isEqualTo("HIGH");
+        assertThat(response.get("supportDecision")).isEqualTo("REMOTE_POSSIBLE");
+        assertThat(response.get("riskLevel")).isEqualTo("MEDIUM");
         assertThat(response.get("deleteAfter")).isEqualTo(Instant.parse("2026-08-01T00:00:00Z"));
-        assertThat(response.get("rangeMinutes")).isEqualTo(30);
+        assertThat(response.get("rangeMinutes")).isEqualTo(20);
+        assertThat(response.get("rawSamplesCount")).isEqualTo(2);
 
         verify(jdbcTemplate).queryForMap(contains("INSERT INTO agent_upload_jobs"), eq(10L), eq("upload-key"), any(), any());
         verify(jdbcTemplate).queryForMap(
@@ -560,17 +571,27 @@ class PcAgentAsServiceTest {
                 eq(20L),
                 eq(10L),
                 eq(100L),
-                eq(30),
+                eq(20),
                 eq("agent-log.jsonl.gz"),
                 any(Long.class),
-                eq("agent-logs/device-public-id/agent-log.jsonl.gz")
+                eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
+                any(String.class),
+                any(String.class),
+                any(Timestamp.class),
+                any(Timestamp.class)
         );
         verify(jdbcTemplate).queryForMap(
                 contains("INSERT INTO as_tickets"),
+                any(String.class),
                 eq(20L),
                 eq(200L),
                 eq("GPU temperature spike"),
-                eq("HIGH"),
+                eq("REMOTE_POSSIBLE"),
+                eq("MEDIUM"),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
                 any(String.class),
                 any(String.class),
                 any(String.class)
@@ -584,8 +605,8 @@ class PcAgentAsServiceTest {
 
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
-                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
-                MockData.map("rangeMinutes", 30),
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(singleRawLog())),
+                MockData.map("symptomType", "REMOTE_AGENT"),
                 "upload-key"
         ))
                 .isInstanceOf(ResponseStatusException.class)
@@ -597,8 +618,8 @@ class PcAgentAsServiceTest {
     void uploadLogsRejectsInvalidIdempotencyKeyBeforeReadingConsentOrCreatingRows() {
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
-                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
-                MockData.map("rangeMinutes", 30),
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(singleRawLog())),
+                MockData.map("symptomType", "REMOTE_AGENT"),
                 "bad key"
         ))
                 .isInstanceOf(ResponseStatusException.class)
@@ -614,7 +635,7 @@ class PcAgentAsServiceTest {
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
                 new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", "not-gzip".getBytes()),
-                MockData.map("rangeMinutes", 30),
+                MockData.map("symptomType", "REMOTE_AGENT"),
                 "upload-key"
         ))
                 .isInstanceOf(ApiException.class)
@@ -626,39 +647,48 @@ class PcAgentAsServiceTest {
     }
 
     @Test
-    void uploadLogsRejectsMissingRangeMinutesBeforeCreatingTicket() {
+    void uploadLogsRejectsMissingRawLogRequiredFieldBeforeCreatingTicket() {
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
-                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
-                MockData.map("symptom", "GPU temperature spike"),
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("{\"schemaVersion\":\"1\"}\n")),
+                MockData.map("symptomType", "REMOTE_DRIVER_OS", "symptom", "GPU temperature spike"),
                 "upload-key"
         ))
-                .isInstanceOf(ResponseStatusException.class)
-                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
-                        .isEqualTo(HttpStatus.BAD_REQUEST));
+                .isInstanceOf(ApiException.class)
+                .satisfies(exception -> assertThat(((ApiException) exception).code())
+                        .isEqualTo("FILE_VALIDATION_ERROR"));
 
         verify(jdbcTemplate, never()).queryForMap(contains("INSERT INTO as_tickets"), any(), any(), any());
     }
 
     @Test
-    void uploadLogsRejectsNonThirtyMinuteRange() {
+    void uploadLogsDoesNotRejectCustomIncidentWindowBeforeConsentCheck() {
+        when(jdbcTemplate.queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L)))
+                .thenReturn(0);
+
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
-                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
-                MockData.map("rangeMinutes", 45),
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(singleRawLog())),
+                MockData.map(
+                        "symptomType", "REMOTE_DRIVER_OS",
+                        "incidentStartedAt", "2026-07-01T23:40:00Z",
+                        "incidentEndedAt", "2026-07-02T00:25:00Z"
+                ),
                 "upload-key"
         ))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
                         .isEqualTo(HttpStatus.BAD_REQUEST));
+
+        verify(jdbcTemplate).queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L));
     }
 
     @Test
     void uploadLogsRejectsNonGzipExtensionBeforeCreatingTicket() {
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
-                new MockMultipartFile("file", "agent-log.jsonl", "application/json", gzip("demo log\n")),
-                MockData.map("rangeMinutes", 30),
+                new MockMultipartFile("file", "agent-log.jsonl", "application/json", gzip(singleRawLog())),
+                MockData.map("symptomType", "REMOTE_AGENT"),
                 "upload-key"
         ))
                 .isInstanceOf(ApiException.class)
@@ -673,7 +703,7 @@ class PcAgentAsServiceTest {
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
                 new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("")),
-                MockData.map("rangeMinutes", 30),
+                MockData.map("symptomType", "REMOTE_AGENT"),
                 "upload-key"
         ))
                 .isInstanceOf(ApiException.class)
@@ -690,8 +720,8 @@ class PcAgentAsServiceTest {
 
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
-                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
-                MockData.map("rangeMinutes", 30),
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(singleRawLog())),
+                MockData.map("symptomType", "REMOTE_AGENT"),
                 "upload-key"
         ))
                 .isInstanceOf(ResponseStatusException.class)
@@ -711,6 +741,21 @@ class PcAgentAsServiceTest {
         } catch (IOException exception) {
             throw new IllegalStateException(exception);
         }
+    }
+
+    private static String driverErrorLogs() {
+        return rawLog(1, "2026-07-01T23:50:00Z", "WINDOWS_EVENT", "display driver nvlddmkm reset at C:\\Users\\kim\\driver.log")
+                + rawLog(2, "2026-07-01T23:55:00Z", "WINDOWS_EVENT", "display driver install failure token=secret-token");
+    }
+
+    private static String singleRawLog() {
+        return rawLog(1, "2026-07-01T23:50:00Z", "AGENT_EVENT", "agent upload diagnostic event");
+    }
+
+    private static String rawLog(long sequence, String collectedAt, String kind, String message) {
+        return """
+                {"schemaVersion":"1","collectedAt":"%s","agentId":"agent-public-id","sequence":%d,"kind":"%s","payload":{"message":"%s"},"privacyFlags":{"masked":true,"containsRawPath":false}}
+                """.formatted(collectedAt, sequence, kind, message.replace("\\", "\\\\").replace("\"", "\\\""));
     }
 
     private static Map<String, Object> validActivationRow(Long existingDeviceInternalId, Instant usedAt) {

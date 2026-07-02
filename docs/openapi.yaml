@@ -3091,7 +3091,7 @@ components:
           enum: [NOT_REQUIRED, REQUIRED, IN_REVIEW, APPROVED, REJECTED]
         supportDecision:
           type: string
-          enum: [SELF_SOLVABLE, REMOTE_POSSIBLE, VISIT_REQUIRED, NEEDS_MORE_INFO]
+          enum: [SELF_SOLVABLE, REMOTE_POSSIBLE, VISIT_REQUIRED, REPAIR_OR_REPLACE, NEEDS_MORE_INFO, MONITOR_ONLY, UNSUPPORTED]
         riskLevel:
           type: string
           enum: [LOW, MEDIUM, HIGH]
@@ -3313,26 +3313,152 @@ components:
         lastSeenAt:
           type: string
           format: date-time
+    IncidentWindowDto:
+      type: object
+      additionalProperties: true
+      properties:
+        incidentId:
+          type: string
+        triggerType:
+          type: string
+        symptomType:
+          type: string
+        detectedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        preBufferSec:
+          type: integer
+        postBufferSec:
+          type: integer
+        selectedByUser:
+          type: boolean
+        consentId:
+          type: string
+          nullable: true
+    LogSummaryDto:
+      type: object
+      additionalProperties: true
+      properties:
+        timeline:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        anomalies:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        correlations:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        ruleSignals:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        dataQuality:
+          type: object
+          additionalProperties: true
+        evidenceRefs:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        rawSamples:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: true
+    SupportRoutingDto:
+      type: object
+      additionalProperties: true
+      properties:
+        recommendedDecision:
+          type: string
+          enum: [SELF_SOLVABLE, REMOTE_POSSIBLE, VISIT_REQUIRED, REPAIR_OR_REPLACE, NEEDS_MORE_INFO, MONITOR_ONLY, UNSUPPORTED]
+        reasonCodes:
+          type: array
+          items:
+            type: string
+        blockingFactors:
+          type: array
+          items:
+            type: string
+    AiDiagnosisRequestDto:
+      type: object
+      additionalProperties: true
+      properties:
+        ticketId:
+          type: string
+          format: uuid
+        logSummary:
+          $ref: "#/components/schemas/LogSummaryDto"
+        rawSamples:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: true
+        supportRouting:
+          $ref: "#/components/schemas/SupportRoutingDto"
     PcAgentLogUploadRequest:
       type: object
-      required: [file, rangeMinutes]
+      required: [file]
       properties:
         file:
           type: string
           format: binary
+        symptomType:
+          type: string
+          enum: [REMOTE_AGENT, REMOTE_DRIVER_OS, REMOTE_APP_LAUNCHER, REMOTE_STORAGE_MEMORY, REMOTE_STARTUP_SERVICE, REMOTE_LOCAL_NETWORK, VISIT_BOOT_REMOTE_BLOCKED, VISIT_DISK_FAILURE, VISIT_WHEA_BSOD, VISIT_POWER_SHUTDOWN, VISIT_FAN_THERMAL, GAME_FPS_TUNING, OVERCLOCK_STABILITY, ISP_ROUTER, PERIPHERAL_PRINTER, DATA_RECOVERY, ILLEGAL_SOFTWARE, PHYSICAL_DAMAGE]
+        symptom:
+          type: string
+        detectedAt:
+          type: string
+          format: date-time
+        incidentStartedAt:
+          type: string
+          format: date-time
+        incidentEndedAt:
+          type: string
+          format: date-time
+        lastNormalBootAt:
+          type: string
+          format: date-time
+        selectedByUser:
+          type: boolean
+        incidentId:
+          type: string
+        triggerType:
+          type: string
+        consentId:
+          type: string
         rangeMinutes:
           type: integer
-          enum: [30]
+          deprecated: true
+          description: Legacy fallback only. Server now derives the effective window from incidentWindow policy.
         rangeStartedAt:
           type: string
           format: date-time
+          description: Optional explicit incident window start.
         rangeEndedAt:
           type: string
           format: date-time
+          description: Optional explicit incident window end.
         schemaVersion:
           type: integer
-        symptom:
-          type: string
+          deprecated: true
+          description: RawLog schemaVersion is validated per JSONL line.
     PcAgentLogUploadResponse:
       type: object
       required: [uploadJobId, logUploadId, ticketId, analysisStatus, reviewStatus, supportDecision]
@@ -3354,7 +3480,22 @@ components:
           enum: [REQUIRED, APPROVED]
         supportDecision:
           type: string
-          enum: [NEEDS_MORE_INFO, REMOTE_POSSIBLE, VISIT_REQUIRED]
+          enum: [SELF_SOLVABLE, REMOTE_POSSIBLE, VISIT_REQUIRED, REPAIR_OR_REPLACE, NEEDS_MORE_INFO, MONITOR_ONLY, UNSUPPORTED]
+        riskLevel:
+          type: string
+          enum: [LOW, MEDIUM, HIGH]
+        rangeMinutes:
+          type: integer
+        incidentWindow:
+          $ref: "#/components/schemas/IncidentWindowDto"
+        supportRouting:
+          $ref: "#/components/schemas/SupportRoutingDto"
+        rawSamplesCount:
+          type: integer
+          maximum: 20
+        deleteAfter:
+          type: string
+          format: date-time
     AgentLogUploadRequest:
       type: object
       required: [file, rangeMinutes, consentAccepted]
@@ -3415,7 +3556,7 @@ components:
           enum: [NOT_REQUIRED, REQUIRED, IN_REVIEW, APPROVED, REJECTED]
         supportDecision:
           type: string
-          enum: [SELF_SOLVABLE, REMOTE_POSSIBLE, VISIT_REQUIRED, NEEDS_MORE_INFO]
+          enum: [SELF_SOLVABLE, REMOTE_POSSIBLE, VISIT_REQUIRED, REPAIR_OR_REPLACE, NEEDS_MORE_INFO, MONITOR_ONLY, UNSUPPORTED]
         riskLevel:
           type: string
           enum: [LOW, MEDIUM, HIGH]
@@ -3441,6 +3582,25 @@ components:
             additionalProperties: true
         adminNote:
           type: string
+        logSummary:
+          type: string
+        incidentWindow:
+          $ref: "#/components/schemas/IncidentWindowDto"
+        logSummaryDetail:
+          $ref: "#/components/schemas/LogSummaryDto"
+        supportRouting:
+          $ref: "#/components/schemas/SupportRoutingDto"
+        aiDiagnosisRequest:
+          $ref: "#/components/schemas/AiDiagnosisRequestDto"
+        exceptionApprovalReason:
+          type: string
+        exceptionResponsibilityScope:
+          type: string
+        exceptionUserMessage:
+          type: string
+        exceptionApprovedAt:
+          type: string
+          format: date-time
         remoteSupportLink:
           type: string
           format: uri
@@ -3477,7 +3637,7 @@ components:
           type: string
         supportDecision:
           type: string
-          enum: [SELF_SOLVABLE, REMOTE_POSSIBLE, VISIT_REQUIRED, NEEDS_MORE_INFO]
+          enum: [SELF_SOLVABLE, REMOTE_POSSIBLE, VISIT_REQUIRED, REPAIR_OR_REPLACE, NEEDS_MORE_INFO, MONITOR_ONLY, UNSUPPORTED]
         reviewStatus:
           type: string
           enum: [NOT_REQUIRED, REQUIRED, IN_REVIEW, APPROVED, REJECTED]
@@ -3492,6 +3652,12 @@ components:
         remoteSupportUrl:
           type: string
           format: uri
+        exceptionApprovalReason:
+          type: string
+        exceptionResponsibilityScope:
+          type: string
+        exceptionUserMessage:
+          type: string
         visitSupportRequired:
           type: boolean
         visitPreferredDate:
