@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Sequence
 
 try:
     import psutil
@@ -12,6 +15,83 @@ except Exception:  # pragma: no cover - optional for prototype environments
     psutil = None
 
 KST = timezone(timedelta(hours=9))
+DEFAULT_CONFIG_PATH = Path("agent-config.json")
+
+
+class ConfigError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    api_base_url: str
+    activation_token: str
+    device_fingerprint_hash: str
+    os_version: str
+    agent_version: str
+    policy_version: str
+    agent_token: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AgentConfig":
+        return cls(
+            api_base_url=required_config_text(data, "apiBaseUrl"),
+            activation_token=required_config_text(data, "activationToken"),
+            device_fingerprint_hash=required_config_text(data, "deviceFingerprintHash"),
+            os_version=required_config_text(data, "osVersion"),
+            agent_version=required_config_text(data, "agentVersion"),
+            policy_version=required_config_text(data, "policyVersion"),
+            agent_token=optional_config_text(data, "agentToken"),
+        )
+
+    def registration_status(self) -> str:
+        if self.agent_token:
+            return "registered token present"
+        return "unregistered"
+
+
+def required_config_text(data: dict[str, Any], field: str) -> str:
+    if field not in data:
+        raise ConfigError(f"Missing required config field: {field}")
+    value = data[field]
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"Config field must be a non-empty string: {field}")
+    return value.strip()
+
+
+def optional_config_text(data: dict[str, Any], field: str) -> str | None:
+    if field not in data or data[field] is None:
+        return None
+    value = data[field]
+    if not isinstance(value, str):
+        raise ConfigError(f"Config field must be a string when provided: {field}")
+    value = value.strip()
+    return value or None
+
+
+def load_config(path: Path) -> AgentConfig:
+    if not path.exists():
+        raise ConfigError(f"Config file not found: {path}")
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except json.JSONDecodeError as exception:
+        raise ConfigError(f"Config file is not valid JSON: {path}: {exception.msg}") from exception
+    if not isinstance(data, dict):
+        raise ConfigError("Config file root must be a JSON object.")
+    return AgentConfig.from_dict(data)
+
+
+def print_status(config_path: Path) -> None:
+    config = load_config(config_path)
+    print(config.registration_status())
+
+
+def print_doctor(config_path: Path) -> None:
+    config = load_config(config_path)
+    print("config: ok")
+    print(f"apiBaseUrl: {config.api_base_url}")
+    print(f"registration: {config.registration_status()}")
 
 
 def metric_snapshot(ts: datetime, index: int) -> dict:
@@ -69,7 +149,7 @@ def export_recent(source: Path, out: Path, minutes: int) -> None:
             file.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="BuildGraph AI PC Agent prototype CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -83,15 +163,30 @@ def main() -> None:
     export.add_argument("--out", type=Path, default=Path("recent-30m.jsonl"))
     export.add_argument("--minutes", type=int, default=30)
 
-    args = parser.parse_args()
+    status = sub.add_parser("status", help="read config and print registration state")
+    status.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
 
-    if args.command == "sample":
-        write_sample(args.out, args.count, args.interval_seconds)
-        print(f"wrote {args.out}")
-    elif args.command == "export":
-        export_recent(args.source, args.out, args.minutes)
-        print(f"exported {args.out}")
+    doctor = sub.add_parser("doctor", help="validate config without registering or uploading")
+    doctor.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+
+    args = parser.parse_args(argv)
+
+    try:
+        if args.command == "sample":
+            write_sample(args.out, args.count, args.interval_seconds)
+            print(f"wrote {args.out}")
+        elif args.command == "export":
+            export_recent(args.source, args.out, args.minutes)
+            print(f"exported {args.out}")
+        elif args.command == "status":
+            print_status(args.config)
+        elif args.command == "doctor":
+            print_doctor(args.config)
+    except ConfigError as exception:
+        print(f"config error: {exception}", file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
