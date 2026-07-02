@@ -22,7 +22,7 @@ type AdminShellProps = {
 export function AdminShell({ children, title, exportRows = [], exportFileName = 'admin-export.csv', action }: AdminShellProps) {
   const canExport = exportRows.length > 0;
   return (
-    <div className="screen-shell flex bg-slate-100">
+    <div className="screen-shell flex bg-slate-100 font-['Noto_Sans_KR']">
       <AdminSidebar />
       <div className="flex-1">
         <div className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-7">
@@ -62,18 +62,18 @@ function AdminSidebar() {
   const { pathname } = useLocation();
   const items = [
     { to: '/admin', label: '대시보드', Icon: Home, match: (path: string) => path === '/admin' },
-    { to: '/admin/agent-sessions', label: 'Agent 세션', Icon: Bot, match: (path: string) => path.startsWith('/admin/agent-sessions') },
-    { to: '/admin/tool-invocations', label: 'Tool 이력', Icon: Activity, match: (path: string) => path.startsWith('/admin/tool-invocations') },
-    { to: '/admin/rag-evidence', label: 'RAG 근거', Icon: Search, match: (path: string) => path.startsWith('/admin/rag-evidence') },
+    { to: '/admin/agent-sessions', label: '에이전트 세션', Icon: Bot, match: (path: string) => path.startsWith('/admin/agent-sessions') },
+    { to: '/admin/tool-invocations', label: '도구 이력', Icon: Activity, match: (path: string) => path.startsWith('/admin/tool-invocations') },
+    { to: '/admin/rag-evidence', label: '검색 근거', Icon: Search, match: (path: string) => path.startsWith('/admin/rag-evidence') },
     { to: '/admin/parts', label: '부품/가격', Icon: Cpu, match: (path: string) => path === '/admin/parts' },
     { to: '/admin/as-tickets', label: 'AS 티켓', Icon: LifeBuoy, match: (path: string) => path.startsWith('/admin/as-tickets') },
-    { to: '/admin/price-jobs', label: '가격 Job', Icon: RefreshCw, match: (path: string) => path.startsWith('/admin/price-jobs') },
+    { to: '/admin/price-jobs', label: '가격 작업', Icon: RefreshCw, match: (path: string) => path.startsWith('/admin/price-jobs') },
     { to: '/admin/load-tests', label: '부하 테스트', Icon: Gauge, match: (path: string) => path.startsWith('/admin/load-tests') }
   ];
 
   return (
     <aside className="w-60 bg-brand-navy px-4 py-6 text-white">
-      <div className="mb-10 text-xl font-bold">BuildGraph<br />Admin</div>
+      <div className="mb-10 text-xl font-bold">BuildGraph<br />관리자</div>
       <nav aria-label="관리자 메뉴" className="space-y-2">
         {items.map(({ to, label, Icon, match }) => {
           const isActive = match(pathname);
