@@ -83,6 +83,12 @@ public class AdminController {
         return agentQueryService.toolInvocation(id);
     }
 
+    @GetMapping("/rag-evidence")
+    Map<String, Object> ragEvidenceList(@RequestHeader(value = "Authorization", required = false) String authorization) {
+        currentUserService.requireAdmin(authorization);
+        return ragQueryService.adminEvidenceList();
+    }
+
     @GetMapping("/rag-evidence/{id}")
     Map<String, Object> ragEvidence(@PathVariable String id, @RequestHeader(value = "Authorization", required = false) String authorization) {
         currentUserService.requireAdmin(authorization);

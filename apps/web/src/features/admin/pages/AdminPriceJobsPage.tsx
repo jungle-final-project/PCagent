@@ -15,6 +15,7 @@ export function AdminPriceJobsPage() {
   });
 
   const jobs = jobsQuery.data?.items ?? [];
+  const activeJob = hasActiveJob(jobs);
   const rows = jobs.map((job) => ({
     id: shortId(job.id),
     status: <StatusBadge status={job.status} />,
@@ -24,9 +25,28 @@ export function AdminPriceJobsPage() {
     errorSummary: job.errorSummary ?? '-',
     createdAt: formatDateTime(job.createdAt)
   }));
+  const exportRows = jobs.map((job) => ({
+    id: job.id,
+    status: job.status,
+    requestedBy: job.requestedBy ?? '',
+    startedAt: formatDateTime(job.startedAt),
+    finishedAt: formatDateTime(job.finishedAt),
+    errorSummary: job.errorSummary ?? '',
+    createdAt: formatDateTime(job.createdAt)
+  }));
 
   return (
-    <AdminShell title="가격 Job 관리자">
+    <AdminShell
+      title="가격 Job 관리자"
+      exportRows={exportRows}
+      exportFileName="admin-price-jobs.csv"
+      action={{
+        label: activeJob ? '실행 중인 Job 있음' : runMutation.isPending ? '실행 요청 중' : '가격 Job 실행',
+        onClick: () => runMutation.mutate(),
+        disabled: runMutation.isPending || activeJob,
+        title: '네이버 현재가 후보와 다나와 현재가 스냅샷 갱신 Job을 실행합니다.'
+      }}
+    >
       <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-5">
         <Panel title="가격 수집 작업" subtitle="price_jobs와 RabbitMQ worker 기준 상태">
           {jobsQuery.isLoading ? (
@@ -41,8 +61,8 @@ export function AdminPriceJobsPage() {
         </Panel>
         <Panel title="실행 정책">
           <StateMessage type="info" title="RabbitMQ worker 실행" body="실행 요청은 QUEUED job을 만들고 worker가 RUNNING, SUCCEEDED 또는 FAILED로 전이합니다. 네이버 쇼핑 API와 다나와 제한 크롤링 키가 없어도 seed/current price 기준 상태 전이는 확인할 수 있습니다." />
-          <button disabled={runMutation.isPending || hasActiveJob(jobs)} onClick={() => runMutation.mutate()} className="mt-5 w-full rounded bg-brand-blue px-4 py-3 text-sm font-bold text-white disabled:bg-slate-400">
-            {hasActiveJob(jobs) ? '실행 중인 Job 있음' : runMutation.isPending ? '실행 요청 중' : '가격 Job 실행'}
+          <button disabled={runMutation.isPending || activeJob} onClick={() => runMutation.mutate()} className="mt-5 w-full rounded bg-brand-blue px-4 py-3 text-sm font-bold text-white disabled:bg-slate-400">
+            {activeJob ? '실행 중인 Job 있음' : runMutation.isPending ? '실행 요청 중' : '가격 Job 실행'}
           </button>
           {runMutation.isSuccess ? <StateMessage type="success" title="실행 요청 완료" body="가격 Job을 큐에 등록했습니다." /> : null}
           {runMutation.isError ? <StateMessage type="warn" title="실행 요청 실패" body="이미 실행 중인 Job이 있거나 관리자 권한을 확인해야 합니다." /> : null}

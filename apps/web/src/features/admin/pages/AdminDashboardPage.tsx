@@ -43,6 +43,12 @@ export function AdminDashboardPage() {
 
   const statusLabel = dashboard.degraded ? '주의' : '정상';
   const generatedAt = dashboard.generatedAt ?? '갱신 시간 없음';
+  const dashboardExportRows = [
+    { metric: 'agentRunning', value: dashboard.agentRunning, generatedAt },
+    { metric: 'openTickets', value: dashboard.openTickets, generatedAt },
+    { metric: 'priceJobsRunning', value: dashboard.priceJobsRunning, generatedAt },
+    { metric: 'degraded', value: dashboard.degraded, generatedAt }
+  ];
   const agentSessionRows = (agentSessionsQuery.data?.items ?? []).slice(0, 5).map((session) => ({
     세션: session.id,
     상태: <StatusBadge status={session.status} />,
@@ -62,7 +68,7 @@ export function AdminDashboardPage() {
       작업: '가격 Job',
       상태: <StatusBadge status={dashboard.priceJobsRunning > 0 ? 'RUNNING' : 'READY'} />,
       owner: '2번',
-      이동: <Link className="font-bold text-brand-blue" to="/admin/parts">부품/가격</Link>
+      이동: <Link className="font-bold text-brand-blue" to="/admin/price-jobs">Job 확인</Link>
     },
     {
       작업: 'Mailpit',
@@ -82,7 +88,7 @@ export function AdminDashboardPage() {
       작업: 'k6 Smoke',
       상태: <StatusBadge status="TODO" />,
       owner: '5번',
-      이동: '리포트'
+      이동: <Link className="font-bold text-brand-blue" to="/admin/load-tests">리포트</Link>
     }
   ];
   const adminTodos = [
@@ -111,7 +117,7 @@ export function AdminDashboardPage() {
   ];
 
   return (
-    <AdminShell title="운영 대시보드">
+    <AdminShell title="운영 대시보드" exportRows={dashboardExportRows} exportFileName="admin-dashboard.csv">
       {dashboard.degraded ? (
         <div className="mb-4">
           <StateMessage

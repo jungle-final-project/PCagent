@@ -216,6 +216,23 @@ public class RagQueryService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "RAG 근거를 찾을 수 없습니다."));
     }
 
+    public Map<String, Object> adminEvidenceList() {
+        int page = 0;
+        int size = 20;
+        List<Map<String, Object>> items = jdbcTemplate.queryForList(baseEvidenceSql() + """
+                        ORDER BY re.created_at DESC, re.id DESC
+                        LIMIT ?
+                        """, size)
+                .stream()
+                .map(this::adminEvidenceMap)
+                .toList();
+        Integer total = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM rag_evidence
+                """, Integer.class);
+        return MockData.map("items", items, "page", page, "size", size, "total", total == null ? 0 : total);
+    }
+
     public List<Map<String, Object>> evidenceBySession(String sessionId) {
         return jdbcTemplate.queryForList(baseEvidenceSql() + """
                         WHERE s.public_id = ?::uuid
