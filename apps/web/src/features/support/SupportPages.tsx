@@ -9,6 +9,38 @@ import { createSupportTicket, getSupportTicket, uploadAgentLog } from './support
 import type { AsTicketDto, CauseCandidate } from './types';
 
 type SubmitState = 'default' | 'validation_error' | 'consent_required' | 'uploading' | 'upload_error' | 'ticket_error' | 'ticket_created';
+type SupportRequestKind = 'DIAGNOSIS_ONLY' | 'REMOTE_REQUESTED' | 'VISIT_REQUESTED';
+
+const remoteSymptomTypes = new Set([
+  'REMOTE_AGENT',
+  'REMOTE_DRIVER_OS',
+  'REMOTE_APP_LAUNCHER',
+  'REMOTE_STORAGE_MEMORY',
+  'REMOTE_STARTUP_SERVICE',
+  'REMOTE_LOCAL_NETWORK'
+]);
+
+const visitSymptomTypes = new Set([
+  'VISIT_BOOT_REMOTE_BLOCKED',
+  'VISIT_DISK_FAILURE',
+  'VISIT_WHEA_BSOD',
+  'VISIT_POWER_SHUTDOWN',
+  'VISIT_FAN_THERMAL'
+]);
+
+const symptomTypeOptions = [
+  ['REMOTE_AGENT', 'Agent 설치/등록/업로드/권한 오류'],
+  ['REMOTE_DRIVER_OS', '드라이버/OS 업데이트/장치 오류'],
+  ['REMOTE_APP_LAUNCHER', '앱/런처 실행 오류'],
+  ['REMOTE_STORAGE_MEMORY', '저장공간 부족/메모리 압박'],
+  ['REMOTE_STARTUP_SERVICE', '시작프로그램/서비스 부하'],
+  ['REMOTE_LOCAL_NETWORK', '로컬 네트워크/DNS/어댑터 문제'],
+  ['VISIT_BOOT_REMOTE_BLOCKED', '부팅 불가 또는 원격 연결 불가'],
+  ['VISIT_DISK_FAILURE', '디스크 장애 의심'],
+  ['VISIT_WHEA_BSOD', 'WHEA/블루스크린 반복'],
+  ['VISIT_POWER_SHUTDOWN', '부하 시 전원 꺼짐'],
+  ['VISIT_FAN_THERMAL', '팬/과열/thermal shutdown']
+];
 
 export function AsChatPage() {
   const [searchParams] = useSearchParams();
@@ -213,11 +245,35 @@ export function SupportNewPage() {
   const navigate = useNavigate();
   const [symptomTitle, setSymptomTitle] = useState('');
   const [symptomDetail, setSymptomDetail] = useState('');
+  const [symptomType, setSymptomType] = useState('REMOTE_DRIVER_OS');
+  const [detectedAt, setDetectedAt] = useState(() => datetimeLocalValue(new Date()));
+  const [windowStartedAt, setWindowStartedAt] = useState(() => {
+    const base = new Date();
+    base.setMinutes(base.getMinutes() - 15);
+    return datetimeLocalValue(base);
+  });
+  const [windowEndedAt, setWindowEndedAt] = useState(() => {
+    const base = new Date();
+    base.setMinutes(base.getMinutes() + 5);
+    return datetimeLocalValue(base);
+  });
+  const [supportRequestKind, setSupportRequestKind] = useState<SupportRequestKind>('DIAGNOSIS_ONLY');
   const [consentAccepted, setConsentAccepted] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [logPreview, setLogPreview] = useState('');
   const [submitState, setSubmitState] = useState<SubmitState>('default');
   const [error, setError] = useState('');
+
+  function applyDefaultWindow(nextSymptomType = symptomType, nextDetectedAt = detectedAt) {
+    const detected = datetimeLocalToDate(nextDetectedAt);
+    const { preMinutes, postMinutes } = incidentWindowPreset(nextSymptomType);
+    const start = new Date(detected);
+    start.setMinutes(start.getMinutes() - preMinutes);
+    const end = new Date(detected);
+    end.setMinutes(end.getMinutes() + postMinutes);
+    setWindowStartedAt(datetimeLocalValue(start));
+    setWindowEndedAt(datetimeLocalValue(end));
+  }
 
   function downloadSampleJsonl() {
     const sampleLines = [
@@ -276,9 +332,14 @@ export function SupportNewPage() {
       setError('증상 상세 내용을 입력해 주세요.');
       return;
     }
+    if (!windowEndedAt || !windowStartedAt || datetimeLocalToDate(windowEndedAt) <= datetimeLocalToDate(windowStartedAt)) {
+      setSubmitState('validation_error');
+      setError('업로드 구간의 종료 시각은 시작 시각보다 뒤여야 합니다.');
+      return;
+    }
     if (!selectedFile) {
       setSubmitState('validation_error');
-      setError('최근 30분 PC Agent 로그 파일을 선택해 주세요. .jsonl 또는 .ndjson 파일을 사용할 수 있습니다.');
+      setError('선택한 IncidentWindow 구간의 PC Agent 로그 파일을 선택해 주세요. .jsonl 또는 .ndjson 파일을 사용할 수 있습니다.');
       return;
     }
     if (!consentAccepted) {
@@ -302,8 +363,27 @@ export function SupportNewPage() {
   }
 
   async function uploadAndCreateTicket(title: string, detail: string, file: File) {
-    const uploadedLog = await uploadAgentLog(30, consentAccepted, file);
-    const symptom = `${title}\n\n${detail}`;
+    const rangeMinutes = incidentRangeMinutes(windowStartedAt, windowEndedAt);
+    const incidentId = `web-incident-${crypto.randomUUID()}`;
+    const uploadedLog = await uploadAgentLog(rangeMinutes, consentAccepted, file, {
+      incidentId,
+      triggerType: 'USER_REQUEST',
+      symptomType,
+      detectedAt: toIsoFromDatetimeLocal(detectedAt),
+      rangeStartedAt: toIsoFromDatetimeLocal(windowStartedAt),
+      rangeEndedAt: toIsoFromDatetimeLocal(windowEndedAt),
+      selectedByUser: true,
+      consentId: `web-consent-${incidentId}`
+    });
+    const symptom = [
+      title,
+      '',
+      detail,
+      '',
+      `[증상 유형] ${symptomLabel(symptomType)}`,
+      `[IncidentWindow] ${windowStartedAt} ~ ${windowEndedAt}`,
+      `[지원 신청] ${supportRequestLabel(supportRequestKind)}`
+    ].join('\n');
     try {
       const ticket = await createSupportTicket(symptom, uploadedLog.id);
       setSubmitState('ticket_created');
@@ -329,6 +409,36 @@ export function SupportNewPage() {
                 onChange={(event) => setSymptomTitle(event.target.value)}
               />
             </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-600">증상 유형</label>
+                <select
+                  className="h-11 w-full rounded border border-slate-300 bg-white px-3 text-sm"
+                  value={symptomType}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setSymptomType(next);
+                    applyDefaultWindow(next, detectedAt);
+                  }}
+                >
+                  {symptomTypeOptions.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-600">증상 발생 시각</label>
+                <input
+                  type="datetime-local"
+                  className="h-11 w-full rounded border border-slate-300 px-3 text-sm"
+                  value={detectedAt}
+                  onChange={(event) => {
+                    setDetectedAt(event.target.value);
+                    applyDefaultWindow(symptomType, event.target.value);
+                  }}
+                />
+              </div>
+            </div>
             <div>
               <label className="mb-1 block text-xs font-bold text-slate-600">증상 상세</label>
               <textarea
@@ -338,8 +448,59 @@ export function SupportNewPage() {
                 onChange={(event) => setSymptomDetail(event.target.value)}
               />
             </div>
+            <div className="rounded border border-slate-200 bg-slate-50 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-bold text-slate-800">IncidentWindow 확인</p>
+                <button
+                  type="button"
+                  className="rounded border border-slate-300 bg-white px-3 py-2 text-xs font-bold"
+                  onClick={() => applyDefaultWindow()}
+                >
+                  기본 구간 다시 적용
+                </button>
+              </div>
+              <p className="mb-3 text-xs leading-5 text-slate-500">
+                증상 발생 시점을 기준으로 필요한 구간의 로그만 업로드합니다. 필요하면 시작/종료 시각을 직접 조정할 수 있습니다.
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-bold text-slate-600">시작 시각</label>
+                  <input
+                    type="datetime-local"
+                    className="h-11 w-full rounded border border-slate-300 px-3 text-sm"
+                    value={windowStartedAt}
+                    onChange={(event) => setWindowStartedAt(event.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-bold text-slate-600">종료 시각</label>
+                  <input
+                    type="datetime-local"
+                    className="h-11 w-full rounded border border-slate-300 px-3 text-sm"
+                    value={windowEndedAt}
+                    onChange={(event) => setWindowEndedAt(event.target.value)}
+                  />
+                </div>
+              </div>
+              <p className="mt-2 text-xs font-semibold text-slate-600">선택 구간: 약 {incidentRangeMinutes(windowStartedAt, windowEndedAt)}분</p>
+            </div>
             <div>
-              <label className="mb-1 block text-xs font-bold text-slate-600">최근 30분 로그 파일</label>
+              <label className="mb-2 block text-xs font-bold text-slate-600">지원 신청 방식</label>
+              <div className="grid gap-2 md:grid-cols-3">
+                {(['DIAGNOSIS_ONLY', 'REMOTE_REQUESTED', 'VISIT_REQUESTED'] as SupportRequestKind[]).map((kind) => (
+                  <label key={kind} className="flex min-h-12 items-center gap-2 rounded border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700">
+                    <input
+                      type="radio"
+                      checked={supportRequestKind === kind}
+                      onChange={() => setSupportRequestKind(kind)}
+                    />
+                    {supportRequestLabel(kind)}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-bold text-slate-600">선택 구간 로그 파일</label>
               <div className="mb-2 flex flex-wrap gap-2">
                 <a
                   className="rounded border border-brand-blue px-3 py-2 text-xs font-bold text-brand-blue"
@@ -364,7 +525,7 @@ export function SupportNewPage() {
                 </button>
               </div>
               <p className="mb-2 text-xs leading-5 text-slate-500">
-                PC Agent는 더블클릭 시 트레이 아이콘으로 백그라운드 수집을 시작합니다. 샘플 JSONL은 업로드 테스트용 예시입니다.
+                PC Agent는 더블클릭 시 트레이 아이콘으로 백그라운드 수집을 시작합니다. 선택한 구간의 로그만 gzip 또는 JSONL로 전송합니다.
               </p>
               <input
                 className="block w-full rounded border border-slate-300 p-3 text-sm file:mr-4 file:rounded file:border-0 file:bg-brand-blue file:px-4 file:py-2 file:text-sm file:font-bold file:text-white"
@@ -379,7 +540,7 @@ export function SupportNewPage() {
             </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={consentAccepted} onChange={(event) => setConsentAccepted(event.target.checked)} />
-              최근 30분 로그 업로드와 30일 보관 후 삭제 정책에 동의합니다.
+              선택한 구간의 로그 업로드와 30일 보관 후 삭제 정책에 동의합니다.
             </label>
             {error ? <StateMessage type="warn" title="AS 접수 확인 필요" body={error} /> : null}
             {submitState === 'ticket_created' ? <StateMessage type="success" title="AS 티켓 생성 완료" body="생성된 티켓 상세 화면으로 이동합니다." /> : null}
@@ -389,7 +550,7 @@ export function SupportNewPage() {
           </div>
         </Panel>
         <Panel title="접수 상태">
-          {submitState === 'default' ? <StateMessage type="info" title="접수 준비" body="증상과 최근 30분 로그 파일을 함께 제출하면 AS 접수가 시작됩니다." /> : null}
+          {submitState === 'default' ? <StateMessage type="info" title="접수 준비" body="증상 유형, 발생 시각, 선택 구간 로그를 함께 제출하면 AS 접수가 시작됩니다." /> : null}
           {submitState === 'validation_error' ? <StateMessage type="warn" title="입력 확인 필요" body={error || '증상과 로그 파일 입력값을 확인해 주세요.'} /> : null}
           {submitState === 'consent_required' ? <StateMessage type="warn" title="동의 필요" body="PC Agent 로그에는 사용 환경 정보가 포함될 수 있어 업로드 동의가 필요합니다." /> : null}
           {submitState === 'uploading' ? <StateMessage type="info" title="접수 중" body="로그를 업로드한 뒤 AS 티켓을 생성하고 있습니다." /> : null}
@@ -406,7 +567,7 @@ class TicketCreateError extends Error {}
 
 function uploadFailureMessage(cause: unknown) {
   if (cause instanceof ApiError && cause.status === 400) {
-    return '로그 업로드가 거부되었습니다. JSONL/NDJSON 파일 형식 또는 내용 검증에 실패했을 수 있습니다.';
+    return '로그 업로드가 거부되었습니다. 선택 구간, JSONL/NDJSON 파일 형식 또는 내용 검증에 실패했을 수 있습니다.';
   }
   return '로그 업로드에 실패했습니다. 파일을 다시 선택하거나 잠시 후 다시 시도해 주세요.';
 }
@@ -451,6 +612,13 @@ export function SupportTicketPage() {
           <div className="mt-5">
             <DataTable columns={['항목', '값']} rows={ticketDecisionRows(ticket)} />
           </div>
+          {ticket.remoteSupportLink ? (
+            <div className="mt-5 rounded border border-blue-200 bg-blue-50 p-4">
+              <p className="text-sm font-bold text-blue-900">Quick Assist 안내</p>
+              <p className="mt-2 break-all text-sm leading-6 text-blue-800">{ticket.remoteSupportLink}</p>
+              <p className="mt-2 text-xs text-blue-700">원격 연결 전 사용자 추가 확인이 필요합니다. Quick Assist는 사용자가 직접 코드를 입력해 연결합니다.</p>
+            </div>
+          ) : null}
           <p className="mt-5 text-sm leading-6 text-slate-700">
             담당자가 증상과 로그를 확인한 뒤 필요한 경우 추가 정보를 요청할 수 있습니다.
           </p>
@@ -488,8 +656,8 @@ function ticketDecisionRows(ticket: AsTicketDto) {
     { 항목: '지원 결정', 값: ticket.supportDecision ? <StatusBadge status={ticket.supportDecision} /> : '-' },
     { 항목: '위험도', 값: ticket.riskLevel ? <StatusBadge status={ticket.riskLevel} /> : '-' },
     { 항목: '관리자 메모', 값: ticket.adminNote ?? '-' },
-    { 항목: '원격지원', 값: ticket.remoteSupportLink ?? ticket.remoteSupportStatus ?? '-' },
-    { 항목: '방문지원', 값: ticket.visitSupportRequired ? `${ticket.visitSupportStatus ?? 'REQUESTED'} ${ticket.visitPreferredDate ?? ''} ${ticket.visitTimeSlot ?? ''}`.trim() : '-' }
+    { 항목: '원격지원', 값: ticket.remoteSupportLink ? `${statusLabel(ticket.remoteSupportStatus ?? 'LINK_SENT')} · ${ticket.remoteSupportLink}` : ticket.remoteSupportStatus ? statusLabel(ticket.remoteSupportStatus) : '-' },
+    { 항목: '방문지원', 값: ticket.visitSupportRequired ? `${statusLabel(ticket.visitSupportStatus ?? 'REQUESTED')} ${ticket.visitPreferredDate ?? ''} ${visitSlotLabel(ticket.visitTimeSlot)}`.trim() : '-' }
   ];
 }
 
@@ -515,6 +683,60 @@ function formatTime(value?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '-';
   return date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function datetimeLocalValue(date: Date) {
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function datetimeLocalToDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
+function toIsoFromDatetimeLocal(value: string) {
+  return datetimeLocalToDate(value).toISOString();
+}
+
+function incidentWindowPreset(symptomType: string) {
+  if (symptomType === 'VISIT_BOOT_REMOTE_BLOCKED') {
+    return { preMinutes: 30, postMinutes: 0 };
+  }
+  if (visitSymptomTypes.has(symptomType)) {
+    return { preMinutes: 30, postMinutes: 10 };
+  }
+  if (remoteSymptomTypes.has(symptomType)) {
+    return { preMinutes: 15, postMinutes: 5 };
+  }
+  return { preMinutes: 15, postMinutes: 5 };
+}
+
+function incidentRangeMinutes(startValue: string, endValue: string) {
+  const start = datetimeLocalToDate(startValue).getTime();
+  const end = datetimeLocalToDate(endValue).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil((end - start) / 60_000));
+}
+
+function symptomLabel(value: string) {
+  return symptomTypeOptions.find(([option]) => option === value)?.[1] ?? value;
+}
+
+function supportRequestLabel(value: SupportRequestKind) {
+  if (value === 'REMOTE_REQUESTED') return '원격지원 신청';
+  if (value === 'VISIT_REQUESTED') return '방문지원 신청';
+  return '우선 진단만 받기';
+}
+
+function visitSlotLabel(value?: string | null) {
+  if (value === 'MORNING') return '오전';
+  if (value === 'AFTERNOON') return '오후';
+  if (value === 'EVENING') return '저녁';
+  return value ?? '';
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {

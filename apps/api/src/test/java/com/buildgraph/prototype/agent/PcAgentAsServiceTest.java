@@ -641,11 +641,11 @@ class PcAgentAsServiceTest {
     }
 
     @Test
-    void uploadLogsRejectsNonThirtyMinuteRange() {
+    void uploadLogsRejectsInvalidIncidentWindowRange() {
         assertThatThrownBy(() -> service.uploadLogs(
                 AGENT,
                 new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
-                MockData.map("rangeMinutes", 45),
+                MockData.map("rangeMinutes", 0),
                 "upload-key"
         ))
                 .isInstanceOf(ResponseStatusException.class)

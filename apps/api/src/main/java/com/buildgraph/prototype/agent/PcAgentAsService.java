@@ -47,7 +47,7 @@ public class PcAgentAsService {
     private static final int MAX_ACTIVATION_TOKEN_TTL_DAYS = 7;
     private static final long MAX_GZIP_BYTES = 10L * 1024L * 1024L;
     private static final long MAX_UNCOMPRESSED_BYTES = 20L * 1024L * 1024L;
-    private static final int RECENT_LOG_RANGE_MINUTES = 30;
+    private static final int MAX_INCIDENT_WINDOW_MINUTES = 60;
     private static final Set<String> CONSENT_TYPES = Set.of(
             "LOCAL_COLLECTION",
             "SERVER_UPLOAD",
@@ -496,9 +496,9 @@ public class PcAgentAsService {
         int rangeMinutes = requiredInteger(metadata, "rangeMinutes");
         Instant rangeEndedAt = instant(metadata, "rangeEndedAt", Instant.now(clock));
         Instant rangeStartedAt = instant(metadata, "rangeStartedAt", rangeEndedAt.minus(Duration.ofMinutes(rangeMinutes)));
-        validateRecentThirtyMinuteRange(rangeMinutes, rangeStartedAt, rangeEndedAt);
+        validateIncidentWindowRange(rangeMinutes, rangeStartedAt, rangeEndedAt);
         Integer schemaVersion = integer(metadata, "schemaVersion", 1);
-        String symptom = string(metadata, "symptom", "Agent uploaded recent 30 minute diagnostic log.");
+        String symptom = string(metadata, "symptom", "Agent uploaded selected diagnostic window.");
         DiagnosisDraft diagnosis = ruleDiagnosis(symptom, gzip.contentText());
         Map<String, Object> existingUpload = existingUploadResult(
                 principal,
@@ -824,7 +824,7 @@ public class PcAgentAsService {
         }
         return new DiagnosisDraft(
                 List.of(MockData.map(
-                        "label", "Recent diagnostic log uploaded",
+                        "label", "Diagnostic window uploaded",
                         "confidence", "LOW",
                         "reason", "No high-signal rule matched. The uploaded diagnostic window is ready for admin review."
                 )),
@@ -859,16 +859,16 @@ public class PcAgentAsService {
         }
     }
 
-    private static void validateRecentThirtyMinuteRange(int rangeMinutes, Instant rangeStartedAt, Instant rangeEndedAt) {
-        if (rangeMinutes != RECENT_LOG_RANGE_MINUTES) {
-            throw badRequest("Agent log upload rangeMinutes must be 30.");
+    private static void validateIncidentWindowRange(int rangeMinutes, Instant rangeStartedAt, Instant rangeEndedAt) {
+        if (rangeMinutes < 1 || rangeMinutes > MAX_INCIDENT_WINDOW_MINUTES) {
+            throw badRequest("Agent log upload rangeMinutes must be between 1 and 60.");
         }
         if (!rangeEndedAt.isAfter(rangeStartedAt)) {
             throw badRequest("Agent log rangeEndedAt must be after rangeStartedAt.");
         }
         Duration duration = Duration.between(rangeStartedAt, rangeEndedAt);
-        if (duration.isNegative() || duration.compareTo(Duration.ofMinutes(RECENT_LOG_RANGE_MINUTES)) > 0) {
-            throw badRequest("Agent log upload range must be within recent 30 minutes.");
+        if (duration.isNegative() || duration.compareTo(Duration.ofMinutes(rangeMinutes)) > 0) {
+            throw badRequest("Agent log upload range must fit rangeMinutes.");
         }
     }
 

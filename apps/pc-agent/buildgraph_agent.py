@@ -48,6 +48,21 @@ DEFAULT_LOG_DIR = Path("out/logs")
 DEFAULT_LOG_FILE = "agent-metrics.jsonl"
 DEFAULT_RANGE_MINUTES = 30
 DEFAULT_SCHEMA_VERSION = 1
+REMOTE_SYMPTOM_TYPES = {
+    "REMOTE_AGENT",
+    "REMOTE_DRIVER_OS",
+    "REMOTE_APP_LAUNCHER",
+    "REMOTE_STORAGE_MEMORY",
+    "REMOTE_STARTUP_SERVICE",
+    "REMOTE_LOCAL_NETWORK",
+}
+VISIT_SYMPTOM_TYPES = {
+    "VISIT_BOOT_REMOTE_BLOCKED",
+    "VISIT_DISK_FAILURE",
+    "VISIT_WHEA_BSOD",
+    "VISIT_POWER_SHUTDOWN",
+    "VISIT_FAN_THERMAL",
+}
 REGISTER_PATH = "/api/agent/devices/register"
 LOG_UPLOAD_PATH = "/api/agent/log-uploads"
 REGISTERED_STATUS = "REGISTERED"
@@ -71,6 +86,39 @@ class AgentError(RuntimeError):
 
 class UploadError(AgentError):
     pass
+
+
+@dataclass(frozen=True)
+class IncidentWindow:
+    incident_id: str
+    trigger_type: str
+    symptom_type: str
+    detected_at: datetime
+    started_at: datetime
+    ended_at: datetime
+    selected_by_user: bool
+    consent_id: str | None = None
+
+    def range_minutes(self) -> int:
+        seconds = (self.ended_at - self.started_at).total_seconds()
+        return max(1, int((seconds + 59) // 60))
+
+    def metadata(self) -> dict[str, str]:
+        fields = {
+            "incidentId": self.incident_id,
+            "triggerType": self.trigger_type,
+            "symptomType": self.symptom_type,
+            "detectedAt": self.detected_at.isoformat(),
+            "startedAt": self.started_at.isoformat(),
+            "endedAt": self.ended_at.isoformat(),
+            "rangeStartedAt": self.started_at.isoformat(),
+            "rangeEndedAt": self.ended_at.isoformat(),
+            "rangeMinutes": str(self.range_minutes()),
+            "selectedByUser": str(self.selected_by_user).lower(),
+        }
+        if self.consent_id:
+            fields["consentId"] = self.consent_id
+        return fields
 
 
 class AgentRuntime:
@@ -446,8 +494,116 @@ def read_recent_rows(source: Path, minutes: int) -> list[dict]:
     return rows
 
 
+def parse_datetime(value: str, field_name: str) -> datetime:
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exception:
+        raise ConfigError(f"{field_name} must be ISO-8601 datetime.") from exception
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=KST)
+    return parsed
+
+
+def default_incident_window(
+    symptom_type: str,
+    detected_at: datetime | None = None,
+    trigger_type: str = "USER_REQUEST",
+    incident_id: str | None = None,
+    selected_by_user: bool = True,
+    consent_id: str | None = None,
+) -> IncidentWindow:
+    detected = detected_at or datetime.now(KST)
+    if symptom_type in VISIT_SYMPTOM_TYPES and symptom_type != "VISIT_BOOT_REMOTE_BLOCKED":
+        pre = timedelta(minutes=30)
+        post = timedelta(minutes=10)
+    elif symptom_type == "VISIT_BOOT_REMOTE_BLOCKED":
+        pre = timedelta(minutes=30)
+        post = timedelta(minutes=0)
+    else:
+        pre = timedelta(minutes=15)
+        post = timedelta(minutes=5)
+    return IncidentWindow(
+        incident_id=incident_id or f"incident-{uuid.uuid4()}",
+        trigger_type=trigger_type,
+        symptom_type=symptom_type,
+        detected_at=detected,
+        started_at=detected - pre,
+        ended_at=detected + post,
+        selected_by_user=selected_by_user,
+        consent_id=consent_id,
+    )
+
+
+def build_incident_window(
+    symptom_type: str,
+    detected_at: str | None,
+    started_at: str | None,
+    ended_at: str | None,
+    trigger_type: str,
+    incident_id: str | None,
+    selected_by_user: bool,
+    consent_id: str | None,
+) -> IncidentWindow:
+    detected = parse_datetime(detected_at, "detectedAt") if detected_at else datetime.now(KST)
+    window = default_incident_window(
+        symptom_type,
+        detected,
+        trigger_type=trigger_type,
+        incident_id=incident_id,
+        selected_by_user=selected_by_user,
+        consent_id=consent_id,
+    )
+    start = parse_datetime(started_at, "startedAt") if started_at else window.started_at
+    end = parse_datetime(ended_at, "endedAt") if ended_at else window.ended_at
+    if not end > start:
+        raise ConfigError("endedAt must be after startedAt.")
+    return IncidentWindow(
+        incident_id=window.incident_id,
+        trigger_type=trigger_type,
+        symptom_type=symptom_type,
+        detected_at=detected,
+        started_at=start,
+        ended_at=end,
+        selected_by_user=selected_by_user,
+        consent_id=consent_id,
+    )
+
+
+def read_window_rows(source: Path, window: IncidentWindow) -> list[dict]:
+    rows: list[dict] = []
+    with source.open("r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            timestamp = parse_log_timestamp(row)
+            if timestamp is None:
+                continue
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=KST)
+            if window.started_at <= timestamp <= window.ended_at:
+                rows.append(row)
+    return rows
+
+
 def export_recent(source: Path, out: Path, minutes: int) -> None:
     rows = read_recent_rows(source, minutes)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8") as file:
+        for row in rows:
+            file.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def export_window(source: Path, out: Path, window: IncidentWindow) -> None:
+    rows = read_window_rows(source, window)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as file:
         for row in rows:
@@ -473,6 +629,21 @@ def gzip_recent(source: Path, out: Path, minutes: int = DEFAULT_RANGE_MINUTES) -
     rows = read_recent_rows(source, minutes)
     if not rows:
         raise AgentError(f"no log rows found in the last {minutes} minutes: {source}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("wb") as raw_file:
+        with gzip.GzipFile(fileobj=raw_file, mode="wb", mtime=0) as gzip_file:
+            with TextIOWrapper(gzip_file, encoding="utf-8") as text_file:
+                for row in rows:
+                    text_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return out.stat().st_size
+
+
+def gzip_window(source: Path, out: Path, window: IncidentWindow) -> int:
+    if not source.exists():
+        raise AgentError(f"log file does not exist: {source}")
+    rows = read_window_rows(source, window)
+    if not rows:
+        raise AgentError(f"no log rows found in selected incident window: {source}")
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("wb") as raw_file:
         with gzip.GzipFile(fileobj=raw_file, mode="wb", mtime=0) as gzip_file:
@@ -519,16 +690,15 @@ def upload_gzip(
     gzip_path: Path,
     idempotency_key: str,
     symptom: str | None = None,
+    incident_window: IncidentWindow | None = None,
 ) -> dict:
     if not config.agent_token:
         raise UploadError("agentToken is missing. Run register first or wait for Goal 10 token storage.")
     if gzip_path.stat().st_size == 0:
         raise UploadError(f"gzip file is empty: {gzip_path}")
 
-    fields = {
-        "rangeMinutes": str(DEFAULT_RANGE_MINUTES),
-        "schemaVersion": str(config.schema_version),
-    }
+    fields = incident_window.metadata() if incident_window else {"rangeMinutes": str(DEFAULT_RANGE_MINUTES)}
+    fields["schemaVersion"] = str(config.schema_version)
     if symptom:
         fields["symptom"] = symptom
     body, content_type = build_multipart(fields, "file", gzip_path)
@@ -1021,19 +1191,24 @@ def upload_recent(
     symptom: str | None,
     idempotency_key: str | None,
     open_browser: bool,
+    incident_window: IncidentWindow | None = None,
 ) -> None:
     source = log_file(config)
     if not source.exists():
         raise AgentError(f"log file does not exist: {source}")
     key = idempotency_key or f"agent-upload-{uuid.uuid4()}"
-    gzip_path = work_dir / "recent-30m.jsonl.gz"
-    size = gzip_recent(source, gzip_path, DEFAULT_RANGE_MINUTES)
+    window = incident_window or default_incident_window("REMOTE_AGENT")
+    gzip_path = work_dir / f"{window.incident_id}.jsonl.gz"
+    size = gzip_window(source, gzip_path, window)
     print(f"created gzip: {gzip_path} ({size} bytes)")
     print(f"upload path: {LOG_UPLOAD_PATH}")
-    print(f"rangeMinutes: {DEFAULT_RANGE_MINUTES}")
+    print(f"incidentId: {window.incident_id}")
+    print(f"symptomType: {window.symptom_type}")
+    print(f"window: {window.started_at.isoformat()} -> {window.ended_at.isoformat()}")
+    print(f"rangeMinutes: {window.range_minutes()}")
     print(f"Idempotency-Key: {key}")
     print("Replay the same command with this Idempotency-Key to verify duplicate ticket prevention.")
-    result = upload_gzip(config, gzip_path, key, symptom)
+    result = upload_gzip(config, gzip_path, key, symptom, window)
     ticket_id = str(result["ticketId"])
     url = support_url(config.api_base_url, ticket_id, config.web_base_url)
     print(f"ticketId: {ticket_id}")
@@ -1058,8 +1233,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     export = sub.add_parser("export", help="export recent JSONL rows")
     export.add_argument("--source", type=Path, required=True)
-    export.add_argument("--out", type=Path, default=Path("recent-30m.jsonl"))
+    export.add_argument("--out", type=Path, default=Path("incident-window.jsonl"))
     export.add_argument("--minutes", type=int, default=30)
+    export.add_argument("--symptom-type", default=None)
+    export.add_argument("--detected-at", default=None)
+    export.add_argument("--started-at", default=None)
+    export.add_argument("--ended-at", default=None)
+    export.add_argument("--trigger-type", default="USER_REQUEST")
+    export.add_argument("--incident-id", default=None)
+    export.add_argument("--consent-id", default=None)
 
     status = sub.add_parser("status", help="read config and print registration state")
     status.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -1075,10 +1257,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     collect.add_argument("--iterations", type=int, default=1, help="number of demo rows to append; use 0 for forever")
     collect.add_argument("--interval-seconds", type=int, default=5)
 
-    upload = sub.add_parser("upload", help="gzip recent 30 minute JSONL rows and upload to Agent AS API")
+    upload = sub.add_parser("upload", help="gzip selected incident-window JSONL rows and upload to Agent AS API")
     upload.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     upload.add_argument("--work-dir", type=Path, default=Path("out"))
     upload.add_argument("--symptom", default=None)
+    upload.add_argument("--symptom-type", default="REMOTE_AGENT")
+    upload.add_argument("--detected-at", default=None)
+    upload.add_argument("--started-at", default=None)
+    upload.add_argument("--ended-at", default=None)
+    upload.add_argument("--trigger-type", default="USER_REQUEST")
+    upload.add_argument("--incident-id", default=None)
+    upload.add_argument("--consent-id", default=None)
+    upload.add_argument("--system-detected", action="store_true")
     upload.add_argument("--idempotency-key", default=None)
     upload.add_argument("--no-open", action="store_true", help="do not open /support/{ticketId} in the default browser")
 
@@ -1094,7 +1284,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_sample(args.out, args.count, args.interval_seconds)
             print(f"wrote {args.out}")
         elif args.command == "export":
-            export_recent(args.source, args.out, args.minutes)
+            if args.symptom_type:
+                window = build_incident_window(
+                    args.symptom_type,
+                    args.detected_at,
+                    args.started_at,
+                    args.ended_at,
+                    args.trigger_type,
+                    args.incident_id,
+                    True,
+                    args.consent_id,
+                )
+                export_window(args.source, args.out, window)
+                print(f"incidentId: {window.incident_id}")
+                print(f"window: {window.started_at.isoformat()} -> {window.ended_at.isoformat()}")
+            else:
+                export_recent(args.source, args.out, args.minutes)
             print(f"exported {args.out}")
         elif args.command == "status":
             print_status(args.config)
@@ -1108,7 +1313,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             collect_metrics(config, iterations, args.interval_seconds)
         elif args.command == "upload":
             config = load_config(args.config)
-            upload_recent(config, args.work_dir, args.symptom, args.idempotency_key, not args.no_open)
+            window = build_incident_window(
+                args.symptom_type,
+                args.detected_at,
+                args.started_at,
+                args.ended_at,
+                args.trigger_type,
+                args.incident_id,
+                not args.system_detected,
+                args.consent_id,
+            )
+            upload_recent(config, args.work_dir, args.symptom, args.idempotency_key, not args.no_open, window)
         elif args.command == "run-background":
             return run_background(args.config, args.interval_seconds, not args.no_tray)
     except ConfigError as exception:

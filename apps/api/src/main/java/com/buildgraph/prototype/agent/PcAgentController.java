@@ -66,6 +66,14 @@ public class PcAgentController {
             @RequestParam(required = false) String rangeEndedAt,
             @RequestParam(required = false) Integer schemaVersion,
             @RequestParam(required = false) String symptom,
+            @RequestParam(required = false) String incidentId,
+            @RequestParam(required = false) String triggerType,
+            @RequestParam(required = false) String symptomType,
+            @RequestParam(required = false) String detectedAt,
+            @RequestParam(required = false) String startedAt,
+            @RequestParam(required = false) String endedAt,
+            @RequestParam(required = false) Boolean selectedByUser,
+            @RequestParam(required = false) String consentId,
             @RequestHeader("Idempotency-Key") String idempotencyKey
     ) {
         return pcAgentAsService.uploadLogs(
@@ -76,7 +84,15 @@ public class PcAgentController {
                         "rangeStartedAt", rangeStartedAt,
                         "rangeEndedAt", rangeEndedAt,
                         "schemaVersion", schemaVersion,
-                        "symptom", symptom
+                        "symptom", symptom,
+                        "incidentId", incidentId,
+                        "triggerType", triggerType,
+                        "symptomType", symptomType,
+                        "detectedAt", detectedAt,
+                        "startedAt", startedAt,
+                        "endedAt", endedAt,
+                        "selectedByUser", selectedByUser,
+                        "consentId", consentId
                 ),
                 idempotencyKey
         );

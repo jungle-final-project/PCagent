@@ -53,6 +53,46 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertIn("recent", payload)
             self.assertNotIn("old", payload)
 
+    def test_default_incident_window_uses_symptom_policy(self) -> None:
+        detected = datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST)
+
+        remote = agent.default_incident_window("REMOTE_DRIVER_OS", detected_at=detected)
+        visit = agent.default_incident_window("VISIT_DISK_FAILURE", detected_at=detected)
+
+        self.assertEqual(remote.range_minutes(), 20)
+        self.assertEqual(remote.started_at, detected - timedelta(minutes=15))
+        self.assertEqual(remote.ended_at, detected + timedelta(minutes=5))
+        self.assertEqual(visit.range_minutes(), 40)
+        self.assertEqual(visit.started_at, detected - timedelta(minutes=30))
+        self.assertEqual(visit.ended_at, detected + timedelta(minutes=10))
+
+    def test_gzip_window_selects_incident_window_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "agent-metrics.jsonl"
+            out = Path(directory) / "incident-window.jsonl.gz"
+            detected = datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST)
+            window = agent.default_incident_window(
+                "REMOTE_DRIVER_OS",
+                detected_at=detected,
+                incident_id="incident-1",
+                consent_id="consent-1",
+            )
+            rows = [
+                {"timestamp": (detected - timedelta(minutes=20)).isoformat(), "message": "before"},
+                {"timestamp": (detected - timedelta(minutes=10)).isoformat(), "message": "inside"},
+                {"timestamp": (detected + timedelta(minutes=6)).isoformat(), "message": "after"},
+            ]
+            source.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+            size = agent.gzip_window(source, out, window)
+
+            self.assertGreater(size, 0)
+            with gzip.open(out, "rt", encoding="utf-8") as file:
+                payload = file.read()
+            self.assertIn("inside", payload)
+            self.assertNotIn("before", payload)
+            self.assertNotIn("after", payload)
+
     def test_multipart_contains_agent_upload_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             upload_file = Path(directory) / "recent-30m.jsonl.gz"
@@ -109,6 +149,44 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertEqual(request.full_url, "http://localhost:8080/api/agent/log-uploads")
             self.assertEqual(request.headers["Authorization"], "Bearer token")
             self.assertEqual(request.headers["Idempotency-key"], "idem-key")
+
+    def test_upload_gzip_sends_incident_window_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            upload_file = Path(directory) / "incident-window.jsonl.gz"
+            upload_file.write_bytes(b"gzip-bytes")
+            detected = datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST)
+            window = agent.default_incident_window(
+                "REMOTE_DRIVER_OS",
+                detected_at=detected,
+                trigger_type="USER_REQUEST",
+                incident_id="incident-1",
+                consent_id="consent-1",
+            )
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="token",
+                log_dir=Path(directory),
+                agent_version="test-agent",
+                policy_version="test-policy",
+            )
+            response = MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"ticketId":"ticket-public-id"}'
+            response.__exit__.return_value = None
+
+            with patch("buildgraph_agent.urllib.request.urlopen", return_value=response) as urlopen:
+                agent.upload_gzip(config, upload_file, "idem-key", "demo symptom", window)
+
+            body = urlopen.call_args.args[0].data
+            self.assertIn(b'name="incidentId"', body)
+            self.assertIn(b"\r\nincident-1\r\n", body)
+            self.assertIn(b'name="symptomType"', body)
+            self.assertIn(b"\r\nREMOTE_DRIVER_OS\r\n", body)
+            self.assertIn(b'name="rangeMinutes"', body)
+            self.assertIn(b"\r\n20\r\n", body)
+            self.assertIn(b'name="consentId"', body)
 
     def test_ensure_default_config_creates_background_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

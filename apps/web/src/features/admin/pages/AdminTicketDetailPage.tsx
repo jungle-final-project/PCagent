@@ -11,6 +11,7 @@ const reviewStatuses = ['', 'NOT_REQUIRED', 'REQUIRED', 'IN_REVIEW', 'APPROVED',
 const supportDecisions = ['', 'SELF_SOLVABLE', 'REMOTE_POSSIBLE', 'VISIT_REQUIRED', 'NEEDS_MORE_INFO'];
 const riskLevels = ['', 'LOW', 'MEDIUM', 'HIGH'];
 const visitTimeSlots = ['', 'MORNING', 'AFTERNOON', 'EVENING'];
+const remoteTimeSlots = buildRemoteTimeSlots();
 
 type DecisionForm = {
   assignedAdminId: string;
@@ -20,9 +21,15 @@ type DecisionForm = {
   riskLevel: string;
   autoResponseAllowed: 'UNCHANGED' | 'true' | 'false';
   remoteSupportLink: string;
+  quickAssistCode: string;
+  remoteScheduledAt: string;
   visitSupportRequired: boolean;
   visitPreferredDate: string;
   visitTimeSlot: string;
+  playbook: string;
+  riskReconfirmed: boolean;
+  rollbackChecked: boolean;
+  guardrailNote: string;
 };
 
 const emptyDecisionForm: DecisionForm = {
@@ -33,9 +40,15 @@ const emptyDecisionForm: DecisionForm = {
   riskLevel: '',
   autoResponseAllowed: 'UNCHANGED',
   remoteSupportLink: '',
+  quickAssistCode: '',
+  remoteScheduledAt: '',
   visitSupportRequired: false,
   visitPreferredDate: '',
-  visitTimeSlot: ''
+  visitTimeSlot: '',
+  playbook: '',
+  riskReconfirmed: false,
+  rollbackChecked: false,
+  guardrailNote: ''
 };
 
 export function AdminTicketDetailPage() {
@@ -67,9 +80,15 @@ export function AdminTicketDetailPage() {
       riskLevel: ticket.riskLevel ?? '',
       autoResponseAllowed: ticket.autoResponseAllowed == null ? 'UNCHANGED' : String(ticket.autoResponseAllowed) as 'true' | 'false',
       remoteSupportLink: ticket.remoteSupportLink ?? '',
+      quickAssistCode: extractQuickAssistCode(ticket.remoteSupportLink ?? ''),
+      remoteScheduledAt: '',
       visitSupportRequired: Boolean(ticket.visitSupportRequired),
       visitPreferredDate: ticket.visitPreferredDate ?? '',
-      visitTimeSlot: ticket.visitTimeSlot ?? ''
+      visitTimeSlot: ticket.visitTimeSlot ?? '',
+      playbook: '',
+      riskReconfirmed: false,
+      rollbackChecked: false,
+      guardrailNote: ''
     });
   }, [ticket]);
 
@@ -184,6 +203,33 @@ export function AdminTicketDetailPage() {
                 placeholder="https://support.example/session/..."
               />
             </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Quick Assist 코드" htmlFor="quick-assist-code">
+                <input
+                  id="quick-assist-code"
+                  className="w-full rounded border border-slate-300 px-3 py-3 text-sm text-slate-800"
+                  value={decisionForm.quickAssistCode}
+                  onChange={(event) => setDecisionForm({ ...decisionForm, quickAssistCode: event.target.value })}
+                  placeholder="예: 123 456"
+                />
+              </Field>
+              <Field label="원격 예약" htmlFor="remote-scheduled-at">
+                <select
+                  id="remote-scheduled-at"
+                  className="w-full rounded border border-slate-300 bg-white px-3 py-3 text-sm font-bold text-slate-800"
+                  value={decisionForm.remoteScheduledAt}
+                  onChange={(event) => setDecisionForm({ ...decisionForm, remoteScheduledAt: event.target.value })}
+                >
+                  <option value="">선택 안 함</option>
+                  {remoteTimeSlots.map((slot) => (
+                    <option key={slot} value={slot}>{formatRemoteSlot(slot)}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <div className="rounded border border-slate-200 bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-600">
+              Quick Assist는 자동 실행하지 않습니다. 코드를 저장하면 사용자 화면에 수동 입력용 코드로 표시되고, 예약 시간은 관리자 메모에 기록됩니다.
+            </div>
             <Field label="방문 지원" htmlFor="visit-support-required">
               <label className="flex items-center gap-2 text-sm font-bold text-slate-700">
                 <input
@@ -227,6 +273,45 @@ export function AdminTicketDetailPage() {
                 placeholder="사용자에게 표시할 안내 메모"
               />
             </Field>
+            <div className="rounded border border-slate-200 p-4">
+              <p className="mb-3 text-xs font-bold text-slate-600">고급 원격 조치 guardrail</p>
+              <div className="grid gap-3">
+                <Field label="승인된 playbook" htmlFor="guardrail-playbook">
+                  <input
+                    id="guardrail-playbook"
+                    className="w-full rounded border border-slate-300 px-3 py-3 text-sm text-slate-800"
+                    value={decisionForm.playbook}
+                    onChange={(event) => setDecisionForm({ ...decisionForm, playbook: event.target.value })}
+                    placeholder="예: driver-clean-install"
+                  />
+                </Field>
+                <label className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={decisionForm.riskReconfirmed}
+                    onChange={(event) => setDecisionForm({ ...decisionForm, riskReconfirmed: event.target.checked })}
+                  />
+                  사용자 위험 재확인 완료
+                </label>
+                <label className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={decisionForm.rollbackChecked}
+                    onChange={(event) => setDecisionForm({ ...decisionForm, rollbackChecked: event.target.checked })}
+                  />
+                  복원 지점/백업/rollback 확인
+                </label>
+                <Field label="audit note" htmlFor="guardrail-note">
+                  <textarea
+                    id="guardrail-note"
+                    className="min-h-20 w-full rounded border border-slate-300 px-3 py-3 text-sm text-slate-800"
+                    value={decisionForm.guardrailNote}
+                    onChange={(event) => setDecisionForm({ ...decisionForm, guardrailNote: event.target.value })}
+                    placeholder="registry, firmware, driver clean install 등 고급 조치 전 확인 내용"
+                  />
+                </Field>
+              </div>
+            </div>
           </div>
           <button
             className="mt-5 w-full rounded bg-brand-blue px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -272,12 +357,14 @@ function buildUpdateRequest(
   if (selectedStatus !== ticket.status) {
     request.status = selectedStatus;
   }
+  const adminNote = composeAdminNote(form);
+  const remoteSupportLink = composeRemoteSupportLink(form);
   assignIfChanged(request, 'assignedAdminId', ticket.assignedAdminId, form.assignedAdminId);
-  assignIfChanged(request, 'adminNote', ticket.adminNote, form.adminNote);
+  assignIfChanged(request, 'adminNote', ticket.adminNote, adminNote);
   assignIfChanged(request, 'supportDecision', ticket.supportDecision, form.supportDecision);
   assignIfChanged(request, 'reviewStatus', ticket.reviewStatus, form.reviewStatus);
   assignIfChanged(request, 'riskLevel', ticket.riskLevel, form.riskLevel);
-  assignIfChanged(request, 'remoteSupportLink', ticket.remoteSupportLink, form.remoteSupportLink);
+  assignIfChanged(request, 'remoteSupportLink', ticket.remoteSupportLink, remoteSupportLink);
   const currentAuto = ticket.autoResponseAllowed == null ? 'UNCHANGED' : String(ticket.autoResponseAllowed);
   if (form.autoResponseAllowed !== currentAuto && form.autoResponseAllowed !== 'UNCHANGED') {
     request.autoResponseAllowed = form.autoResponseAllowed === 'true';
@@ -294,6 +381,63 @@ function buildUpdateRequest(
 
 function hasFormChanges(ticket: AdminAsTicket, selectedStatus: AsTicketStatus, form: DecisionForm) {
   return Object.keys(buildUpdateRequest(ticket, selectedStatus, form)).length > 0;
+}
+
+function composeRemoteSupportLink(form: DecisionForm) {
+  const link = form.remoteSupportLink.trim();
+  if (link) {
+    return link;
+  }
+  const code = form.quickAssistCode.trim();
+  return code ? quickAssistUrl(code) : '';
+}
+
+function composeAdminNote(form: DecisionForm) {
+  const sections = [form.adminNote.trim()];
+  const remoteSchedule = form.remoteScheduledAt.trim();
+  if (remoteSchedule) {
+    sections.push(`[원격 예약] ${formatRemoteSlot(remoteSchedule)}`);
+  }
+  const guardrail = guardrailSummary(form);
+  if (guardrail) {
+    sections.push(guardrail);
+  }
+  return sections.filter(Boolean).join('\n\n');
+}
+
+function guardrailSummary(form: DecisionForm) {
+  const lines = [];
+  const playbook = form.playbook.trim();
+  const note = form.guardrailNote.trim();
+  if (playbook) {
+    lines.push(`playbook=${playbook}`);
+  }
+  if (form.riskReconfirmed) {
+    lines.push('riskReconfirmed=true');
+  }
+  if (form.rollbackChecked) {
+    lines.push('rollbackChecked=true');
+  }
+  if (note) {
+    lines.push(`note=${note}`);
+  }
+  return lines.length ? `[고급 원격 조치 guardrail]\n${lines.join('\n')}` : '';
+}
+
+function quickAssistUrl(code: string) {
+  const normalized = code.trim();
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
+  }
+  return `https://quickassist.local/code/${encodeURIComponent(normalized)}`;
+}
+
+function extractQuickAssistCode(link: string) {
+  const marker = 'https://quickassist.local/code/';
+  if (!link.startsWith(marker)) {
+    return '';
+  }
+  return decodeURIComponent(link.slice(marker.length));
 }
 
 type StringUpdateKey =
@@ -330,8 +474,9 @@ function ticketDetailRows(ticket: AdminAsTicket) {
     { 항목: '로그 요약', 내용: logSummary(ticket) },
     { 항목: '원인 후보', 내용: formatCandidates(ticket.causeCandidates) },
     { 항목: '업그레이드 후보', 내용: formatCandidates(ticket.upgradeCandidates) },
-    { 항목: '원격지원', 내용: ticket.remoteSupportLink ?? ticket.remoteSupportStatus ?? '-' },
+    { 항목: '원격지원', 내용: remoteSupport(ticket) },
     { 항목: '방문지원', 내용: visitSupport(ticket) },
+    { 항목: 'Quick Assist', 내용: quickAssistDisplay(ticket.remoteSupportLink) },
     { 항목: '담당자', 내용: ticket.assignedAdminId ?? '-' },
     { 항목: '관리자 메모', 내용: ticket.adminNote ?? '-' },
     { 항목: '생성일', 내용: formatDateTime(ticket.createdAt) },
@@ -350,7 +495,19 @@ function visitSupport(ticket: AdminAsTicket) {
   if (!ticket.visitSupportRequired) {
     return '-';
   }
-  return `${ticket.visitSupportStatus ?? 'REQUESTED'} ${ticket.visitPreferredDate ?? ''} ${ticket.visitTimeSlot ?? ''}`.trim();
+  return `${ticket.visitSupportStatus ?? 'REQUESTED'} ${ticket.visitPreferredDate ?? ''} ${visitSlotLabel(ticket.visitTimeSlot)}`.trim();
+}
+
+function remoteSupport(ticket: AdminAsTicket) {
+  if (!ticket.remoteSupportLink && !ticket.remoteSupportStatus) {
+    return '-';
+  }
+  return `${ticket.remoteSupportStatus ?? 'LINK_SENT'} ${ticket.remoteSupportLink ?? ''}`.trim();
+}
+
+function quickAssistDisplay(link?: string | null) {
+  const code = extractQuickAssistCode(link ?? '');
+  return code || '-';
 }
 
 function formatCandidates(candidates: Record<string, unknown>[]) {
@@ -369,4 +526,41 @@ function shortId(id: string) {
 
 function formatDateTime(value?: string | null) {
   return value ? value.replace('T', ' ').slice(0, 19) : '-';
+}
+
+function buildRemoteTimeSlots() {
+  const slots: string[] = [];
+  const start = new Date();
+  start.setMinutes(start.getMinutes() < 30 ? 30 : 60, 0, 0);
+  for (let index = 0; index < 32; index += 1) {
+    const next = new Date(start.getTime() + index * 30 * 60 * 1000);
+    slots.push(toDatetimeLocal(next));
+  }
+  return slots;
+}
+
+function toDatetimeLocal(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+function formatRemoteSlot(value: string) {
+  return value ? value.replace('T', ' ') : '-';
+}
+
+function visitSlotLabel(value?: string | null) {
+  if (value === 'MORNING') {
+    return '오전';
+  }
+  if (value === 'AFTERNOON') {
+    return '오후';
+  }
+  if (value === 'EVENING') {
+    return '저녁';
+  }
+  return value ?? '';
 }
