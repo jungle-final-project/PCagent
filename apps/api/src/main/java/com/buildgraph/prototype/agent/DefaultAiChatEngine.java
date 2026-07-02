@@ -131,6 +131,9 @@ public class DefaultAiChatEngine implements AiChatEngine {
         if (fallbackIntent == AiChatIntent.BUILD_MODIFY && !"NONE".equals(text(draftEdit.get("operation")))) {
             intent = AiChatIntent.BUILD_MODIFY;
         }
+        if (fallbackIntent == AiChatIntent.PART_RECOMMEND && intent == AiChatIntent.BUILD_MODIFY && !hasEditableQuoteContext(context)) {
+            intent = AiChatIntent.PART_RECOMMEND;
+        }
         String selectedCategory = firstText(categoryFrom(text(draftEdit.get("category"))), firstText(categoryFrom(text(plan.get("selectedCategory"))), request == null ? null : request.selectedCategory()));
         Map<String, Object> parsedContext = normalizeParsedContext(objectMap(plan.get("parsedContext")), fallbackContext);
         if (!draftEdit.isEmpty()) {
@@ -331,7 +334,13 @@ public class DefaultAiChatEngine implements AiChatEngine {
                 targetMaxPrice,
                 3
         );
+        PartQueryConstraints constraints = partQueryConstraints(effectiveCategory, message);
         List<AiChatEngineResponse.PartRecommendation> candidates = selection.parts();
+        if (constraints.hasHardConstraint()) {
+            candidates = candidates.stream()
+                    .filter(part -> matchesPartConstraints(part, constraints))
+                    .toList();
+        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("category", effectiveCategory);
         payload.put("quantity", defaultQuantity(effectiveCategory));
@@ -346,12 +355,17 @@ public class DefaultAiChatEngine implements AiChatEngine {
             payload.put("name", firstCandidate.name());
             payload.put("price", firstCandidate.price());
         }
-        Map<String, Object> parsedContext = MockData.map("category", effectiveCategory, "draftEdit", normalizedDraftEdit);
+        Map<String, Object> parsedContext = MockData.map(
+                "category", effectiveCategory,
+                "draftEdit", normalizedDraftEdit,
+                "hardConstraintPolicy", constraints.hasHardConstraint() ? "MUST_INCLUDE" : "NONE",
+                "requiredPartKeywords", constraints.requiredPartKeywords()
+        );
         if (!selection.warnings().isEmpty()) {
             parsedContext.put("warnings", selection.warnings());
         }
         return response(
-                buildModifyMessage(effectiveCategory, priceDirection, currentItem, candidates),
+                buildModifyMessage(effectiveCategory, priceDirection, currentItem, candidates, constraints),
                 AiChatIntent.BUILD_MODIFY,
                 List.of(new AiChatAction(AiChatActionType.REPLACE_DRAFT_PART, "견적 부품 교체", payload)),
                 List.of(),
@@ -432,8 +446,12 @@ public class DefaultAiChatEngine implements AiChatEngine {
         if (parsedContext != null) {
             mergedContext.putAll(parsedContext);
         }
+        preserveServerHardConstraints(mergedContext, response.parsedContext());
+        String finalAssistantMessage = shouldKeepServerAssistantMessage(response, mergedContext)
+                ? response.assistantMessage()
+                : firstText(assistantMessage, response.assistantMessage());
         return new AiChatEngineResponse(
-                firstText(assistantMessage, response.assistantMessage()),
+                finalAssistantMessage,
                 response.intent(),
                 response.actions(),
                 response.recommendations(),
@@ -443,6 +461,33 @@ public class DefaultAiChatEngine implements AiChatEngine {
                 response.toolResults(),
                 response.agentSessionId()
         );
+    }
+
+    private static void preserveServerHardConstraints(Map<String, Object> mergedContext, Map<String, Object> serverContext) {
+        if (serverContext == null) {
+            return;
+        }
+        if ("MUST_INCLUDE".equals(text(serverContext.get("hardConstraintPolicy")))) {
+            mergedContext.put("hardConstraintPolicy", "MUST_INCLUDE");
+            mergedContext.put("requiredPartKeywords", serverContext.getOrDefault("requiredPartKeywords", List.of()));
+        }
+    }
+
+    private static boolean shouldKeepServerAssistantMessage(AiChatEngineResponse response, Map<String, Object> parsedContext) {
+        return (response.intent() == AiChatIntent.PART_RECOMMEND || response.intent() == AiChatIntent.BUILD_MODIFY)
+                && response.partRecommendations().isEmpty()
+                && "MUST_INCLUDE".equals(text(parsedContext.get("hardConstraintPolicy")));
+    }
+
+    private static boolean hasEditableQuoteContext(Map<String, Object> context) {
+        if (context == null || context.isEmpty()) {
+            return false;
+        }
+        if (!objectMaps(context.get("currentBuilds")).isEmpty()) {
+            return true;
+        }
+        Map<String, Object> currentQuoteDraft = objectMap(context.get("currentQuoteDraft"));
+        return !objectMaps(currentQuoteDraft.get("items")).isEmpty();
     }
 
     private List<AiChatEngineResponse.BuildRecommendation> buildRecommendations(String message, Map<String, Object> parsedContext) {
@@ -592,6 +637,14 @@ public class DefaultAiChatEngine implements AiChatEngine {
         if (constraints.cpuModelToken() != null && !partContainsToken(part, constraints.cpuModelToken())) {
             return false;
         }
+        if (constraints.brandToken() != null && !partContainsToken(part, constraints.brandToken())) {
+            return false;
+        }
+        for (String modelToken : constraints.modelTokens()) {
+            if (!partContainsToken(part, modelToken)) {
+                return false;
+            }
+        }
         if (constraints.targetCapacityGb() != null && !constraints.targetCapacityGb().equals(attrNumber(part.attributes(), "capacityGb"))) {
             return false;
         }
@@ -608,9 +661,13 @@ public class DefaultAiChatEngine implements AiChatEngine {
         }
         List<String> values = new ArrayList<>();
         values.add(part.name());
+        values.add(part.manufacturer());
         values.add(text(part.attributes().get("cpuClass")));
         values.add(text(part.attributes().get("hardwareClass")));
         values.add(text(part.attributes().get("shortSpec")));
+        part.attributes().values().stream()
+                .map(DefaultAiChatEngine::text)
+                .forEach(values::add);
         return values.stream()
                 .map(DefaultAiChatEngine::compactToken)
                 .filter(Objects::nonNull)
@@ -745,9 +802,13 @@ public class DefaultAiChatEngine implements AiChatEngine {
             String category,
             String priceDirection,
             Map<String, Object> currentItem,
-            List<AiChatEngineResponse.PartRecommendation> candidates
+            List<AiChatEngineResponse.PartRecommendation> candidates,
+            PartQueryConstraints constraints
     ) {
         if (candidates.isEmpty()) {
+            if (constraints.hasHardConstraint()) {
+                return categoryLabel(category) + " 조건에 맞는 내부 자산 후보를 찾지 못했습니다. 조건을 조금 넓혀 다시 요청해 주세요.";
+            }
             return categoryLabel(category) + " 교체 후보를 찾지 못했습니다. 예산이나 성능 조건을 조금 더 구체적으로 알려주세요.";
         }
         String currentName = text(currentItem.get("name"));
@@ -948,7 +1009,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
         if (containsAny(normalized, "알림", "목표가", "떨어지", "되면 알려", "가격")) {
             return AiChatIntent.PRICE_ALERT_HELP;
         }
-        if (categoryFrom(firstText(selectedCategory, message)) != null && !containsAny(normalized, "컴퓨터", "본체", "pc", "견적", "맞춰")) {
+        if (categoryFrom(firstText(selectedCategory, message)) != null && !containsAny(normalized, "컴퓨터", "본체", "pc", "견적")) {
             return AiChatIntent.PART_RECOMMEND;
         }
         if (hasBuildSignal || (normalized.contains("추천") && hasUsageSignal)) {
@@ -1002,10 +1063,16 @@ public class DefaultAiChatEngine implements AiChatEngine {
         Integer targetCapacityGb = "RAM".equals(normalizedCategory) ? inferCapacityGb(message) : null;
         Integer targetModuleCount = "RAM".equals(normalizedCategory) ? inferRamModuleCount(message) : null;
         Integer targetQuantity = targetModuleCount != null ? targetModuleCount : null;
+        String brandToken = inferBrandToken(message);
+        List<String> modelTokens = inferModelTokens(normalizedCategory, message, cpuModelToken);
         List<String> keywords = new ArrayList<>();
         if (cpuModelToken != null) {
             keywords.add(cpuModelToken);
         }
+        if (brandToken != null) {
+            keywords.add(brandToken);
+        }
+        keywords.addAll(modelTokens);
         if (targetCapacityGb != null) {
             keywords.add(targetCapacityGb + "GB");
         }
@@ -1014,11 +1081,79 @@ public class DefaultAiChatEngine implements AiChatEngine {
         }
         return new PartQueryConstraints(
                 cpuModelToken,
+                brandToken,
+                modelTokens,
                 targetCapacityGb,
                 targetModuleCount,
                 targetQuantity,
                 keywords
         );
+    }
+
+    private static String inferBrandToken(String message) {
+        String normalized = safe(message).toLowerCase(Locale.ROOT);
+        Map<String, String> aliases = new LinkedHashMap<>();
+        aliases.put("리안리", "LIANLI");
+        aliases.put("lian li", "LIANLI");
+        aliases.put("lian-li", "LIANLI");
+        aliases.put("lianli", "LIANLI");
+        aliases.put("msi", "MSI");
+        aliases.put("엠에스아이", "MSI");
+        aliases.put("asus", "ASUS");
+        aliases.put("에이수스", "ASUS");
+        aliases.put("아수스", "ASUS");
+        aliases.put("gigabyte", "GIGABYTE");
+        aliases.put("기가바이트", "GIGABYTE");
+        aliases.put("asrock", "ASROCK");
+        aliases.put("애즈락", "ASROCK");
+        aliases.put("corsair", "CORSAIR");
+        aliases.put("커세어", "CORSAIR");
+        aliases.put("samsung", "SAMSUNG");
+        aliases.put("삼성", "SAMSUNG");
+        aliases.put("g.skill", "GSKILL");
+        aliases.put("gskill", "GSKILL");
+        aliases.put("지스킬", "GSKILL");
+        aliases.put("kingston", "KINGSTON");
+        aliases.put("킹스톤", "KINGSTON");
+        aliases.put("fractal", "FRACTAL");
+        aliases.put("프렉탈", "FRACTAL");
+        aliases.put("nzxt", "NZXT");
+        aliases.put("arctic", "ARCTIC");
+        aliases.put("deepcool", "DEEPCOOL");
+        aliases.put("딥쿨", "DEEPCOOL");
+        aliases.put("noctua", "NOCTUA");
+        aliases.put("녹투아", "NOCTUA");
+        aliases.put("thermalright", "THERMALRIGHT");
+        aliases.put("써멀라이트", "THERMALRIGHT");
+        for (Map.Entry<String, String> alias : aliases.entrySet()) {
+            if (normalized.contains(alias.getKey())) {
+                return alias.getValue();
+            }
+        }
+        return null;
+    }
+
+    private static List<String> inferModelTokens(String category, String message, String cpuModelToken) {
+        if ("CPU".equals(category) || "RAM".equals(category)) {
+            return List.of();
+        }
+        String withoutBudget = safe(message)
+                .replaceAll("(?i)\\d+\\s*만\\s*원?", " ")
+                .replaceAll("(?i)\\d[\\d,]{5,}\\s*원?", " ")
+                .replaceAll("(?i)\\d+\\s*(?:GB|기가|기가바이트)", " ");
+        Matcher matcher = Pattern.compile("(?i)(?:RTX|GEFORCE|지포스)?\\s*(\\d{3,5}(?:\\s*(?:X3D|TI|SUPER|XT|XTX|X|KF|K|F))?|[A-Z]{1,5}[- ]?\\d{2,5}[A-Z0-9-]*)")
+                .matcher(withoutBudget);
+        List<String> tokens = new ArrayList<>();
+        while (matcher.find()) {
+            String token = matcher.group(1).replaceAll("\\s+", "").toUpperCase(Locale.ROOT);
+            if (token.length() < 3 || token.equals(cpuModelToken)) {
+                continue;
+            }
+            if (!tokens.contains(token)) {
+                tokens.add(token);
+            }
+        }
+        return tokens;
     }
 
     private static String inferCpuModelToken(String message) {
@@ -1712,13 +1847,19 @@ public class DefaultAiChatEngine implements AiChatEngine {
 
     private record PartQueryConstraints(
             String cpuModelToken,
+            String brandToken,
+            List<String> modelTokens,
             Integer targetCapacityGb,
             Integer targetModuleCount,
             Integer targetQuantity,
             List<String> requiredPartKeywords
     ) {
         private boolean hasHardConstraint() {
-            return cpuModelToken != null || targetCapacityGb != null || targetModuleCount != null;
+            return cpuModelToken != null
+                    || brandToken != null
+                    || !modelTokens.isEmpty()
+                    || targetCapacityGb != null
+                    || targetModuleCount != null;
         }
 
         private int targetQuantity(int fallback) {

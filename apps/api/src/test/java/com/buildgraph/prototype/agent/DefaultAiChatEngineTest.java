@@ -180,7 +180,7 @@ class DefaultAiChatEngineTest {
         ));
 
         assertThat(response.intent()).isEqualTo(AiChatIntent.PART_RECOMMEND);
-        assertThat(response.partRecommendations()).hasSize(3);
+        assertThat(response.partRecommendations()).hasSize(2);
         assertThat(response.partRecommendations())
                 .allSatisfy(part -> assertThat(part.category()).isEqualTo("GPU"));
         assertThat(response.actions())
@@ -233,6 +233,50 @@ class DefaultAiChatEngineTest {
                 .containsEntry("targetCapacityGb", 32)
                 .containsEntry("targetModuleCount", 1)
                 .containsEntry("targetQuantity", 1);
+        verifyNoJdbcWrites();
+    }
+
+    @Test
+    void partRecommendationHonorsCaseBrandAndModelToken() {
+        AiChatEngineResponse response = engine.respond(new AiChatEngineRequest(
+                "케이스 리안리 216 모델꺼로 맞춰줘",
+                "HOME",
+                null,
+                null,
+                null,
+                Map.of(),
+                1L
+        ));
+
+        assertThat(response.intent()).isEqualTo(AiChatIntent.PART_RECOMMEND);
+        assertThat(response.partRecommendations())
+                .extracting(AiChatEngineResponse.PartRecommendation::partId)
+                .containsExactly("case-lianli-216");
+        assertThat(response.parsedContext().get("requiredPartKeywords"))
+                .asList()
+                .contains("LIANLI", "216");
+        verifyNoJdbcWrites();
+    }
+
+    @Test
+    void partRecommendationHonorsMotherboardBrandToken() {
+        AiChatEngineResponse response = engine.respond(new AiChatEngineRequest(
+                "메인보드 MSI 걸로 맞춰줘",
+                "HOME",
+                null,
+                null,
+                null,
+                Map.of(),
+                1L
+        ));
+
+        assertThat(response.intent()).isEqualTo(AiChatIntent.PART_RECOMMEND);
+        assertThat(response.partRecommendations()).hasSize(2);
+        assertThat(response.partRecommendations())
+                .allSatisfy(part -> assertThat(part.name()).contains("MSI"));
+        assertThat(response.parsedContext().get("requiredPartKeywords"))
+                .asList()
+                .contains("MSI");
         verifyNoJdbcWrites();
     }
 
@@ -387,7 +431,7 @@ class DefaultAiChatEngineTest {
         assertThat(response.intent()).isEqualTo(AiChatIntent.BUILD_MODIFY);
         assertThat(response.partRecommendations())
                 .extracting(AiChatEngineResponse.PartRecommendation::partId)
-                .containsExactly("motherboard-am5-high");
+                .containsExactly("motherboard-asus-x870");
         assertThat(response.partRecommendations())
                 .extracting(part -> String.valueOf(part.attributes().get("socket")))
                 .containsOnly("AM5");
@@ -558,6 +602,105 @@ class DefaultAiChatEngineTest {
     }
 
     @Test
+    void llmRequiredBuildModifyHonorsMotherboardBrandToken() {
+        stubBuildChatPlan("""
+                {
+                  "intent": "BUILD_MODIFY",
+                  "assistantMessage": "MSI 메인보드로 맞춰드릴게요.",
+                  "selectedCategory": "MOTHERBOARD",
+                  "parsedContext": {
+                    "budget": null,
+                    "usageTags": [],
+                    "resolution": null,
+                    "preferredVendors": [],
+                    "priority": null,
+                    "performanceTier": "STANDARD",
+                    "budgetPolicy": "UNSPECIFIED",
+                    "mustHave": [],
+                    "requiredGpuClasses": [],
+                    "requiredPartKeywords": [],
+                    "hardConstraintPolicy": "NONE",
+                    "confidence": {}
+                  },
+                  "draftEdit": {
+                    "operation": "REPLACE",
+                    "category": "MOTHERBOARD",
+                    "priceDirection": "ANY",
+                    "targetMaxPrice": null,
+                    "targetQuantity": null,
+                    "reason": "MSI brand requested"
+                  }
+                }
+                """);
+
+        AiChatEngineResponse response = engine.respondLlmRequired(new AiChatEngineRequest(
+                "메인보드 MSI 걸로 맞춰줘",
+                "HOME",
+                "MOTHERBOARD",
+                null,
+                null,
+                Map.of("currentQuoteDraft", Map.of("items", List.of(Map.of("category", "MOTHERBOARD", "name", "Current Board")))),
+                1L
+        ));
+
+        assertThat(response.intent()).isEqualTo(AiChatIntent.BUILD_MODIFY);
+        assertThat(response.partRecommendations()).hasSize(2);
+        assertThat(response.partRecommendations())
+                .allSatisfy(part -> assertThat(part.name()).contains("MSI"));
+        assertThat(response.parsedContext().get("requiredPartKeywords")).asList().contains("MSI");
+        verifyNoJdbcWrites();
+    }
+
+    @Test
+    void llmRequiredBuildModifyDoesNotFallbackWhenHardModelIsUnavailable() {
+        stubBuildChatPlan("""
+                {
+                  "intent": "BUILD_MODIFY",
+                  "assistantMessage": "케이스를 리안리 999 모델로 맞춰드릴게요.",
+                  "selectedCategory": "CASE",
+                  "parsedContext": {
+                    "budget": null,
+                    "usageTags": [],
+                    "resolution": null,
+                    "preferredVendors": [],
+                    "priority": null,
+                    "performanceTier": "STANDARD",
+                    "budgetPolicy": "UNSPECIFIED",
+                    "mustHave": [],
+                    "requiredGpuClasses": [],
+                    "requiredPartKeywords": [],
+                    "hardConstraintPolicy": "NONE",
+                    "confidence": {}
+                  },
+                  "draftEdit": {
+                    "operation": "REPLACE",
+                    "category": "CASE",
+                    "priceDirection": "ANY",
+                    "targetMaxPrice": null,
+                    "targetQuantity": null,
+                    "reason": "Exact case model requested"
+                  }
+                }
+                """);
+
+        AiChatEngineResponse response = engine.respondLlmRequired(new AiChatEngineRequest(
+                "케이스 리안리 999 모델꺼로 맞춰줘",
+                "HOME",
+                "CASE",
+                null,
+                null,
+                Map.of("currentQuoteDraft", Map.of("items", List.of(Map.of("category", "CASE", "name", "Current Case")))),
+                1L
+        ));
+
+        assertThat(response.intent()).isEqualTo(AiChatIntent.BUILD_MODIFY);
+        assertThat(response.partRecommendations()).isEmpty();
+        assertThat(response.assistantMessage()).contains("조건에 맞는 내부 자산 후보를 찾지 못했습니다");
+        assertThat(response.parsedContext().get("requiredPartKeywords")).asList().contains("LIANLI", "999");
+        verifyNoJdbcWrites();
+    }
+
+    @Test
     void analyzeQuoteRequirementRecordsRagTraceAndReturnsStructuredContext() {
         when(openAiResponsesClient.isConfigured()).thenReturn(false);
         when(agentTraceService.createQueuedSession(any(), eq("SYSTEM"), eq(AgentPurpose.REQUIREMENT_PARSE), isNull()))
@@ -623,6 +766,22 @@ class DefaultAiChatEngineTest {
         verify(jdbcTemplate, never()).update(anyString(), (Object[]) any());
     }
 
+    private void stubBuildChatPlan(String json) {
+        when(openAiResponsesClient.isConfigured()).thenReturn(true);
+        when(agentRagRetrievalService.retrieveEvidenceSet(any(), eq(AgentRunProfiles.requirementParse()), anyString(), anyInt()))
+                .thenReturn(List.of());
+        when(openAiResponsesClient.createStructuredJsonResult(
+                anyString(),
+                anyString(),
+                eq("buildgraph_ai_build_chat_plan"),
+                any(),
+                eq("gpt-5.5"),
+                eq("low"),
+                eq(900)
+        ))
+                .thenReturn(new LlmResponseResult(json, LlmProvider.OPENAI, "gpt-5.5", "low", 1234, 100, 80, 180));
+    }
+
     private static List<Map<String, Object>> partRows(String category) {
         if ("GPU".equals(category)) {
             return List.of(
@@ -650,10 +809,17 @@ class DefaultAiChatEngineTest {
         }
         if ("MOTHERBOARD".equals(category)) {
             return List.of(
-                    partRow(category, "motherboard-intel-high", "Intel Z890 Board", 520_000, Map.of("toolReady", true, "socket", "LGA1851", "chipset", "Z890", "memoryType", "DDR5", "pcieGeneration", "5.0", "hasWifi", true, "formFactor", "ATX")),
-                    partRow(category, "motherboard-am5-high", "AM5 X870E Board", 410_000, Map.of("toolReady", true, "socket", "AM5", "chipset", "X870E", "memoryType", "DDR5", "pcieGeneration", "5.0", "hasWifi", true, "formFactor", "ATX")),
-                    partRow(category, "motherboard-mid", "AM5 B850 Board", 240_000, Map.of("toolReady", true, "socket", "AM5", "chipset", "B850", "memoryType", "DDR5", "pcieGeneration", "4.0", "hasWifi", true, "formFactor", "ATX")),
+                    partRow(category, "motherboard-msi-z890", "MSI MPG Z890I EDGE TI WIFI", 520_000, Map.of("toolReady", true, "socket", "LGA1851", "chipset", "Z890", "memoryType", "DDR5", "pcieGeneration", "5.0", "hasWifi", true, "formFactor", "ATX")),
+                    partRow(category, "motherboard-asus-x870", "ASUS ROG STRIX X870-I GAMING WIFI", 410_000, Map.of("toolReady", true, "socket", "AM5", "chipset", "X870E", "memoryType", "DDR5", "pcieGeneration", "5.0", "hasWifi", true, "formFactor", "ATX")),
+                    partRow(category, "motherboard-msi-b850", "MSI MPG B850I EDGE TI WIFI", 240_000, Map.of("toolReady", true, "socket", "AM5", "chipset", "B850", "memoryType", "DDR5", "pcieGeneration", "4.0", "hasWifi", true, "formFactor", "ATX")),
                     partRow(category, "motherboard-ddr4", "AM5 DDR4 Invalid Board", 190_000, Map.of("toolReady", true, "socket", "AM5", "chipset", "B850", "memoryType", "DDR4", "pcieGeneration", "4.0", "hasWifi", false, "formFactor", "ATX"))
+            );
+        }
+        if ("CASE".equals(category)) {
+            return List.of(
+                    partRow(category, "case-lianli-216", "Lian Li LANCOOL 216", 148_000, Map.of("toolReady", true, "maxGpuLengthMm", 392, "maxCpuCoolerHeightMm", 180, "maxPsuLengthMm", 220, "airflowFocus", true)),
+                    partRow(category, "case-lianli-a3", "Lian Li A3-mATX", 112_000, Map.of("toolReady", true, "maxGpuLengthMm", 415, "maxCpuCoolerHeightMm", 165, "maxPsuLengthMm", 220, "airflowFocus", false)),
+                    partRow(category, "case-fractal", "Fractal Meshify 3 XL", 340_000, Map.of("toolReady", true, "maxGpuLengthMm", 512, "maxCpuCoolerHeightMm", 185, "maxPsuLengthMm", 250, "airflowFocus", true))
             );
         }
         if ("PSU".equals(category)) {
