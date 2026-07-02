@@ -1,7 +1,7 @@
 # BuildGraph AI 남은 작업 최종 정리
 
 #### 작성일: 2026-07-01  
-#### 최신커밋: 6a055824fa1fc88c4d71e9927d8b41f2367593a1
+#### 최신커밋: 50065bac5b26f62aaf68986dbe9039171fe3c547
 
 기준 문서: 
 ```
@@ -10,6 +10,7 @@ docs/DB_SCHEMA.md
 docs/ROUTE_OWNERSHIP.md
 docs/openapi.yaml
 docs/hosoek/owner5-work-analysis-checklist.md
+docs/agent-as/QA_ISSUES_2026-07-02.md
 ```
 
 ## 완료 기준
@@ -55,16 +56,17 @@ MVP 완료 기준:
 | Agent/RAG/Tool 근거 | 부분완료 | Agent session create/run/get의 본인 소유권 404, 관리자 list/detail 정책, Tool/RAG 근거 조회 계약 정리 | 사용자/관리자 권한별 Agent/RAG/Tool 조회 테스트 통과 | 3번, 5번 |
 | Agent 실행 방식 | 미확정 | MVP에서 동기 실행으로 둘지 RabbitMQ queue worker까지 할지 결정 | MVP 방식이 문서와 코드에서 일치하고 상태 전이가 테스트됨 | 3번, 5번 |
 | AS Chat | 부분완료 | AS 티켓 기준 LLM/RAG/Tool 답변 저장, OPENAI_API_KEY 없음, stream fallback, 실패 응답을 테스트로 고정 | `/support/ai-chat`가 티켓 기준으로 동작하고 실패 상태가 사용자에게 안전하게 표시됨 | 3번, 4번 |
-| PC Agent CLI | 부분완료 | sample/export 유지, JSONL schema validation 후보 확정, 실제 업로드 파일과 같은 field 기준 유지 | `sample`과 `export` 명령이 계속 동작하고 샘플 로그로 AS 접수 가능 | 4번 |
-| 로그 업로드 | 부분완료 | 현재 로그인 사용자 기준 저장, 파일 필수, MIME/확장자, 10 MiB, 20000 line, JSONL line validation, PII masking, `FILE_VALIDATION_ERROR` 구현 | 검증 실패 시 row/file 미생성, 성공 시 `delete_after=30일` 저장 | 4번 |
-| AS 티켓 사용자 API | 부분완료 | 티켓 생성/조회에 현재 사용자 소유권, 타인 티켓 404, soft delete 제외 적용 | `POST/GET /api/as-tickets` contract test 통과 | 4번 |
-| 관리자 AS | 미완료 | `/admin/as-tickets`, `/admin/as-tickets/:ticketId` mock/static 제거, 실제 API 연결, 담당자 배정, 상태 저장 구현 | 목록/상세/update가 실제 API로 동작하고 no-op 버튼이 없음 | 4번, 5번 |
-| AS 상태 전이/audit | 미완료 | `PATCH /api/admin/as-tickets/{id}` 허용 전이, 금지 전이 409, `resolvedAt`, `assignedAdminId`, `admin_audit_logs` 기록 구현 | 상태 전이 성공/실패/audit log 테스트 통과 | 4번, 5번 |
+| PC Agent CLI/exe | 데모완료 | `status/register/collect/upload` CLI와 개발용 PyInstaller exe 다운로드까지 연결됨. Windows Service/tray/installer/auto-update는 운영 패키징으로 남음 | Agent config 준비, register, status, collect/upload, 웹 다운로드 링크가 통과 | 4번 |
+| Agent 직접 로그 업로드 | 데모완료 | `/api/agent/log-uploads` gzip multipart, Agent token, `Idempotency-Key`, consent 전제, replay 확인은 완료. 대용량 streaming/storage hardening/PII masking 고도화는 남음 | gzip upload 후 `ticketId` 반환, 같은 idempotency key 재시도 시 같은 응답 replay | 4번 |
+| AS 티켓 사용자 API | 데모완료 | Agent upload가 AS ticket을 생성하고 사용자 `/support/{ticketId}`에서 `analysisStatus`, `reviewStatus`, `supportDecision`을 조회함. 완성형 사용자 workflow는 남음 | 사용자 ticket 조회와 supportDecision 반영 화면 확인 | 4번 |
+| 관리자 AS | 부분완료 | 관리자 AS 목록/상세와 `PATCH /api/admin/as-tickets/{id}` decision 저장은 검증됨. 운영용 원격/방문지원 상세 UI와 예약 UX는 남음 | ADMIN JWT로 `supportDecision` 저장 후 사용자 화면 반영 | 4번, 5번 |
+| AS 상태 전이/audit | 부분완료 | `supportDecision`, `reviewStatus`, `riskLevel`, `autoResponseAllowed` 저장/노출은 완료. 전체 상태 전이 정책, resolved/closed audit 완성은 남음 | decision 저장/조회 테스트와 runtime QA 통과 | 4번, 5번 |
 | AdminShell | 부분완료 | 8개 메뉴와 route는 있으나 owner별 list/detail 정책 공유 필요 | nav label/order/route가 2/3/4번 담당 화면과 충돌 없음 | 5번, 2/3/4번 |
 | AdminDashboard | 부분완료 | dashboard 지표가 실제 도메인 데이터 변화와 맞는지 최종 smoke | `agentRunning`, `openTickets`, `priceJobsRunning`, `degraded`가 실제 DB 기준 표시됨 | 5번 |
 | Redis/RabbitMQ/Mailpit | smoke 완료 | 실제 기능이 붙으면 connection smoke에서 기능 smoke로 승격 | OAuth code, queue job, email 중 실제 사용 기능 기준 smoke 통과 | 5번, 관련 owner |
 | CI/OpenAPI | 부분완료 | 새 API가 생길 때 `tools/validate_openapi.py` 필수 path/schema에 즉시 반영 | OpenAPI 검증이 누락 API를 잡고 CI에서 실패시킴 | 5번 |
-| 최종 E2E | 미완료 | 실제 서버+DB로 MVP 전체 흐름을 한 번에 검증 | 로그인부터 관리자 확인까지 1회 이상 성공하고 결과 문서화 | 전체, 5번 검증 |
+| Agent AS Runtime QA | 완료 | Agent 등록부터 관리자 decision 반영까지 실제 서버/웹/Agent CLI로 검증 완료. 전체 구매 상담부터 AS까지의 MVP 통합 E2E는 별도 남음 | Agent config, status, register, consent, heartbeat, gzip upload, ticket 조회, decision 반영 통과 | 전체, 5번 검증 |
+| 최종 MVP E2E | 미완료 | 로그인부터 구매 상담, 견적, 가격 알림, PC Agent AS까지 한 번에 검증 | 로그인부터 관리자 확인까지 1회 이상 성공하고 결과 문서화 | 전체, 5번 검증 |
 
 ## MVP 이후 기능 구현을 끝내기 위한 작업
 
@@ -106,4 +108,3 @@ MVP 완료 기준:
 | 3 | 상태 전이/409/ErrorResponse 정리 | 실패 상황이 계약대로 동작해야 PR 이후 회귀를 막을 수 있음 |
 | 4 | 가격 알림/AS/관리자 실제 API 연결 | MVP E2E의 후반부를 닫는 작업 |
 | 5 | 최종 E2E와 검증 명령 고정 | 프로젝트 완료 판정을 객관적으로 만들기 위한 마지막 단계 |
-

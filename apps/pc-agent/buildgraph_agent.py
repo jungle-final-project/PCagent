@@ -120,7 +120,7 @@ def read_config_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"Config file not found: {path}")
     try:
-        with path.open("r", encoding="utf-8") as file:
+        with path.open("r", encoding="utf-8-sig") as file:
             data = json.load(file)
     except json.JSONDecodeError as exception:
         raise ConfigError(f"Config file is not valid JSON: {path}: {exception.msg}") from exception

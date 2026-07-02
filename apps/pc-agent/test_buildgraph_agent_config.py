@@ -59,6 +59,16 @@ class AgentConfigTest(unittest.TestCase):
         self.assertEqual(config.policy_version, "policy-v1")
         self.assertEqual(config.agent_token, "agent-token")
 
+    def test_loads_utf8_bom_config(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "agent-config.json"
+        path.write_text(json.dumps(self.valid_config()), encoding="utf-8-sig")
+
+        config = load_config(path)
+
+        self.assertEqual(config.activation_token, "demo-agent-activation-token")
+
     def test_missing_required_config_field_fails_with_clear_message(self) -> None:
         data = self.valid_config()
         del data["activationToken"]
