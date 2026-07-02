@@ -104,6 +104,27 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertEqual(request.headers["Authorization"], "Bearer token")
             self.assertEqual(request.headers["Idempotency-key"], "idem-key")
 
+    def test_ensure_default_config_creates_background_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-config.json"
+
+            created = agent.ensure_default_config(path)
+            config = agent.load_config(created)
+
+            self.assertEqual(created, path)
+            self.assertEqual(config.api_base_url, "http://localhost:8080")
+            self.assertEqual(config.activation_token, "demo-agent-activation-token")
+            self.assertEqual(config.log_dir, Path(directory) / "logs")
+            self.assertIsNone(config.agent_token)
+
+    def test_run_background_is_available_as_cli_command(self) -> None:
+        with patch("buildgraph_agent.run_background", return_value=0) as run_background:
+            exit_code = agent.main(["run-background", "--interval-seconds", "1", "--no-tray"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run_background.call_args.args[1], 1)
+        self.assertFalse(run_background.call_args.args[2])
+
 
 if __name__ == "__main__":
     unittest.main()

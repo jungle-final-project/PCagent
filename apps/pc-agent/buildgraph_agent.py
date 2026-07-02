@@ -5,7 +5,10 @@ import gzip
 import hashlib
 import json
 import mimetypes
+import os
+import platform
 import random
+import socket
 import sys
 import time
 import urllib.error
@@ -22,6 +25,14 @@ try:
 except Exception:  # pragma: no cover - optional for prototype environments
     psutil = None
 
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except Exception:  # pragma: no cover - optional outside packaged Windows agent
+    pystray = None
+    Image = None
+    ImageDraw = None
+
 KST = timezone(timedelta(hours=9))
 DEFAULT_CONFIG_PATH = Path("agent-config.json")
 DEFAULT_LOG_DIR = Path("out/logs")
@@ -32,6 +43,9 @@ REGISTER_PATH = "/api/agent/devices/register"
 LOG_UPLOAD_PATH = "/api/agent/log-uploads"
 REGISTERED_STATUS = "REGISTERED"
 UNREGISTERED_STATUS = "UNREGISTERED"
+APP_NAME = "BuildGraphAgent"
+DEFAULT_AGENT_VERSION = "0.1.0"
+DEFAULT_POLICY_VERSION = "policy-v1"
 
 
 class ConfigError(ValueError):
@@ -48,6 +62,15 @@ class AgentError(RuntimeError):
 
 class UploadError(AgentError):
     pass
+
+
+class AgentRuntime:
+    def __init__(self) -> None:
+        self.running = True
+        self.index = 0
+
+    def stop(self) -> None:
+        self.running = False
 
 
 @dataclass(frozen=True)
@@ -131,6 +154,43 @@ def read_config_json(path: Path) -> dict[str, Any]:
 def load_config(path: Path) -> AgentConfig:
     data = read_config_json(path)
     return AgentConfig.from_dict(data)
+
+
+def app_data_dir() -> Path:
+    root = os.environ.get("LOCALAPPDATA")
+    if root:
+        return Path(root) / APP_NAME
+    return Path.home() / f".{APP_NAME.lower()}"
+
+
+def default_background_config_path() -> Path:
+    return app_data_dir() / "agent-config.json"
+
+
+def device_fingerprint_hash() -> str:
+    raw = f"{socket.gethostname()}:{os.environ.get('USERNAME', '')}:{platform.platform()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def ensure_default_config(path: Path) -> Path:
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "apiBaseUrl": "http://localhost:8080",
+        "activationToken": "demo-agent-activation-token",
+        "deviceFingerprintHash": device_fingerprint_hash(),
+        "osVersion": platform.platform(),
+        "agentVersion": DEFAULT_AGENT_VERSION,
+        "policyVersion": DEFAULT_POLICY_VERSION,
+        "agentToken": None,
+        "logDir": str(path.parent / "logs"),
+        "schemaVersion": DEFAULT_SCHEMA_VERSION,
+    }
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    return path
 
 
 def log_file(config: AgentConfig) -> Path:
@@ -408,6 +468,138 @@ def collect_metrics(config: AgentConfig, iterations: int | None, interval_second
             time.sleep(interval_seconds)
 
 
+def hide_console_window() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        window = ctypes.windll.kernel32.GetConsoleWindow()
+        if window:
+            ctypes.windll.user32.ShowWindow(window, 0)
+    except Exception:
+        return
+
+
+def startup_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        raise AgentError("APPDATA is not available; cannot register startup command.")
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
+def executable_command() -> str:
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" run-background'
+    script = Path(__file__).resolve()
+    return f'"{sys.executable}" "{script}" run-background'
+
+
+def register_startup() -> Path:
+    directory = startup_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{APP_NAME}.cmd"
+    path.write_text(f"@echo off\nstart \"\" {executable_command()}\n", encoding="utf-8")
+    return path
+
+
+def pid_file() -> Path:
+    return app_data_dir() / "agent.pid"
+
+
+def write_pid() -> None:
+    path = pid_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def remove_pid() -> None:
+    try:
+        pid_file().unlink(missing_ok=True)
+    except Exception:
+        return
+
+
+def create_tray_image() -> object | None:
+    if Image is None or ImageDraw is None:
+        return None
+    image = Image.new("RGB", (64, 64), "#1d4ed8")
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((10, 10, 54, 54), fill="#ffffff")
+    draw.rectangle((27, 18, 37, 46), fill="#1d4ed8")
+    draw.rectangle((18, 27, 46, 37), fill="#1d4ed8")
+    return image
+
+
+def open_log_folder(config_path: Path) -> None:
+    config = load_config(config_path)
+    config.log_dir.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(config.log_dir.resolve()))
+
+
+def open_support_page(config_path: Path) -> None:
+    config = load_config(config_path)
+    webbrowser.open(f"{config.api_base_url.rstrip('/').replace(':8080', ':5173')}/support/new")
+
+
+def collect_background_loop(config_path: Path, runtime: AgentRuntime, interval_seconds: int) -> None:
+    while runtime.running:
+        try:
+            config = load_config(config_path)
+            append_metric(config, runtime.index)
+            runtime.index += 1
+        except Exception as exception:
+            error_log = app_data_dir() / "agent-error.log"
+            error_log.parent.mkdir(parents=True, exist_ok=True)
+            with error_log.open("a", encoding="utf-8") as file:
+                file.write(f"{datetime.now(KST).isoformat()} {exception}\n")
+        for _ in range(interval_seconds):
+            if not runtime.running:
+                break
+            time.sleep(1)
+
+
+def run_background(config_path: Path | None = None, interval_seconds: int = 5, with_tray: bool = True) -> int:
+    path = ensure_default_config(config_path or default_background_config_path())
+    register_startup()
+    hide_console_window()
+    write_pid()
+    runtime = AgentRuntime()
+
+    import threading
+
+    worker = threading.Thread(target=collect_background_loop, args=(path, runtime, interval_seconds), daemon=True)
+    worker.start()
+
+    if with_tray and pystray is not None:
+        def stop(icon: object, item: object = None) -> None:
+            runtime.stop()
+            remove_pid()
+            icon.stop()
+
+        icon = pystray.Icon(
+            APP_NAME,
+            create_tray_image(),
+            "BuildGraph PC Agent",
+            menu=pystray.Menu(
+                pystray.MenuItem("Open log folder", lambda icon, item: open_log_folder(path)),
+                pystray.MenuItem("Open AS page", lambda icon, item: open_support_page(path)),
+                pystray.MenuItem("Stop", stop),
+            ),
+        )
+        icon.run()
+    else:
+        try:
+            while runtime.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            runtime.stop()
+
+    runtime.stop()
+    remove_pid()
+    return 0
+
+
 def upload_recent(
     config: AgentConfig,
     work_dir: Path,
@@ -437,6 +629,10 @@ def upload_recent(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        return run_background()
+
     parser = argparse.ArgumentParser(description="BuildGraph AI PC Agent prototype CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -471,6 +667,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     upload.add_argument("--idempotency-key", default=None)
     upload.add_argument("--no-open", action="store_true", help="do not open /support/{ticketId} in the default browser")
 
+    background = sub.add_parser("run-background", help="run as a startup-friendly background tray agent")
+    background.add_argument("--config", type=Path, default=None)
+    background.add_argument("--interval-seconds", type=int, default=5)
+    background.add_argument("--no-tray", action="store_true")
+
     args = parser.parse_args(argv)
 
     try:
@@ -493,6 +694,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "upload":
             config = load_config(args.config)
             upload_recent(config, args.work_dir, args.symptom, args.idempotency_key, not args.no_open)
+        elif args.command == "run-background":
+            return run_background(args.config, args.interval_seconds, not args.no_tray)
     except ConfigError as exception:
         print(f"config error: {exception}", file=sys.stderr)
         return 2

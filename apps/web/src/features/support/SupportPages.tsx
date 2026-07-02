@@ -364,7 +364,7 @@ export function SupportNewPage() {
                 </button>
               </div>
               <p className="mb-2 text-xs leading-5 text-slate-500">
-                PC Agent exe는 로컬 빌드 산출물이며, 샘플 JSONL은 업로드 테스트용 예시입니다.
+                PC Agent는 더블클릭 시 트레이 아이콘으로 백그라운드 수집을 시작합니다. 샘플 JSONL은 업로드 테스트용 예시입니다.
               </p>
               <input
                 className="block w-full rounded border border-slate-300 p-3 text-sm file:mr-4 file:rounded file:border-0 file:bg-brand-blue file:px-4 file:py-2 file:text-sm file:font-bold file:text-white"

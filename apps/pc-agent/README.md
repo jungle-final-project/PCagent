@@ -56,6 +56,8 @@ build-agent-exe.cmd
 .\dist\agent.exe doctor --config agent-config.example.json
 ```
 
+`agent.exe`를 인자 없이 더블클릭하면 `%LOCALAPPDATA%\BuildGraphAgent` 아래에 기본 config/log 폴더를 만들고, Windows 시작프로그램에 등록한 뒤 트레이 아이콘으로 백그라운드 수집을 시작합니다. 트레이 메뉴에서는 로그 폴더 열기, AS 페이지 열기, 종료를 사용할 수 있습니다. 이것은 Windows Service가 아니라 MVP용 시작프로그램 기반 백그라운드 실행입니다.
+
 로컬 웹 데모에서 내려받는 파일은 `apps/web/public/downloads/pc-agent/agent.exe`에 둡니다. 새 exe를 만들면 해당 위치에 복사한 뒤 웹 이미지를 다시 빌드합니다.
 
 ## 출력 예시
@@ -87,6 +89,7 @@ agentToken: present
 - 최근 30분 JSONL gzip 생성
 - Agent token 기반 `POST /api/agent/log-uploads` 업로드
 - 업로드 응답 `ticketId`로 `/support/{ticketId}` URL 생성
+- 더블클릭 시 시작프로그램 등록과 트레이 기반 백그라운드 demo metric 수집
 
 ## 구현 시 지켜야 할 점
 
@@ -96,6 +99,7 @@ agentToken: present
 - 원인 후보 분석 결과는 사용자 화면이 아니라 관리자 티켓 상세에서 다룹니다.
 - register API 호출과 token 저장은 `register` 명령에서만 수행합니다.
 - `/api/agent-logs/upload`가 아니라 `/api/agent/log-uploads`만 사용합니다.
+- 현재 백그라운드 실행은 Windows Service가 아니라 사용자 시작프로그램 등록 방식입니다.
 
 ## 이후 확장 후보
 
