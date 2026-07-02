@@ -65,15 +65,18 @@ public class PcAgentController {
             @RequestParam(required = false) String rangeStartedAt,
             @RequestParam(required = false) String rangeEndedAt,
             @RequestParam(required = false) Integer schemaVersion,
-            @RequestParam(required = false) String symptom,
             @RequestParam(required = false) String incidentId,
             @RequestParam(required = false) String triggerType,
             @RequestParam(required = false) String symptomType,
             @RequestParam(required = false) String detectedAt,
+            @RequestParam(required = false) String incidentStartedAt,
+            @RequestParam(required = false) String incidentEndedAt,
+            @RequestParam(required = false) String lastNormalBootAt,
             @RequestParam(required = false) String startedAt,
             @RequestParam(required = false) String endedAt,
             @RequestParam(required = false) Boolean selectedByUser,
             @RequestParam(required = false) String consentId,
+            @RequestParam(required = false) String symptom,
             @RequestHeader("Idempotency-Key") String idempotencyKey
     ) {
         return pcAgentAsService.uploadLogs(
@@ -84,15 +87,18 @@ public class PcAgentController {
                         "rangeStartedAt", rangeStartedAt,
                         "rangeEndedAt", rangeEndedAt,
                         "schemaVersion", schemaVersion,
-                        "symptom", symptom,
                         "incidentId", incidentId,
                         "triggerType", triggerType,
                         "symptomType", symptomType,
                         "detectedAt", detectedAt,
                         "startedAt", startedAt,
                         "endedAt", endedAt,
+                        "incidentStartedAt", incidentStartedAt,
+                        "incidentEndedAt", incidentEndedAt,
+                        "lastNormalBootAt", lastNormalBootAt,
                         "selectedByUser", selectedByUser,
-                        "consentId", consentId
+                        "consentId", consentId,
+                        "symptom", symptom
                 ),
                 idempotencyKey
         );

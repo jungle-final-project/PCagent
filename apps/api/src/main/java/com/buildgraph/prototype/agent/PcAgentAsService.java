@@ -22,7 +22,6 @@ import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -47,7 +46,6 @@ public class PcAgentAsService {
     private static final int MAX_ACTIVATION_TOKEN_TTL_DAYS = 7;
     private static final long MAX_GZIP_BYTES = 10L * 1024L * 1024L;
     private static final long MAX_UNCOMPRESSED_BYTES = 20L * 1024L * 1024L;
-    private static final int MAX_INCIDENT_WINDOW_MINUTES = 60;
     private static final Set<String> CONSENT_TYPES = Set.of(
             "LOCAL_COLLECTION",
             "SERVER_UPLOAD",
@@ -493,20 +491,20 @@ public class PcAgentAsService {
             throw fileValidation("Agent log upload must be gzip.");
         }
         GzipValidation gzip = validateGzip(file);
-        int rangeMinutes = requiredInteger(metadata, "rangeMinutes");
-        Instant rangeEndedAt = instant(metadata, "rangeEndedAt", Instant.now(clock));
-        Instant rangeStartedAt = instant(metadata, "rangeStartedAt", rangeEndedAt.minus(Duration.ofMinutes(rangeMinutes)));
-        validateIncidentWindowRange(rangeMinutes, rangeStartedAt, rangeEndedAt);
-        Integer schemaVersion = integer(metadata, "schemaVersion", 1);
-        String symptom = string(metadata, "symptom", "Agent uploaded selected diagnostic window.");
-        DiagnosisDraft diagnosis = ruleDiagnosis(symptom, gzip.contentText());
+        String symptom = string(metadata, "symptom", "Agent uploaded diagnostic log.");
+        PcAgentLogAnalyzer.IncidentWindow incidentWindow = PcAgentLogAnalyzer.resolveIncidentWindow(metadata, clock);
+        PcAgentLogAnalyzer.RawLogBundle rawLogs = PcAgentLogAnalyzer.validateJsonl(gzip.contentText(), incidentWindow);
+        PcAgentLogAnalyzer.AnalysisResult analysis = PcAgentLogAnalyzer.analyze(principal, symptom, incidentWindow, rawLogs);
+        int rangeMinutes = incidentWindow.durationMinutes();
+        int schemaVersion = analysis.schemaVersion();
         Map<String, Object> existingUpload = existingUploadResult(
                 principal,
                 idempotencyKey,
                 gzip.sha256(),
                 rangeMinutes,
                 schemaVersion,
-                symptom
+                symptom,
+                incidentWindow
         );
         if (existingUpload != null) {
             return existingUpload;
@@ -537,12 +535,13 @@ public class PcAgentAsService {
                 """,
                 principal.deviceInternalId(),
                 idempotencyKey,
-                Timestamp.from(rangeStartedAt),
-                Timestamp.from(rangeEndedAt)
+                Timestamp.from(incidentWindow.startedAt()),
+                Timestamp.from(incidentWindow.endedAt())
         );
 
         Long uploadJobInternalId = longValue(uploadJob, "upload_job_internal_id");
         String storagePath = "agent-logs/" + principal.deviceId() + "/" + fileName;
+        String incidentWindowJson = toJson(incidentWindow.toMap());
         Map<String, Object> logUpload = jdbcTemplate.queryForMap("""
                 INSERT INTO agent_log_uploads (
                   user_id,
@@ -554,10 +553,13 @@ public class PcAgentAsService {
                   file_size,
                   storage_path,
                   summary,
+                  incident_window,
+                  range_started_at,
+                  range_ended_at,
                   consent_accepted_at,
                   delete_after
                 )
-                VALUES (?, ?, ?, ?, 'UPLOADED', ?, ?, ?, 'Rule demo upload accepted.', now(), now() + interval '30 days')
+                VALUES (?, ?, ?, ?, 'UPLOADED', ?, ?, ?, ?, ?::jsonb, ?, ?, now(), now() + interval '30 days')
                 RETURNING id AS log_upload_internal_id,
                           public_id::text AS log_upload_id,
                           status,
@@ -572,7 +574,11 @@ public class PcAgentAsService {
                 rangeMinutes,
                 fileName,
                 gzip.compressedBytes(),
-                storagePath
+                storagePath,
+                analysis.summaryText(),
+                incidentWindowJson,
+                Timestamp.from(incidentWindow.startedAt()),
+                Timestamp.from(incidentWindow.endedAt())
         );
 
         Long logUploadInternalId = longValue(logUpload, "log_upload_internal_id");
@@ -598,8 +604,22 @@ public class PcAgentAsService {
                 gzip.compressedBytes(),
                 timestampParameter(logUpload.get("delete_after"))
         );
+        String ticketPublicId = UUID.randomUUID().toString();
+        Map<String, Object> logSummary = PcAgentLogAnalyzer.withTicketId(analysis.logSummary(), ticketPublicId);
+        Map<String, Object> supportRouting = analysis.supportRouting();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> userSymptom = (Map<String, Object>) logSummary.get("userSymptom");
+        Map<String, Object> aiDiagnosisRequest = PcAgentLogAnalyzer.aiDiagnosisRequest(
+                ticketPublicId,
+                userSymptom,
+                logSummary,
+                supportRouting
+        );
+        String recommendedDecision = string(supportRouting, "recommendedDecision", "NEEDS_MORE_INFO");
+        String riskLevel = riskLevelForRouting(recommendedDecision, supportRouting);
         Map<String, Object> ticket = jdbcTemplate.queryForMap("""
                 INSERT INTO as_tickets (
+                  public_id,
                   user_id,
                   log_upload_id,
                   symptom,
@@ -612,21 +632,30 @@ public class PcAgentAsService {
                   cause_candidates,
                   upgrade_candidates,
                   admin_note,
+                  incident_window,
+                  log_summary,
+                  support_routing,
+                  ai_diagnosis_request,
                   updated_at
                 )
                 VALUES (
+                  ?::uuid,
                   ?,
                   ?,
                   ?,
                   'OPEN',
                   'RULE_READY',
                   'REQUIRED',
-                  'NEEDS_MORE_INFO',
+                  ?,
                   ?,
                   false,
                   ?::jsonb,
                   ?::jsonb,
                   ?,
+                  ?::jsonb,
+                  ?::jsonb,
+                  ?::jsonb,
+                  ?::jsonb,
                   now()
                 )
                 RETURNING public_id::text AS ticket_id,
@@ -636,13 +665,19 @@ public class PcAgentAsService {
                           support_decision,
                           risk_level
                 """,
+                ticketPublicId,
                 principal.userInternalId(),
                 logUploadInternalId,
                 symptom,
-                diagnosis.riskLevel(),
-                toJson(diagnosis.causeCandidates()),
-                toJson(diagnosis.upgradeCandidates()),
-                diagnosis.adminNote()
+                recommendedDecision,
+                riskLevel,
+                toJson(causeCandidatesFrom(supportRouting)),
+                toJson(List.of()),
+                analysis.summaryText(),
+                incidentWindowJson,
+                toJson(logSummary),
+                toJson(supportRouting),
+                toJson(aiDiagnosisRequest)
         );
 
         return MockData.map(
@@ -655,6 +690,9 @@ public class PcAgentAsService {
                 "supportDecision", DbValueMapper.string(ticket, "support_decision"),
                 "riskLevel", DbValueMapper.string(ticket, "risk_level"),
                 "rangeMinutes", rangeMinutes,
+                "incidentWindow", incidentWindow.toMap(),
+                "supportRouting", supportRouting,
+                "rawSamplesCount", ((List<?>) logSummary.get("rawSamples")).size(),
                 "deleteAfter", deleteAfter
         );
     }
@@ -665,7 +703,8 @@ public class PcAgentAsService {
             String gzipSha256,
             int rangeMinutes,
             int schemaVersion,
-            String symptom
+            String symptom,
+            PcAgentLogAnalyzer.IncidentWindow incidentWindow
     ) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT uj.public_id::text AS upload_job_id,
@@ -680,7 +719,13 @@ public class PcAgentAsService {
                        lu.delete_after,
                        alb.schema_version,
                        alb.sha256,
-                       t.symptom
+                       t.symptom,
+                       uj.range_started_at,
+                       uj.range_ended_at,
+                       t.incident_window,
+                       t.log_summary,
+                       t.support_routing,
+                       t.ai_diagnosis_request
                 FROM agent_upload_jobs uj
                 JOIN agent_log_uploads lu ON lu.upload_job_id = uj.id
                 JOIN agent_log_bundles alb ON alb.upload_job_id = uj.id
@@ -698,7 +743,9 @@ public class PcAgentAsService {
         boolean sameRequest = rangeMinutes == integer(row, "range_minutes", -1)
                 && schemaVersion == integer(row, "schema_version", -1)
                 && gzipSha256.equals(DbValueMapper.string(row, "sha256"))
-                && symptom.equals(DbValueMapper.string(row, "symptom"));
+                && symptom.equals(DbValueMapper.string(row, "symptom"))
+                && incidentWindow.startedAt().equals(instantValue(row, "range_started_at"))
+                && incidentWindow.endedAt().equals(instantValue(row, "range_ended_at"));
         if (!sameRequest) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency-Key was already used with a different upload request.");
         }
@@ -713,8 +760,52 @@ public class PcAgentAsService {
                 "supportDecision", DbValueMapper.string(row, "support_decision"),
                 "riskLevel", DbValueMapper.string(row, "risk_level"),
                 "rangeMinutes", rangeMinutes,
+                "incidentWindow", DbValueMapper.json(row, "incident_window", incidentWindow.toMap()),
+                "supportRouting", DbValueMapper.json(row, "support_routing", Map.of()),
+                "rawSamplesCount", rawSamplesCount(DbValueMapper.json(row, "log_summary", Map.of())),
                 "deleteAfter", DbValueMapper.timestamp(row, "delete_after")
         );
+    }
+
+    private static List<Map<String, Object>> causeCandidatesFrom(Map<String, Object> supportRouting) {
+        Object reasonCodesValue = supportRouting.get("reasonCodes");
+        if (!(reasonCodesValue instanceof List<?> reasonCodes) || reasonCodes.isEmpty()) {
+            return List.of(MockData.map(
+                    "code", "INSUFFICIENT_RULE_SIGNAL",
+                    "label", "Additional information required",
+                    "confidence", "LOW",
+                    "evidenceIds", List.of()
+            ));
+        }
+        String confidence = string(supportRouting, "confidence", "MEDIUM");
+        return reasonCodes.stream()
+                .limit(5)
+                .map(reason -> MockData.map(
+                        "code", reason.toString(),
+                        "label", reason.toString(),
+                        "confidence", confidence,
+                        "evidenceIds", List.of()
+                ))
+                .toList();
+    }
+
+    private static String riskLevelForRouting(String recommendedDecision, Map<String, Object> supportRouting) {
+        if (Set.of("VISIT_REQUIRED", "REPAIR_OR_REPLACE").contains(recommendedDecision)) {
+            return "HIGH";
+        }
+        if ("UNSUPPORTED".equals(recommendedDecision)) {
+            return "LOW";
+        }
+        String confidence = string(supportRouting, "confidence", "MEDIUM");
+        return "HIGH".equals(confidence) ? "MEDIUM" : "LOW".equals(confidence) ? "LOW" : "MEDIUM";
+    }
+
+    private static int rawSamplesCount(Object logSummary) {
+        if (!(logSummary instanceof Map<?, ?> map)) {
+            return 0;
+        }
+        Object rawSamples = map.get("rawSamples");
+        return rawSamples instanceof List<?> list ? list.size() : 0;
     }
 
     private static GzipValidation validateGzip(MultipartFile file) {
@@ -755,94 +846,6 @@ public class PcAgentAsService {
         return new GzipValidation(compressed.length, uncompressedBytes, sha256Hex(compressed), contentText);
     }
 
-    private static DiagnosisDraft ruleDiagnosis(String symptom, String logText) {
-        String text = ((symptom == null ? "" : symptom) + "\n" + (logText == null ? "" : logText))
-                .toLowerCase(Locale.ROOT);
-        if (containsAny(text, "thermal", "throttle", "temperature", "temp", "overheat", "gpu", "frame drop", "fps", "fan", "먼지", "팬", "온도", "프레임")) {
-            return new DiagnosisDraft(
-                    List.of(MockData.map(
-                            "label", "GPU thermal or airflow risk",
-                            "confidence", "MEDIUM",
-                            "reason", "Rule matched thermal, fan, GPU, or frame-drop signals in the uploaded diagnostic window."
-                    )),
-                    List.of(MockData.map(
-                            "label", "Check cooling path before replacing parts",
-                            "priority", "HIGH",
-                            "reason", "Thermal symptoms should be verified with fan, dust, airflow, and driver checks first."
-                    )),
-                    "Rule diagnosis: thermal or GPU stability signals found. Admin review is required before remote or visit support.",
-                    "HIGH"
-            );
-        }
-        if (containsAny(text, "driver", "display driver", "nvlddmkm", "crash", "bsod", "blue screen", "블루스크린", "드라이버", "멈춤", "튕김")) {
-            return new DiagnosisDraft(
-                    List.of(MockData.map(
-                            "label", "Display driver or crash risk",
-                            "confidence", "MEDIUM",
-                            "reason", "Rule matched driver, crash, or display error signals in the uploaded diagnostic window."
-                    )),
-                    List.of(MockData.map(
-                            "label", "Review driver version and event logs",
-                            "priority", "HIGH",
-                            "reason", "Driver and crash symptoms need version, event log, and stability checks before hardware action."
-                    )),
-                    "Rule diagnosis: driver or crash signals found. Admin review is required before remote or visit support.",
-                    "MEDIUM"
-            );
-        }
-        if (containsAny(text, "memory", "ram", "disk", "storage", "ssd", "100%", "queue", "메모리", "디스크", "느림", "로딩")) {
-            return new DiagnosisDraft(
-                    List.of(MockData.map(
-                            "label", "Memory or storage pressure",
-                            "confidence", "MEDIUM",
-                            "reason", "Rule matched memory, storage, disk, or loading-pressure signals in the uploaded diagnostic window."
-                    )),
-                    List.of(MockData.map(
-                            "label", "Check memory pressure and disk queue",
-                            "priority", "MEDIUM",
-                            "reason", "Resource pressure can cause freezes, slow loading, or application stalls."
-                    )),
-                    "Rule diagnosis: memory or storage pressure signals found. Admin review is required before support decision.",
-                    "MEDIUM"
-            );
-        }
-        if (containsAny(text, "power", "psu", "reboot", "shutdown", "전원", "재부팅", "꺼짐", "파워")) {
-            return new DiagnosisDraft(
-                    List.of(MockData.map(
-                            "label", "Power stability risk",
-                            "confidence", "MEDIUM",
-                            "reason", "Rule matched power, reboot, shutdown, or PSU signals in the uploaded diagnostic window."
-                    )),
-                    List.of(MockData.map(
-                            "label", "Escalate power stability review",
-                            "priority", "HIGH",
-                            "reason", "Power instability can require hardware inspection and should not be auto-resolved."
-                    )),
-                    "Rule diagnosis: power stability signals found. Admin review is required before visit support decision.",
-                    "HIGH"
-            );
-        }
-        return new DiagnosisDraft(
-                List.of(MockData.map(
-                        "label", "Diagnostic window uploaded",
-                        "confidence", "LOW",
-                        "reason", "No high-signal rule matched. The uploaded diagnostic window is ready for admin review."
-                )),
-                List.of(),
-                "Rule diagnosis: no high-signal rule matched. Admin review is required for next support decision.",
-                "MEDIUM"
-        );
-    }
-
-    private static boolean containsAny(String text, String... needles) {
-        for (String needle : needles) {
-            if (text.contains(needle)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static String toJson(Object value) {
         try {
             return OBJECT_MAPPER.writeValueAsString(value);
@@ -856,19 +859,6 @@ public class PcAgentAsService {
             UUID.fromString(value);
         } catch (IllegalArgumentException exception) {
             throw badRequest(fieldName + " is invalid.");
-        }
-    }
-
-    private static void validateIncidentWindowRange(int rangeMinutes, Instant rangeStartedAt, Instant rangeEndedAt) {
-        if (rangeMinutes < 1 || rangeMinutes > MAX_INCIDENT_WINDOW_MINUTES) {
-            throw badRequest("Agent log upload rangeMinutes must be between 1 and 60.");
-        }
-        if (!rangeEndedAt.isAfter(rangeStartedAt)) {
-            throw badRequest("Agent log rangeEndedAt must be after rangeStartedAt.");
-        }
-        Duration duration = Duration.between(rangeStartedAt, rangeEndedAt);
-        if (duration.isNegative() || duration.compareTo(Duration.ofMinutes(rangeMinutes)) > 0) {
-            throw badRequest("Agent log upload range must fit rangeMinutes.");
         }
     }
 
@@ -953,20 +943,6 @@ public class PcAgentAsService {
         return value instanceof Number number ? number.intValue() : Integer.parseInt(value.toString());
     }
 
-    private static int requiredInteger(Map<String, Object> request, String key) {
-        if (request == null || request.get(key) == null) {
-            throw badRequest(key + " is required.");
-        }
-        return integer(request, key, 0);
-    }
-
-    private static Instant instant(Map<String, Object> request, String key, Instant fallback) {
-        if (request == null || request.get(key) == null) {
-            return fallback;
-        }
-        return Instant.parse(request.get(key).toString());
-    }
-
     private static Long longValue(Map<String, Object> row, String key) {
         Object value = row.get(key);
         if (value instanceof Number number) {
@@ -1000,14 +976,6 @@ public class PcAgentAsService {
     }
 
     private record ActivationToken(Long activationTokenId, Long userInternalId) {
-    }
-
-    private record DiagnosisDraft(
-            List<Map<String, Object>> causeCandidates,
-            List<Map<String, Object>> upgradeCandidates,
-            String adminNote,
-            String riskLevel
-    ) {
     }
 
     private record GzipValidation(long compressedBytes, long uncompressedBytes, String sha256, String contentText) {

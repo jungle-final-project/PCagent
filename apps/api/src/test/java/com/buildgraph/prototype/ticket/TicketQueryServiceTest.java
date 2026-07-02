@@ -146,7 +146,121 @@ class TicketQueryServiceTest {
                 eq("IN_PROGRESS"),
                 eq("OPEN"),
                 eq("REMOTE_POSSIBLE"),
-                eq("APPROVED")
+                eq("NEEDS_MORE_INFO"),
+                eq("APPROVED"),
+                isNull(),
+                isNull(),
+                isNull()
+        );
+    }
+
+    @Test
+    void updateBlocksRemoteOrVisitReservationForUnsupportedTicketWithoutExceptionApproval() {
+        when(jdbcTemplate.queryForList(contains("FROM as_tickets"), eq("ticket-public-id")))
+                .thenReturn(List.of(MockData.map(
+                        "internal_id", 100L,
+                        "id", "ticket-public-id",
+                        "user_id", 20L,
+                        "status", "OPEN",
+                        "review_status", "REQUIRED",
+                        "support_decision", "UNSUPPORTED"
+                )));
+
+        assertThatThrownBy(() -> service.update("ticket-public-id", MockData.map(
+                "remoteSupportLink", "https://support.example/session/unsupported"
+        ), admin))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThatStatus((ResponseStatusException) exception, HttpStatus.CONFLICT));
+    }
+
+    @Test
+    void updateAllowsUnsupportedExceptionTransitionWhenRequiredFieldsAreRecorded() {
+        when(jdbcTemplate.queryForList(contains("FROM as_tickets"), eq("ticket-public-id")))
+                .thenReturn(List.of(MockData.map(
+                        "internal_id", 100L,
+                        "id", "ticket-public-id",
+                        "user_id", 20L,
+                        "status", "OPEN",
+                        "review_status", "REQUIRED",
+                        "support_decision", "UNSUPPORTED"
+                )))
+                .thenReturn(List.of(MockData.map(
+                        "id", "ticket-public-id",
+                        "status", "OPEN",
+                        "analysis_status", "RULE_READY",
+                        "review_status", "APPROVED",
+                        "support_decision", "REMOTE_POSSIBLE",
+                        "risk_level", "LOW",
+                        "auto_response_allowed", false,
+                        "symptom", "ISP router issue",
+                        "log_upload_id", "log-upload-public-id",
+                        "assigned_admin_id", "admin-public-id",
+                        "cause_candidates", "[]",
+                        "upgrade_candidates", "[]",
+                        "exception_approval_reason", "Customer paid exception support.",
+                        "exception_responsibility_scope", "PC settings only.",
+                        "exception_user_message", "Router hardware remains out of scope."
+                )));
+
+        Map<String, Object> response = service.update("ticket-public-id", MockData.map(
+                "supportDecision", "REMOTE_POSSIBLE",
+                "reviewStatus", "APPROVED",
+                "exceptionApprovalReason", "Customer paid exception support.",
+                "exceptionResponsibilityScope", "PC settings only.",
+                "exceptionUserMessage", "Router hardware remains out of scope.",
+                "remoteSupportLink", "https://support.example/session/exception"
+        ), admin);
+
+        assertThat(response.get("supportDecision")).isEqualTo("REMOTE_POSSIBLE");
+        assertThat(response.get("exceptionApprovalReason")).isEqualTo("Customer paid exception support.");
+
+        verify(jdbcTemplate).update(
+                contains("exception_approval_reason"),
+                eq("Customer paid exception support."),
+                eq("PC settings only."),
+                eq("Router hardware remains out of scope."),
+                eq(1L),
+                eq("ticket-public-id")
+        );
+        verify(jdbcTemplate).update(contains("remote_support_sessions"), eq("https://support.example/session/exception"), eq(1L), eq("ticket-public-id"));
+    }
+
+    @Test
+    void updateAcceptsFinalScenarioSupportDecisionEnums() {
+        when(jdbcTemplate.queryForList(contains("FROM as_tickets"), eq("ticket-public-id")))
+                .thenReturn(List.of(MockData.map(
+                        "internal_id", 100L,
+                        "id", "ticket-public-id",
+                        "user_id", 20L,
+                        "status", "OPEN",
+                        "review_status", "REQUIRED",
+                        "support_decision", "NEEDS_MORE_INFO"
+                )))
+                .thenReturn(List.of(MockData.map(
+                        "id", "ticket-public-id",
+                        "status", "OPEN",
+                        "analysis_status", "RULE_READY",
+                        "review_status", "APPROVED",
+                        "support_decision", "REPAIR_OR_REPLACE",
+                        "risk_level", "HIGH",
+                        "auto_response_allowed", false,
+                        "symptom", "SMART critical error",
+                        "cause_candidates", "[]",
+                        "upgrade_candidates", "[]"
+                )));
+
+        Map<String, Object> response = service.update("ticket-public-id", MockData.map(
+                "supportDecision", "REPAIR_OR_REPLACE"
+        ), admin);
+
+        assertThat(response.get("supportDecision")).isEqualTo("REPAIR_OR_REPLACE");
+        verify(jdbcTemplate).update(
+                contains("support_decision"),
+                eq("REPAIR_OR_REPLACE"),
+                eq("APPROVED"),
+                isNull(),
+                isNull(),
+                eq("ticket-public-id")
         );
     }
 

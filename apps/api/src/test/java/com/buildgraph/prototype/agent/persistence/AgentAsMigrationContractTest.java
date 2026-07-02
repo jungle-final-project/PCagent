@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 class AgentAsMigrationContractTest {
     private static final Path MIGRATION = Path.of("src/main/resources/db/migration/V53__pc_agent_gold_mode_contract.sql");
+    private static final Path LOG_SUMMARY_MIGRATION = Path.of("src/main/resources/db/migration/V56__pc_agent_log_summary_routing.sql");
 
     @Test
     void migrationCreatesGoldModeAgentTablesInParentChildOrder() throws Exception {
@@ -76,6 +77,22 @@ class AgentAsMigrationContractTest {
                 .doesNotContain("quick_assist")
                 .doesNotContain("agent_access_tokens")
                 .doesNotContain("idempotency_keys");
+    }
+
+    @Test
+    void logSummaryMigrationAddsLogSummaryRoutingAndExceptionApprovalFields() throws Exception {
+        String sql = Files.readString(LOG_SUMMARY_MIGRATION)
+                .replaceAll("\\s+", " ")
+                .trim();
+
+        assertThat(sql)
+                .contains("ADD COLUMN IF NOT EXISTS incident_window JSONB")
+                .contains("ADD COLUMN IF NOT EXISTS range_started_at TIMESTAMPTZ")
+                .contains("ADD COLUMN IF NOT EXISTS range_ended_at TIMESTAMPTZ")
+                .contains("ADD COLUMN ai_diagnosis_request JSONB")
+                .contains("exception_approval_reason")
+                .contains("exception_responsibility_scope")
+                .contains("exception_user_message");
     }
 
     private static String normalizedSql() throws Exception {
