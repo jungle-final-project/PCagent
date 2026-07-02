@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
@@ -39,6 +40,7 @@ public class PcAgentAsService {
     private final Clock clock;
     private final Supplier<String> tokenGenerator;
 
+    @Autowired
     public PcAgentAsService(JdbcTemplate jdbcTemplate, AgentTokenHasher tokenHasher) {
         this(jdbcTemplate, tokenHasher, Clock.systemUTC(), PcAgentAsService::newAgentToken);
     }
