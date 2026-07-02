@@ -439,15 +439,8 @@ class PcAgentControllerSecurityTest {
     }
 
     @Test
-    void duplicateLogUploadIdempotencyKeyReplaysWithoutCreatingAnotherTicket() throws Exception {
+    void logUploadPassesIdempotencyKeyToServiceForReplayHandling() throws Exception {
         AgentPrincipal principal = authenticateAgent();
-        when(agentIdempotencyService.reserve(eq(principal), anyString(), anyString(), eq("upload-key"), anyString()))
-                .thenReturn(AgentIdempotencyDecision.proceed(301L))
-                .thenReturn(AgentIdempotencyDecision.replay(
-                        201,
-                        "{\"ticketId\":\"ticket-public-id\",\"analysisStatus\":\"RULE_READY\"}",
-                        MediaType.APPLICATION_JSON_VALUE
-                ));
         when(pcAgentAsService.uploadLogs(eq(principal), any(), any(), eq("upload-key"))).thenReturn(Map.of(
                 "ticketId", "ticket-public-id",
                 "analysisStatus", "RULE_READY"
@@ -481,14 +474,17 @@ class PcAgentControllerSecurityTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.ticketId").value("ticket-public-id"));
 
-        verify(pcAgentAsService).uploadLogs(eq(principal), any(), any(), eq("upload-key"));
+        verify(pcAgentAsService, times(2)).uploadLogs(eq(principal), any(), any(), eq("upload-key"));
     }
 
     @Test
-    void sameUploadKeyWithDifferentBodyReturnsConflictWithoutRunningUploadService() throws Exception {
+    void sameUploadKeyWithDifferentBodyReturnsServiceConflict() throws Exception {
         AgentPrincipal principal = authenticateAgent();
-        when(agentIdempotencyService.reserve(eq(principal), anyString(), anyString(), eq("upload-key"), anyString()))
-                .thenReturn(AgentIdempotencyDecision.conflict());
+        when(pcAgentAsService.uploadLogs(eq(principal), any(), any(), eq("upload-key")))
+                .thenThrow(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.CONFLICT,
+                        "Idempotency-Key was already used with a different upload request."
+                ));
 
         mockMvc.perform(multipart("/api/agent/log-uploads")
                         .file(new MockMultipartFile(
@@ -503,7 +499,7 @@ class PcAgentControllerSecurityTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("CONFLICT_STATE"));
 
-        verifyNoInteractions(pcAgentAsService);
+        verify(pcAgentAsService).uploadLogs(eq(principal), any(), any(), eq("upload-key"));
     }
 
     @Test
@@ -715,7 +711,7 @@ class PcAgentControllerSecurityTest {
                 .andExpect(jsonPath("$.analysisStatus").value("RULE_READY"))
                 .andExpect(jsonPath("$.supportDecision").value("REMOTE_POSSIBLE"));
 
-        verify(pcAgentAsService).uploadLogs(eq(principal), any(), any(), eq("upload-key"));
+        verify(pcAgentAsService, times(2)).uploadLogs(eq(principal), any(), any(), eq("upload-key"));
     }
 
     private static byte[] gzip(String content) {

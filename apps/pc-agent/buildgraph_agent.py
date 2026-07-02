@@ -14,6 +14,7 @@ import uuid
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from io import TextIOWrapper
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -311,9 +312,11 @@ def append_metric(config: AgentConfig, index: int = 0) -> Path:
 def gzip_recent(source: Path, out: Path, minutes: int = DEFAULT_RANGE_MINUTES) -> int:
     rows = read_recent_rows(source, minutes)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(out, "wt", encoding="utf-8") as file:
-        for row in rows:
-            file.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with out.open("wb") as raw_file:
+        with gzip.GzipFile(fileobj=raw_file, mode="wb", mtime=0) as gzip_file:
+            with TextIOWrapper(gzip_file, encoding="utf-8") as text_file:
+                for row in rows:
+                    text_file.write(json.dumps(row, ensure_ascii=False) + "\n")
     return out.stat().st_size
 
 

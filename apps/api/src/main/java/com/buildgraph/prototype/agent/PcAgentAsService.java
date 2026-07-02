@@ -7,12 +7,14 @@ import com.buildgraph.prototype.config.security.AgentPrincipal;
 import com.buildgraph.prototype.config.security.AgentTokenHasher;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.sql.Timestamp;
 import java.security.SecureRandom;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
@@ -366,6 +368,19 @@ public class PcAgentAsService {
         Instant rangeEndedAt = instant(metadata, "rangeEndedAt", Instant.now(clock));
         Instant rangeStartedAt = instant(metadata, "rangeStartedAt", rangeEndedAt.minus(Duration.ofMinutes(rangeMinutes)));
         validateRecentThirtyMinuteRange(rangeMinutes, rangeStartedAt, rangeEndedAt);
+        Integer schemaVersion = integer(metadata, "schemaVersion", 1);
+        String symptom = string(metadata, "symptom", "Agent uploaded recent 30 minute diagnostic log.");
+        Map<String, Object> existingUpload = existingUploadResult(
+                principal,
+                idempotencyKey,
+                gzip.sha256(),
+                rangeMinutes,
+                schemaVersion,
+                symptom
+        );
+        if (existingUpload != null) {
+            return existingUpload;
+        }
         Integer consentCount = jdbcTemplate.queryForObject("""
                 SELECT count(*)
                 FROM agent_consents
@@ -392,8 +407,8 @@ public class PcAgentAsService {
                 """,
                 principal.deviceInternalId(),
                 idempotencyKey,
-                rangeStartedAt,
-                rangeEndedAt
+                Timestamp.from(rangeStartedAt),
+                Timestamp.from(rangeEndedAt)
         );
 
         Long uploadJobInternalId = longValue(uploadJob, "upload_job_internal_id");
@@ -446,13 +461,12 @@ public class PcAgentAsService {
                 """,
                 uploadJobInternalId,
                 logUploadInternalId,
-                integer(metadata, "schemaVersion", 1),
+                schemaVersion,
                 storagePath,
                 gzip.sha256(),
                 gzip.compressedBytes(),
-                DbValueMapper.timestamp(logUpload, "delete_after")
+                timestampParameter(logUpload.get("delete_after"))
         );
-        String symptom = string(metadata, "symptom", "Agent uploaded recent 30 minute diagnostic log.");
         Map<String, Object> ticket = jdbcTemplate.queryForMap("""
                 INSERT INTO as_tickets (
                   user_id,
@@ -503,6 +517,60 @@ public class PcAgentAsService {
                 "analysisStatus", DbValueMapper.string(ticket, "analysis_status"),
                 "reviewStatus", DbValueMapper.string(ticket, "review_status"),
                 "supportDecision", DbValueMapper.string(ticket, "support_decision"),
+                "rangeMinutes", rangeMinutes
+        );
+    }
+
+    private Map<String, Object> existingUploadResult(
+            AgentPrincipal principal,
+            String idempotencyKey,
+            String gzipSha256,
+            int rangeMinutes,
+            int schemaVersion,
+            String symptom
+    ) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT uj.public_id::text AS upload_job_id,
+                       lu.public_id::text AS log_upload_id,
+                       t.public_id::text AS ticket_id,
+                       t.status,
+                       t.analysis_status,
+                       t.review_status,
+                       t.support_decision,
+                       lu.range_minutes,
+                       alb.schema_version,
+                       alb.sha256,
+                       t.symptom
+                FROM agent_upload_jobs uj
+                JOIN agent_log_uploads lu ON lu.upload_job_id = uj.id
+                JOIN agent_log_bundles alb ON alb.upload_job_id = uj.id
+                JOIN as_tickets t ON t.log_upload_id = lu.id
+                WHERE uj.device_id = ?
+                  AND uj.idempotency_key = ?
+                ORDER BY uj.id DESC
+                LIMIT 1
+                """, principal.deviceInternalId(), idempotencyKey);
+        if (rows.isEmpty()) {
+            return null;
+        }
+
+        Map<String, Object> row = rows.get(0);
+        boolean sameRequest = rangeMinutes == integer(row, "range_minutes", -1)
+                && schemaVersion == integer(row, "schema_version", -1)
+                && gzipSha256.equals(DbValueMapper.string(row, "sha256"))
+                && symptom.equals(DbValueMapper.string(row, "symptom"));
+        if (!sameRequest) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency-Key was already used with a different upload request.");
+        }
+
+        return MockData.map(
+                "uploadJobId", DbValueMapper.string(row, "upload_job_id"),
+                "logUploadId", DbValueMapper.string(row, "log_upload_id"),
+                "ticketId", DbValueMapper.string(row, "ticket_id"),
+                "status", DbValueMapper.string(row, "status"),
+                "analysisStatus", DbValueMapper.string(row, "analysis_status"),
+                "reviewStatus", DbValueMapper.string(row, "review_status"),
+                "supportDecision", DbValueMapper.string(row, "support_decision"),
                 "rangeMinutes", rangeMinutes
         );
     }
@@ -650,6 +718,16 @@ public class PcAgentAsService {
             return number.longValue();
         }
         return value == null ? null : Long.valueOf(value.toString());
+    }
+
+    private static Object timestampParameter(Object value) {
+        if (value instanceof Instant instant) {
+            return Timestamp.from(instant);
+        }
+        if (value instanceof OffsetDateTime offsetDateTime) {
+            return Timestamp.from(offsetDateTime.toInstant());
+        }
+        return value;
     }
 
     private record GzipValidation(long compressedBytes, long uncompressedBytes, String sha256) {

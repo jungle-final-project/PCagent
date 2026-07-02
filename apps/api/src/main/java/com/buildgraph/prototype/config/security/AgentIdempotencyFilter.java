@@ -37,7 +37,8 @@ class AgentIdempotencyFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         return !path(request).startsWith("/api/agent/")
-                || !MUTATION_METHODS.contains(request.getMethod());
+                || !MUTATION_METHODS.contains(request.getMethod())
+                || isMultipart(request);
     }
 
     @Override
@@ -127,6 +128,11 @@ class AgentIdempotencyFilter extends OncePerRequestFilter {
     private static String path(HttpServletRequest request) {
         String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
         return path == null ? request.getRequestURI() : path;
+    }
+
+    private static boolean isMultipart(HttpServletRequest request) {
+        String contentType = request.getContentType();
+        return contentType != null && contentType.toLowerCase().startsWith("multipart/");
     }
 
     private static String sha256Hex(byte[] body) {
