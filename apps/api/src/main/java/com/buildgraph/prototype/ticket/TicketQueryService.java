@@ -3,7 +3,9 @@ package com.buildgraph.prototype.ticket;
 import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
 import com.buildgraph.prototype.user.CurrentUserService;
+import java.net.URI;
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -64,12 +66,76 @@ public class TicketQueryService {
         return ticket(DbValueMapper.string(row, "id"));
     }
 
+    public Map<String, Object> create(Map<String, Object> request, CurrentUserService.CurrentUser user) {
+        if (user == null) {
+            return create(request);
+        }
+        String symptom = request == null
+                ? "게임 중 프레임 급락"
+                : String.valueOf(request.getOrDefault("symptom", "게임 중 프레임 급락"));
+        Long logUploadInternalId = resolveUserLogUploadId(
+                request == null ? null : stringOrNull(request.get("logUploadId")),
+                user.internalId()
+        );
+        Map<String, Object> row = jdbcTemplate.queryForMap("""
+                INSERT INTO as_tickets (
+                  user_id,
+                  log_upload_id,
+                  symptom,
+                  status,
+                  cause_candidates,
+                  upgrade_candidates
+                )
+                VALUES (
+                  ?,
+                  ?,
+                  ?,
+                  'OPEN',
+                  '[]'::jsonb,
+                  '[]'::jsonb
+                )
+                RETURNING public_id::text AS id
+                """, user.internalId(), logUploadInternalId, symptom);
+        return ticket(DbValueMapper.string(row, "id"), user);
+    }
+
     public Map<String, Object> ticket(String id) {
         return jdbcTemplate.queryForList(ticketSql() + " WHERE t.deleted_at IS NULL AND t.public_id = ?::uuid", id)
                 .stream()
                 .findFirst()
                 .map(this::ticketMap)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "AS 티켓을 찾을 수 없습니다."));
+    }
+
+    public Map<String, Object> ticket(String id, CurrentUserService.CurrentUser user) {
+        if (user == null) {
+            return ticket(id);
+        }
+        return jdbcTemplate.queryForList(
+                        ticketSql() + " WHERE t.deleted_at IS NULL AND t.public_id = ?::uuid AND t.user_id = ?",
+                        id,
+                        user.internalId()
+                )
+                .stream()
+                .findFirst()
+                .map(this::ticketMap)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "AS 티켓을 찾을 수 없습니다."));
+    }
+
+    private Long resolveUserLogUploadId(String logUploadId, Long userInternalId) {
+        if (logUploadId == null) {
+            return null;
+        }
+        return jdbcTemplate.queryForList("""
+                        SELECT id
+                        FROM agent_log_uploads
+                        WHERE public_id = ?::uuid
+                          AND user_id = ?
+                        """, logUploadId, userInternalId)
+                .stream()
+                .findFirst()
+                .map(row -> longValue(row, "id"))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "로그 업로드를 찾을 수 없습니다."));
     }
 
     public Map<String, Object> update(String id, Map<String, Object> request) {
@@ -107,7 +173,7 @@ public class TicketQueryService {
         validateNullable("riskLevel", riskLevel, RISK_LEVELS);
         Boolean autoResponseAllowed = request == null || request.get("autoResponseAllowed") == null
                 ? null
-                : Boolean.valueOf(request.get("autoResponseAllowed").toString());
+                : parseBoolean("autoResponseAllowed", request.get("autoResponseAllowed"));
         if (supportDecision != null || reviewStatus != null || riskLevel != null || autoResponseAllowed != null) {
             jdbcTemplate.update("""
                     UPDATE as_tickets
@@ -164,6 +230,7 @@ public class TicketQueryService {
         if (remoteSupportLink == null) {
             return;
         }
+        validateRemoteSupportLink(remoteSupportLink);
         jdbcTemplate.update("""
                 INSERT INTO remote_support_sessions (
                   as_ticket_id,
@@ -197,7 +264,7 @@ public class TicketQueryService {
         validateNullable("visitTimeSlot", timeSlot, VISIT_TIME_SLOTS);
         LocalDate preferredDate = request.get("visitPreferredDate") == null
                 ? LocalDate.now().plusDays(1)
-                : LocalDate.parse(request.get("visitPreferredDate").toString());
+                : parseDate("visitPreferredDate", request.get("visitPreferredDate"));
         jdbcTemplate.update("""
                 INSERT INTO visit_support_reservations (
                   as_ticket_id,
@@ -349,8 +416,45 @@ public class TicketQueryService {
         }
     }
 
+    private static Boolean parseBoolean(String fieldName, Object value) {
+        if (value instanceof Boolean booleanValue) {
+            return booleanValue;
+        }
+        String text = value == null ? null : value.toString();
+        if ("true".equalsIgnoreCase(text)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(text)) {
+            return false;
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, fieldName + " 값이 올바르지 않습니다.");
+    }
+
+    private static LocalDate parseDate(String fieldName, Object value) {
+        try {
+            return LocalDate.parse(value.toString());
+        } catch (DateTimeParseException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, fieldName + " 값이 올바르지 않습니다.", exception);
+        }
+    }
+
+    private static void validateRemoteSupportLink(String value) {
+        if (value.length() > 2_000 || value.chars().anyMatch(Character::isWhitespace)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "remoteSupportLink 값이 올바르지 않습니다.");
+        }
+        try {
+            URI uri = URI.create(value);
+            String scheme = uri.getScheme() == null ? null : uri.getScheme().toLowerCase();
+            if (uri.getHost() == null || (!"http".equals(scheme) && !"https".equals(scheme))) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "remoteSupportLink 값이 올바르지 않습니다.");
+            }
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "remoteSupportLink 값이 올바르지 않습니다.", exception);
+        }
+    }
+
     private static Boolean booleanOrNull(Object value) {
-        return value == null ? null : Boolean.valueOf(value.toString());
+        return value == null ? null : parseBoolean("boolean", value);
     }
 
     private static Long longValue(Map<String, Object> row, String key) {

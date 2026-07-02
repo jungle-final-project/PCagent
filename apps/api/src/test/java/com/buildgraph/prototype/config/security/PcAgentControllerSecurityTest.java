@@ -100,7 +100,7 @@ class PcAgentControllerSecurityTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "activationToken": "demo-agent-activation-token",
+                                  "activationToken": "valid-agent-activation-token",
                                   "deviceFingerprintHash": "fingerprint-hash",
                                   "registrationIdempotencyKey": "register-key",
                                   "osVersion": "Windows 11",
@@ -128,7 +128,7 @@ class PcAgentControllerSecurityTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "activationToken": "demo-agent-activation-token",
+                                  "activationToken": "valid-agent-activation-token",
                                   "deviceFingerprintHash": "fingerprint-hash",
                                   "registrationIdempotencyKey": "register-key",
                                   "osVersion": "Windows 11",
@@ -606,7 +606,7 @@ class PcAgentControllerSecurityTest {
                 "reviewStatus", "APPROVED",
                 "supportDecision", "REMOTE_POSSIBLE"
         ));
-        when(ticketQueryService.ticket("ticket-public-id")).thenReturn(Map.of(
+        when(ticketQueryService.ticket(eq("ticket-public-id"), isNull())).thenReturn(Map.of(
                 "id", "ticket-public-id",
                 "status", "OPEN",
                 "analysisStatus", "RULE_READY",
@@ -618,7 +618,7 @@ class PcAgentControllerSecurityTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "activationToken": "demo-agent-activation-token",
+                                  "activationToken": "valid-agent-activation-token",
                                   "deviceFingerprintHash": "fingerprint-hash",
                                   "registrationIdempotencyKey": "register-key",
                                   "osVersion": "Windows 11",

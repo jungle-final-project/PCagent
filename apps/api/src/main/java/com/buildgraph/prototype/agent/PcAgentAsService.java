@@ -5,8 +5,12 @@ import com.buildgraph.prototype.common.MockData;
 import com.buildgraph.prototype.common.ApiException;
 import com.buildgraph.prototype.config.security.AgentPrincipal;
 import com.buildgraph.prototype.config.security.AgentTokenHasher;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.security.SecureRandom;
 import java.security.MessageDigest;
@@ -18,8 +22,10 @@ import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
@@ -35,8 +41,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class PcAgentAsService {
-    private static final String DEMO_ACTIVATION_TOKEN = "demo-agent-activation-token";
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Pattern IDEMPOTENCY_KEY_PATTERN = Pattern.compile("[A-Za-z0-9._:-]{1,160}");
+    private static final int DEFAULT_ACTIVATION_TOKEN_TTL_DAYS = 7;
+    private static final int MAX_ACTIVATION_TOKEN_TTL_DAYS = 7;
     private static final long MAX_GZIP_BYTES = 10L * 1024L * 1024L;
     private static final long MAX_UNCOMPRESSED_BYTES = 20L * 1024L * 1024L;
     private static final int RECENT_LOG_RANGE_MINUTES = 30;
@@ -70,17 +78,72 @@ public class PcAgentAsService {
     }
 
     @Transactional
-    public Map<String, Object> register(Map<String, Object> request) {
-        String activationToken = requiredString(request, "activationToken");
-        if (!DEMO_ACTIVATION_TOKEN.equals(activationToken)) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Agent activation token is invalid.");
+    public Map<String, Object> issueActivationToken(Map<String, Object> request) {
+        Long userInternalId = resolveActivationTokenUser(request);
+        int ttlDays = integer(request, "ttlDays", DEFAULT_ACTIVATION_TOKEN_TTL_DAYS);
+        if (ttlDays < 1 || ttlDays > MAX_ACTIVATION_TOKEN_TTL_DAYS) {
+            throw badRequest("ttlDays must be between 1 and 7.");
         }
 
-        String rawAgentToken = tokenGenerator.get();
-        if (rawAgentToken == null || rawAgentToken.isBlank()) {
-            throw new IllegalStateException("Generated agent token must not be blank.");
+        String rawActivationToken = newAgentToken();
+        String tokenHash = tokenHasher.sha256Hex(rawActivationToken);
+        Instant expiresAt = Instant.now(clock).plus(Duration.ofDays(ttlDays));
+        try {
+            Map<String, Object> row = jdbcTemplate.queryForMap("""
+                    INSERT INTO agent_activation_tokens (
+                      user_id,
+                      token_hash,
+                      expires_at
+                    )
+                    VALUES (?, ?, ?)
+                    RETURNING public_id::text AS id, expires_at
+                    """,
+                    userInternalId,
+                    tokenHash,
+                    Timestamp.from(expiresAt)
+            );
+            return MockData.map(
+                    "id", DbValueMapper.string(row, "id"),
+                    "activationToken", rawActivationToken,
+                    "tokenType", "Activation",
+                    "expiresAt", DbValueMapper.timestamp(row, "expires_at")
+            );
+        } catch (DuplicateKeyException exception) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Agent activation token collision.", exception);
         }
-        String tokenHash = tokenHasher.sha256Hex(rawAgentToken);
+    }
+
+    private Long resolveActivationTokenUser(Map<String, Object> request) {
+        String userId = string(request, "userId", null);
+        String userEmail = string(request, "userEmail", null);
+        if (userId == null && userEmail == null) {
+            throw badRequest("userId or userEmail is required.");
+        }
+        if (userId != null) {
+            validateUuid("userId", userId);
+        }
+        List<Map<String, Object>> rows = userId != null
+                ? jdbcTemplate.queryForList("""
+                        SELECT id
+                        FROM users
+                        WHERE public_id = ?::uuid
+                          AND deleted_at IS NULL
+                        """, userId)
+                : jdbcTemplate.queryForList("""
+                        SELECT id
+                        FROM users
+                        WHERE email = ?
+                          AND deleted_at IS NULL
+                        """, userEmail);
+        return rows.stream()
+                .findFirst()
+                .map(row -> longValue(row, "id"))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Activation token user not found."));
+    }
+
+    @Transactional
+    public Map<String, Object> register(Map<String, Object> request) {
+        String activationToken = requiredString(request, "activationToken");
         String deviceFingerprintHash = requiredString(request, "deviceFingerprintHash");
         String hostnameHash = string(request, "hostnameHash", null);
         String registrationKey = requiredString(request, "registrationIdempotencyKey");
@@ -88,10 +151,16 @@ public class PcAgentAsService {
         String osVersion = requiredString(request, "osVersion");
         String agentVersion = requiredString(request, "agentVersion");
         String policyVersion = requiredString(request, "policyVersion");
-        String userEmail = string(request, "userEmail", "user@example.com");
+        ActivationToken activation = verifyActivationToken(activationToken, registrationKey);
+
+        String rawAgentToken = tokenGenerator.get();
+        if (rawAgentToken == null || rawAgentToken.isBlank()) {
+            throw new IllegalStateException("Generated agent token must not be blank.");
+        }
+        String tokenHash = tokenHasher.sha256Hex(rawAgentToken);
 
         Map<String, Object> row = refreshExistingRegistration(
-                userEmail,
+                activation.activationTokenId(),
                 registrationKey,
                 tokenHash,
                 deviceFingerprintHash,
@@ -101,8 +170,10 @@ public class PcAgentAsService {
                 policyVersion
         );
         if (row == null) {
+            markActivationTokenUsed(activation.activationTokenId());
             row = insertRegistration(
-                    userEmail,
+                    activation.userInternalId(),
+                    activation.activationTokenId(),
                     deviceFingerprintHash,
                     hostnameHash,
                     tokenHash,
@@ -121,8 +192,61 @@ public class PcAgentAsService {
         );
     }
 
+    private ActivationToken verifyActivationToken(String rawActivationToken, String registrationKey) {
+        String activationTokenHash = tokenHasher.sha256Hex(rawActivationToken);
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT at.id AS activation_token_id,
+                       at.user_id,
+                       at.expires_at,
+                       at.used_at,
+                       at.revoked_at,
+                       d.id AS existing_device_internal_id
+                FROM agent_activation_tokens at
+                LEFT JOIN agent_devices d
+                  ON d.activation_token_id = at.id
+                 AND d.registration_idempotency_key = ?
+                 AND d.status IN ('PENDING_REGISTERED', 'ACTIVE', 'UPDATE_REQUIRED')
+                WHERE at.token_hash = ?
+                ORDER BY d.id DESC NULLS LAST
+                LIMIT 1
+                """, registrationKey, activationTokenHash);
+        if (rows.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Agent activation token is invalid.");
+        }
+
+        Map<String, Object> row = rows.get(0);
+        if (row.get("revoked_at") != null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Agent activation token is invalid.");
+        }
+        Instant expiresAt = instantValue(row, "expires_at");
+        if (expiresAt == null || !expiresAt.isAfter(Instant.now(clock))) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Agent activation token is invalid.");
+        }
+        if (row.get("used_at") != null && row.get("existing_device_internal_id") == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Agent activation token is already used.");
+        }
+        return new ActivationToken(
+                longValue(row, "activation_token_id"),
+                longValue(row, "user_id")
+        );
+    }
+
+    private void markActivationTokenUsed(Long activationTokenId) {
+        int updated = jdbcTemplate.update("""
+                UPDATE agent_activation_tokens
+                SET used_at = COALESCE(used_at, now())
+                WHERE id = ?
+                  AND used_at IS NULL
+                  AND revoked_at IS NULL
+                  AND expires_at > now()
+                """, activationTokenId);
+        if (updated == 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Agent activation token is already used.");
+        }
+    }
+
     private Map<String, Object> refreshExistingRegistration(
-            String userEmail,
+            Long activationTokenId,
             String registrationKey,
             String tokenHash,
             String deviceFingerprintHash,
@@ -136,12 +260,12 @@ public class PcAgentAsService {
                        public_id::text AS device_id,
                        status
                 FROM agent_devices
-                WHERE user_id = (SELECT id FROM users WHERE email = ?)
+                WHERE activation_token_id = ?
                   AND registration_idempotency_key = ?
                   AND status IN ('PENDING_REGISTERED', 'ACTIVE', 'UPDATE_REQUIRED')
                 ORDER BY id DESC
                 LIMIT 1
-                """, userEmail, registrationKey);
+                """, activationTokenId, registrationKey);
         if (existingRows.isEmpty()) {
             return null;
         }
@@ -171,7 +295,8 @@ public class PcAgentAsService {
     }
 
     private Map<String, Object> insertRegistration(
-            String userEmail,
+            Long userInternalId,
+            Long activationTokenId,
             String deviceFingerprintHash,
             String hostnameHash,
             String tokenHash,
@@ -196,8 +321,8 @@ public class PcAgentAsService {
                       updated_at
                     )
                     VALUES (
-                      (SELECT id FROM users WHERE email = ?),
-                      NULL,
+                      ?,
+                      ?,
                       ?,
                       ?,
                       ?,
@@ -210,7 +335,8 @@ public class PcAgentAsService {
                     )
                     RETURNING id AS device_internal_id, public_id::text AS device_id, status
                     """,
-                    userEmail,
+                    userInternalId,
+                    activationTokenId,
                     deviceFingerprintHash,
                     hostnameHash,
                     tokenHash,
@@ -230,6 +356,7 @@ public class PcAgentAsService {
             Map<String, Object> request,
             String idempotencyKey
     ) {
+        validateIdempotencyKey("Idempotency-Key", idempotencyKey);
         String consentType = requiredString(request, "consentType");
         if (!CONSENT_TYPES.contains(consentType)) {
             throw badRequest("consentType is invalid.");
@@ -286,6 +413,7 @@ public class PcAgentAsService {
             Map<String, Object> request,
             String idempotencyKey
     ) {
+        validateIdempotencyKey("Idempotency-Key", idempotencyKey);
         String agentVersion = requiredString(request, "agentVersion");
         String serviceStatus = requiredString(request, "serviceStatus");
         String policyVersion = string(request, "policyVersion", null);
@@ -356,6 +484,7 @@ public class PcAgentAsService {
             Map<String, Object> metadata,
             String idempotencyKey
     ) {
+        validateIdempotencyKey("Idempotency-Key", idempotencyKey);
         if (file == null || file.isEmpty()) {
             throw fileValidation("Agent log gzip file is required.");
         }
@@ -370,6 +499,7 @@ public class PcAgentAsService {
         validateRecentThirtyMinuteRange(rangeMinutes, rangeStartedAt, rangeEndedAt);
         Integer schemaVersion = integer(metadata, "schemaVersion", 1);
         String symptom = string(metadata, "symptom", "Agent uploaded recent 30 minute diagnostic log.");
+        DiagnosisDraft diagnosis = ruleDiagnosis(symptom, gzip.contentText());
         Map<String, Object> existingUpload = existingUploadResult(
                 principal,
                 idempotencyKey,
@@ -446,6 +576,7 @@ public class PcAgentAsService {
         );
 
         Long logUploadInternalId = longValue(logUpload, "log_upload_internal_id");
+        Object deleteAfter = DbValueMapper.timestamp(logUpload, "delete_after");
         jdbcTemplate.queryForMap("""
                 INSERT INTO agent_log_bundles (
                   upload_job_id,
@@ -491,22 +622,27 @@ public class PcAgentAsService {
                   'RULE_READY',
                   'REQUIRED',
                   'NEEDS_MORE_INFO',
-                  'MEDIUM',
+                  ?,
                   false,
-                  '[{"label":"Recent agent log uploaded","confidence":"MEDIUM","reason":"Demo rule diagnosis placeholder"}]'::jsonb,
-                  '[]'::jsonb,
-                  'Rule-based demo diagnosis is ready for admin review.',
+                  ?::jsonb,
+                  ?::jsonb,
+                  ?,
                   now()
                 )
                 RETURNING public_id::text AS ticket_id,
                           status,
                           analysis_status,
                           review_status,
-                          support_decision
+                          support_decision,
+                          risk_level
                 """,
                 principal.userInternalId(),
                 logUploadInternalId,
-                symptom
+                symptom,
+                diagnosis.riskLevel(),
+                toJson(diagnosis.causeCandidates()),
+                toJson(diagnosis.upgradeCandidates()),
+                diagnosis.adminNote()
         );
 
         return MockData.map(
@@ -517,7 +653,9 @@ public class PcAgentAsService {
                 "analysisStatus", DbValueMapper.string(ticket, "analysis_status"),
                 "reviewStatus", DbValueMapper.string(ticket, "review_status"),
                 "supportDecision", DbValueMapper.string(ticket, "support_decision"),
-                "rangeMinutes", rangeMinutes
+                "riskLevel", DbValueMapper.string(ticket, "risk_level"),
+                "rangeMinutes", rangeMinutes,
+                "deleteAfter", deleteAfter
         );
     }
 
@@ -537,7 +675,9 @@ public class PcAgentAsService {
                        t.analysis_status,
                        t.review_status,
                        t.support_decision,
+                       t.risk_level,
                        lu.range_minutes,
+                       lu.delete_after,
                        alb.schema_version,
                        alb.sha256,
                        t.symptom
@@ -571,7 +711,9 @@ public class PcAgentAsService {
                 "analysisStatus", DbValueMapper.string(row, "analysis_status"),
                 "reviewStatus", DbValueMapper.string(row, "review_status"),
                 "supportDecision", DbValueMapper.string(row, "support_decision"),
-                "rangeMinutes", rangeMinutes
+                "riskLevel", DbValueMapper.string(row, "risk_level"),
+                "rangeMinutes", rangeMinutes,
+                "deleteAfter", DbValueMapper.timestamp(row, "delete_after")
         );
     }
 
@@ -590,6 +732,7 @@ public class PcAgentAsService {
         }
         long uncompressedBytes = 0L;
         byte[] buffer = new byte[8192];
+        ByteArrayOutputStream uncompressed = new ByteArrayOutputStream();
         try (GZIPInputStream gzipInputStream = new GZIPInputStream(new ByteArrayInputStream(compressed))) {
             int read;
             while ((read = gzipInputStream.read(buffer)) != -1) {
@@ -597,6 +740,7 @@ public class PcAgentAsService {
                 if (uncompressedBytes > MAX_UNCOMPRESSED_BYTES) {
                     throw fileValidation("Agent log gzip content is too large.");
                 }
+                uncompressed.write(buffer, 0, read);
             }
         } catch (IOException exception) {
             throw fileValidation("Agent log upload must contain valid gzip content.");
@@ -604,7 +748,115 @@ public class PcAgentAsService {
         if (uncompressedBytes == 0L) {
             throw fileValidation("Agent log gzip content is empty.");
         }
-        return new GzipValidation(compressed.length, uncompressedBytes, sha256Hex(compressed));
+        String contentText = uncompressed.toString(StandardCharsets.UTF_8);
+        if (contentText.lines().noneMatch(line -> !line.isBlank())) {
+            throw fileValidation("Agent log gzip content must contain at least one log line.");
+        }
+        return new GzipValidation(compressed.length, uncompressedBytes, sha256Hex(compressed), contentText);
+    }
+
+    private static DiagnosisDraft ruleDiagnosis(String symptom, String logText) {
+        String text = ((symptom == null ? "" : symptom) + "\n" + (logText == null ? "" : logText))
+                .toLowerCase(Locale.ROOT);
+        if (containsAny(text, "thermal", "throttle", "temperature", "temp", "overheat", "gpu", "frame drop", "fps", "fan", "먼지", "팬", "온도", "프레임")) {
+            return new DiagnosisDraft(
+                    List.of(MockData.map(
+                            "label", "GPU thermal or airflow risk",
+                            "confidence", "MEDIUM",
+                            "reason", "Rule matched thermal, fan, GPU, or frame-drop signals in the uploaded diagnostic window."
+                    )),
+                    List.of(MockData.map(
+                            "label", "Check cooling path before replacing parts",
+                            "priority", "HIGH",
+                            "reason", "Thermal symptoms should be verified with fan, dust, airflow, and driver checks first."
+                    )),
+                    "Rule diagnosis: thermal or GPU stability signals found. Admin review is required before remote or visit support.",
+                    "HIGH"
+            );
+        }
+        if (containsAny(text, "driver", "display driver", "nvlddmkm", "crash", "bsod", "blue screen", "블루스크린", "드라이버", "멈춤", "튕김")) {
+            return new DiagnosisDraft(
+                    List.of(MockData.map(
+                            "label", "Display driver or crash risk",
+                            "confidence", "MEDIUM",
+                            "reason", "Rule matched driver, crash, or display error signals in the uploaded diagnostic window."
+                    )),
+                    List.of(MockData.map(
+                            "label", "Review driver version and event logs",
+                            "priority", "HIGH",
+                            "reason", "Driver and crash symptoms need version, event log, and stability checks before hardware action."
+                    )),
+                    "Rule diagnosis: driver or crash signals found. Admin review is required before remote or visit support.",
+                    "MEDIUM"
+            );
+        }
+        if (containsAny(text, "memory", "ram", "disk", "storage", "ssd", "100%", "queue", "메모리", "디스크", "느림", "로딩")) {
+            return new DiagnosisDraft(
+                    List.of(MockData.map(
+                            "label", "Memory or storage pressure",
+                            "confidence", "MEDIUM",
+                            "reason", "Rule matched memory, storage, disk, or loading-pressure signals in the uploaded diagnostic window."
+                    )),
+                    List.of(MockData.map(
+                            "label", "Check memory pressure and disk queue",
+                            "priority", "MEDIUM",
+                            "reason", "Resource pressure can cause freezes, slow loading, or application stalls."
+                    )),
+                    "Rule diagnosis: memory or storage pressure signals found. Admin review is required before support decision.",
+                    "MEDIUM"
+            );
+        }
+        if (containsAny(text, "power", "psu", "reboot", "shutdown", "전원", "재부팅", "꺼짐", "파워")) {
+            return new DiagnosisDraft(
+                    List.of(MockData.map(
+                            "label", "Power stability risk",
+                            "confidence", "MEDIUM",
+                            "reason", "Rule matched power, reboot, shutdown, or PSU signals in the uploaded diagnostic window."
+                    )),
+                    List.of(MockData.map(
+                            "label", "Escalate power stability review",
+                            "priority", "HIGH",
+                            "reason", "Power instability can require hardware inspection and should not be auto-resolved."
+                    )),
+                    "Rule diagnosis: power stability signals found. Admin review is required before visit support decision.",
+                    "HIGH"
+            );
+        }
+        return new DiagnosisDraft(
+                List.of(MockData.map(
+                        "label", "Recent diagnostic log uploaded",
+                        "confidence", "LOW",
+                        "reason", "No high-signal rule matched. The uploaded diagnostic window is ready for admin review."
+                )),
+                List.of(),
+                "Rule diagnosis: no high-signal rule matched. Admin review is required for next support decision.",
+                "MEDIUM"
+        );
+    }
+
+    private static boolean containsAny(String text, String... needles) {
+        for (String needle : needles) {
+            if (text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String toJson(Object value) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Rule diagnosis JSON serialization failed.", exception);
+        }
+    }
+
+    private static void validateUuid(String fieldName, String value) {
+        try {
+            UUID.fromString(value);
+        } catch (IllegalArgumentException exception) {
+            throw badRequest(fieldName + " is invalid.");
+        }
     }
 
     private static void validateRecentThirtyMinuteRange(int rangeMinutes, Instant rangeStartedAt, Instant rangeEndedAt) {
@@ -639,7 +891,10 @@ public class PcAgentAsService {
         if (original == null || original.isBlank()) {
             return "agent-log.jsonl.gz";
         }
-        return original.replace("\\", "/").substring(original.replace("\\", "/").lastIndexOf('/') + 1);
+        String normalized = original.replace("\\", "/");
+        String baseName = normalized.substring(normalized.lastIndexOf('/') + 1);
+        String sanitized = baseName.replaceAll("[^A-Za-z0-9._-]", "_");
+        return sanitized.isBlank() ? "agent-log.jsonl.gz" : sanitized;
     }
 
     private static String string(Map<String, Object> request, String key, String fallback) {
@@ -677,7 +932,7 @@ public class PcAgentAsService {
     }
 
     private static void validateIdempotencyKey(String fieldName, String value) {
-        if (!IDEMPOTENCY_KEY_PATTERN.matcher(value).matches()) {
+        if (value == null || !IDEMPOTENCY_KEY_PATTERN.matcher(value).matches()) {
             throw badRequest(fieldName + " is invalid.");
         }
     }
@@ -730,6 +985,31 @@ public class PcAgentAsService {
         return value;
     }
 
-    private record GzipValidation(long compressedBytes, long uncompressedBytes, String sha256) {
+    private static Instant instantValue(Map<String, Object> row, String key) {
+        Object value = row.get(key);
+        if (value instanceof Instant instant) {
+            return instant;
+        }
+        if (value instanceof Timestamp timestamp) {
+            return timestamp.toInstant();
+        }
+        if (value instanceof OffsetDateTime offsetDateTime) {
+            return offsetDateTime.toInstant();
+        }
+        return value == null ? null : Instant.parse(value.toString());
+    }
+
+    private record ActivationToken(Long activationTokenId, Long userInternalId) {
+    }
+
+    private record DiagnosisDraft(
+            List<Map<String, Object>> causeCandidates,
+            List<Map<String, Object>> upgradeCandidates,
+            String adminNote,
+            String riskLevel
+    ) {
+    }
+
+    private record GzipValidation(long compressedBytes, long uncompressedBytes, String sha256, String contentText) {
     }
 }

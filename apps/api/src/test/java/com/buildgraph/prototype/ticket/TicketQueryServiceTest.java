@@ -29,6 +29,40 @@ class TicketQueryServiceTest {
             "ADMIN",
             null
     );
+    private final CurrentUserService.CurrentUser user = new CurrentUserService.CurrentUser(
+            20L,
+            "user-public-id",
+            "user@example.com",
+            "User",
+            "USER",
+            null
+    );
+
+    @Test
+    void userTicketLookupRestrictsTicketByOwner() {
+        when(jdbcTemplate.queryForList(contains("t.user_id = ?"), eq("ticket-public-id"), eq(20L)))
+                .thenReturn(List.of(MockData.map(
+                        "id", "ticket-public-id",
+                        "status", "OPEN",
+                        "analysis_status", "RULE_READY",
+                        "review_status", "APPROVED",
+                        "support_decision", "REMOTE_POSSIBLE",
+                        "risk_level", "MEDIUM",
+                        "auto_response_allowed", false,
+                        "symptom", "GPU temperature spike",
+                        "log_upload_id", "log-upload-public-id",
+                        "assigned_admin_id", "admin-public-id",
+                        "cause_candidates", "[]",
+                        "upgrade_candidates", "[]",
+                        "admin_note", "Remote support link sent."
+                )));
+
+        Map<String, Object> response = service.ticket("ticket-public-id", user);
+
+        assertThat(response.get("id")).isEqualTo("ticket-public-id");
+        assertThat(response.get("supportDecision")).isEqualTo("REMOTE_POSSIBLE");
+        verify(jdbcTemplate).queryForList(contains("t.user_id = ?"), eq("ticket-public-id"), eq(20L));
+    }
 
     @Test
     void updateStoresSupportDecisionRemoteLinkVisitRequestAndAuditLog() {
@@ -145,6 +179,40 @@ class TicketQueryServiceTest {
 
         assertThatThrownBy(() -> service.update("ticket-public-id", MockData.map(
                 "supportDecision", "QUICK_ASSIST"
+        ), admin))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThatStatus((ResponseStatusException) exception, HttpStatus.BAD_REQUEST));
+    }
+
+    @Test
+    void updateRejectsInvalidAutoResponseAllowedValue() {
+        when(jdbcTemplate.queryForList(contains("FROM as_tickets"), eq("ticket-public-id")))
+                .thenReturn(List.of(MockData.map(
+                        "internal_id", 100L,
+                        "id", "ticket-public-id",
+                        "user_id", 20L,
+                        "status", "OPEN"
+                )));
+
+        assertThatThrownBy(() -> service.update("ticket-public-id", MockData.map(
+                "autoResponseAllowed", "not-a-boolean"
+        ), admin))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThatStatus((ResponseStatusException) exception, HttpStatus.BAD_REQUEST));
+    }
+
+    @Test
+    void updateRejectsInvalidRemoteSupportLink() {
+        when(jdbcTemplate.queryForList(contains("FROM as_tickets"), eq("ticket-public-id")))
+                .thenReturn(List.of(MockData.map(
+                        "internal_id", 100L,
+                        "id", "ticket-public-id",
+                        "user_id", 20L,
+                        "status", "OPEN"
+                )));
+
+        assertThatThrownBy(() -> service.update("ticket-public-id", MockData.map(
+                "remoteSupportLink", "javascript:alert(1)"
         ), admin))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(exception -> assertThatStatus((ResponseStatusException) exception, HttpStatus.BAD_REQUEST));

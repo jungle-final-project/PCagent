@@ -17,6 +17,7 @@ import com.buildgraph.prototype.config.security.AgentPrincipal;
 import com.buildgraph.prototype.config.security.AgentTokenHasher;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.GZIPOutputStream;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -33,6 +35,7 @@ import org.springframework.web.server.ResponseStatusException;
 class PcAgentAsServiceTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-02T00:00:00Z"), ZoneOffset.UTC);
     private static final AgentPrincipal AGENT = new AgentPrincipal(10L, "device-public-id", 20L, "ACTIVE");
+    private static final String VALID_ACTIVATION_TOKEN = "valid-agent-activation-token";
 
     private final JdbcTemplate jdbcTemplate = org.mockito.Mockito.mock(JdbcTemplate.class);
     private final AgentTokenHasher tokenHasher = new AgentTokenHasher();
@@ -56,13 +59,82 @@ class PcAgentAsServiceTest {
     }
 
     @Test
+    void issueActivationTokenStoresHashAndReturnsRawTokenOnce() {
+        Instant expiresAt = Instant.parse("2026-07-09T00:00:00Z");
+        when(jdbcTemplate.queryForList(contains("FROM users"), eq("user@example.com")))
+                .thenReturn(List.of(MockData.map("id", 20L)));
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO agent_activation_tokens"),
+                eq(20L),
+                any(String.class),
+                eq(Timestamp.from(expiresAt))
+        )).thenReturn(MockData.map(
+                "id", "activation-public-id",
+                "expires_at", expiresAt
+        ));
+
+        Map<String, Object> response = service.issueActivationToken(MockData.map(
+                "userEmail", "user@example.com",
+                "ttlDays", 7
+        ));
+
+        String rawActivationToken = String.valueOf(response.get("activationToken"));
+        assertThat(rawActivationToken).isNotBlank();
+        assertThat(response.get("id")).isEqualTo("activation-public-id");
+        assertThat(response.get("tokenType")).isEqualTo("Activation");
+        assertThat(response).containsOnlyKeys("id", "activationToken", "tokenType", "expiresAt");
+
+        ArgumentCaptor<String> hashCaptor = ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).queryForMap(
+                contains("INSERT INTO agent_activation_tokens"),
+                eq(20L),
+                hashCaptor.capture(),
+                eq(Timestamp.from(expiresAt))
+        );
+        assertThat(hashCaptor.getValue()).isEqualTo(tokenHasher.sha256Hex(rawActivationToken));
+        assertThat(hashCaptor.getValue()).isNotEqualTo(rawActivationToken);
+    }
+
+    @Test
+    void issueActivationTokenRejectsMissingUserSelectorBeforeGeneratingToken() {
+        assertThatThrownBy(() -> service.issueActivationToken(MockData.map(
+                "ttlDays", 7
+        )))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
+                        .isEqualTo(HttpStatus.BAD_REQUEST));
+
+        verifyNoInteractions(jdbcTemplate);
+    }
+
+    @Test
+    void issueActivationTokenRejectsInvalidUserIdBeforeQuery() {
+        assertThatThrownBy(() -> service.issueActivationToken(MockData.map(
+                "userId", "not-a-uuid",
+                "ttlDays", 7
+        )))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
+                        .isEqualTo(HttpStatus.BAD_REQUEST));
+
+        verifyNoInteractions(jdbcTemplate);
+    }
+
+    @Test
     void registerStoresHashedAgentTokenAndReturnsRawTokenOnce() {
         String tokenHash = tokenHasher.sha256Hex("raw-agent-token");
-        when(jdbcTemplate.queryForList(contains("FROM agent_devices"), eq("user@example.com"), eq("register-1")))
+        when(jdbcTemplate.queryForList(
+                contains("FROM agent_activation_tokens"),
+                eq("register-1"),
+                eq(tokenHasher.sha256Hex(VALID_ACTIVATION_TOKEN))
+        )).thenReturn(List.of(validActivationRow(null, null)));
+        when(jdbcTemplate.queryForList(contains("FROM agent_devices"), eq(5L), eq("register-1")))
                 .thenReturn(List.of());
+        when(jdbcTemplate.update(contains("UPDATE agent_activation_tokens"), eq(5L))).thenReturn(1);
         when(jdbcTemplate.queryForMap(
                 contains("agent_token_hash"),
-                eq("user@example.com"),
+                eq(20L),
+                eq(5L),
                 eq("fingerprint-hash"),
                 eq("host-hash"),
                 eq(tokenHash),
@@ -77,7 +149,7 @@ class PcAgentAsServiceTest {
         ));
 
         Map<String, Object> response = service.register(MockData.map(
-                "activationToken", "demo-agent-activation-token",
+                "activationToken", VALID_ACTIVATION_TOKEN,
                 "deviceFingerprintHash", "fingerprint-hash",
                 "hostnameHash", "host-hash",
                 "registrationIdempotencyKey", "register-1",
@@ -121,7 +193,7 @@ class PcAgentAsServiceTest {
     @Test
     void registerRejectsMissingRequiredFieldsBeforeIssuingToken() {
         assertThatThrownBy(() -> service.register(MockData.map(
-                "activationToken", "demo-agent-activation-token",
+                "activationToken", VALID_ACTIVATION_TOKEN,
                 "osVersion", "Windows 11",
                 "agentVersion", "0.1.0",
                 "policyVersion", "policy-v1"
@@ -133,6 +205,12 @@ class PcAgentAsServiceTest {
 
     @Test
     void registerRejectsInvalidActivationToken() {
+        when(jdbcTemplate.queryForList(
+                contains("FROM agent_activation_tokens"),
+                eq("register-1"),
+                eq(tokenHasher.sha256Hex("invalid-token"))
+        )).thenReturn(List.of());
+
         assertThatThrownBy(() -> service.register(MockData.map(
                 "activationToken", "invalid-token",
                 "deviceFingerprintHash", "fingerprint-hash",
@@ -149,7 +227,12 @@ class PcAgentAsServiceTest {
     @Test
     void registerRefreshesExistingDeviceForSameRegistrationKeyWithoutRawTokenStorage() {
         String tokenHash = tokenHasher.sha256Hex("raw-agent-token");
-        when(jdbcTemplate.queryForList(contains("FROM agent_devices"), eq("user@example.com"), eq("register-1")))
+        when(jdbcTemplate.queryForList(
+                contains("FROM agent_activation_tokens"),
+                eq("register-1"),
+                eq(tokenHasher.sha256Hex(VALID_ACTIVATION_TOKEN))
+        )).thenReturn(List.of(validActivationRow(10L, Instant.parse("2026-07-02T00:00:00Z"))));
+        when(jdbcTemplate.queryForList(contains("FROM agent_devices"), eq(5L), eq("register-1")))
                 .thenReturn(List.of(MockData.map(
                         "device_internal_id", 10L,
                         "device_id", "device-public-id",
@@ -171,7 +254,7 @@ class PcAgentAsServiceTest {
         ));
 
         Map<String, Object> response = service.register(MockData.map(
-                "activationToken", "demo-agent-activation-token",
+                "activationToken", VALID_ACTIVATION_TOKEN,
                 "deviceFingerprintHash", "fingerprint-hash",
                 "hostnameHash", "host-hash",
                 "registrationIdempotencyKey", "register-1",
@@ -183,6 +266,35 @@ class PcAgentAsServiceTest {
         assertThat(response.get("deviceId")).isEqualTo("device-public-id");
         assertThat(response.get("agentToken")).isEqualTo("raw-agent-token");
         assertThat(tokenHash).isNotEqualTo("raw-agent-token");
+    }
+
+    @Test
+    void registerRejectsUsedActivationTokenForDifferentRegistrationKeyBeforeIssuingAgentToken() {
+        PcAgentAsService guardedService = new PcAgentAsService(
+                jdbcTemplate,
+                tokenHasher,
+                CLOCK,
+                () -> {
+                    throw new AssertionError("token must not be generated for used activation token");
+                }
+        );
+        when(jdbcTemplate.queryForList(
+                contains("FROM agent_activation_tokens"),
+                eq("register-2"),
+                eq(tokenHasher.sha256Hex(VALID_ACTIVATION_TOKEN))
+        )).thenReturn(List.of(validActivationRow(null, Instant.parse("2026-07-02T00:00:00Z"))));
+
+        assertThatThrownBy(() -> guardedService.register(MockData.map(
+                "activationToken", VALID_ACTIVATION_TOKEN,
+                "deviceFingerprintHash", "fingerprint-hash",
+                "registrationIdempotencyKey", "register-2",
+                "osVersion", "Windows 11",
+                "agentVersion", "0.1.0",
+                "policyVersion", "policy-v1"
+        )))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
+                        .isEqualTo(HttpStatus.CONFLICT));
     }
 
     @Test
@@ -411,13 +523,18 @@ class PcAgentAsServiceTest {
                 contains("INSERT INTO as_tickets"),
                 eq(20L),
                 eq(200L),
-                eq("GPU temperature spike")
+                eq("GPU temperature spike"),
+                eq("HIGH"),
+                any(String.class),
+                any(String.class),
+                any(String.class)
         )).thenReturn(MockData.map(
                 "ticket_id", "ticket-public-id",
                 "status", "OPEN",
                 "analysis_status", "RULE_READY",
                 "review_status", "REQUIRED",
-                "support_decision", "NEEDS_MORE_INFO"
+                "support_decision", "NEEDS_MORE_INFO",
+                "risk_level", "HIGH"
         ));
 
         Map<String, Object> response = service.uploadLogs(
@@ -433,6 +550,8 @@ class PcAgentAsServiceTest {
         assertThat(response.get("analysisStatus")).isEqualTo("RULE_READY");
         assertThat(response.get("reviewStatus")).isEqualTo("REQUIRED");
         assertThat(response.get("supportDecision")).isEqualTo("NEEDS_MORE_INFO");
+        assertThat(response.get("riskLevel")).isEqualTo("HIGH");
+        assertThat(response.get("deleteAfter")).isEqualTo(Instant.parse("2026-08-01T00:00:00Z"));
         assertThat(response.get("rangeMinutes")).isEqualTo(30);
 
         verify(jdbcTemplate).queryForMap(contains("INSERT INTO agent_upload_jobs"), eq(10L), eq("upload-key"), any(), any());
@@ -450,7 +569,11 @@ class PcAgentAsServiceTest {
                 contains("INSERT INTO as_tickets"),
                 eq(20L),
                 eq(200L),
-                eq("GPU temperature spike")
+                eq("GPU temperature spike"),
+                eq("HIGH"),
+                any(String.class),
+                any(String.class),
+                any(String.class)
         );
     }
 
@@ -468,6 +591,22 @@ class PcAgentAsServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
                         .isEqualTo(HttpStatus.BAD_REQUEST));
+    }
+
+    @Test
+    void uploadLogsRejectsInvalidIdempotencyKeyBeforeReadingConsentOrCreatingRows() {
+        assertThatThrownBy(() -> service.uploadLogs(
+                AGENT,
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip("demo log\n")),
+                MockData.map("rangeMinutes", 30),
+                "bad key"
+        ))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThat(((ResponseStatusException) exception).getStatusCode())
+                        .isEqualTo(HttpStatus.BAD_REQUEST));
+
+        verify(jdbcTemplate, never()).queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L));
+        verify(jdbcTemplate, never()).queryForMap(contains("INSERT INTO as_tickets"), any(), any(), any());
     }
 
     @Test
@@ -572,5 +711,16 @@ class PcAgentAsServiceTest {
         } catch (IOException exception) {
             throw new IllegalStateException(exception);
         }
+    }
+
+    private static Map<String, Object> validActivationRow(Long existingDeviceInternalId, Instant usedAt) {
+        return MockData.map(
+                "activation_token_id", 5L,
+                "user_id", 20L,
+                "expires_at", Instant.parse("2026-07-09T00:00:00Z"),
+                "used_at", usedAt,
+                "revoked_at", null,
+                "existing_device_internal_id", existingDeviceInternalId
+        );
     }
 }
