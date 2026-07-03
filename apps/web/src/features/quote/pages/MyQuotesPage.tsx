@@ -38,34 +38,40 @@ export function MyQuotesPage() {
   }
 
   const buildRows = (buildsQuery.data?.items ?? []).map((build) => ({
-    id: <Link to={`/builds/${build.id}`} className="font-bold text-brand-blue">{shortId(build.id)}</Link>,
-    name: build.name,
-    price: `${build.totalPrice.toLocaleString()}원`,
-    confidence: <StatusBadge status={build.confidence} />,
-    createdAt: formatDateTime(build.createdAt),
-    action: <Link to={`/builds/${build.id}/change-part`} className="font-bold text-brand-blue">부품 변경</Link>
+    견적: <Link to={`/builds/${build.id}`} className="font-bold text-brand-blue">{shortId(build.id)}</Link>,
+    이름: build.name,
+    총액: <span className="whitespace-nowrap font-black text-commerce-ink">{build.totalPrice.toLocaleString()}원</span>,
+    신뢰도: <StatusBadge status={build.confidence} />,
+    생성일: formatDateTime(build.createdAt),
+    관리: <Link to={`/builds/${build.id}/change-part`} className="font-bold text-brand-blue">부품 변경</Link>
   }));
 
   const alertRows = (alertsQuery.data?.items ?? []).map((alert) => ({
-    part: alert.partName,
-    target: `${alert.targetPrice.toLocaleString()}원`,
-    current: `${alert.currentPrice.toLocaleString()}원`,
-    status: <StatusBadge status={alert.status} />,
-    createdAt: formatDateTime(alert.createdAt)
+    부품: alert.partName,
+    목표가: `${alert.targetPrice.toLocaleString()}원`,
+    현재가: <span className="whitespace-nowrap font-black text-commerce-ink">{alert.currentPrice.toLocaleString()}원</span>,
+    상태: <StatusBadge status={alert.status} />,
+    등록일: formatDateTime(alert.createdAt)
   }));
 
   return (
     <Screen>
-      <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-5">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Panel title="내 견적함" subtitle="로그인 사용자 기준 저장 Build 목록입니다.">
           {buildsQuery.isLoading ? (
             <StateMessage type="info" title="견적 불러오는 중" body="저장된 추천 견적을 조회하고 있습니다." />
           ) : buildsQuery.isError ? (
             <StateMessage type="warn" title="견적 조회 실패" body="GET /api/builds/history 응답을 불러오지 못했습니다." />
           ) : buildRows.length ? (
-            <DataTable columns={['id', 'name', 'price', 'confidence', 'createdAt', 'action']} rows={buildRows} />
+            <DataTable columns={['견적', '이름', '총액', '신뢰도', '생성일', '관리']} rows={buildRows} />
           ) : (
-            <StateMessage type="info" title="저장된 견적 없음" body="구매 상담에서 추천 조합을 생성하면 여기에 표시됩니다." />
+            <div className="space-y-3">
+              <StateMessage type="info" title="저장된 견적 없음" body="구매 상담에서 추천 조합을 생성하면 여기에 표시됩니다." />
+              <div className="flex flex-wrap gap-2">
+                <Link to="/requirements/new" className="rounded-md bg-brand-blue px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700">AI 견적 시작</Link>
+                <Link to="/self-quote" className="rounded-md border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:border-commerce-ink hover:text-commerce-ink">셀프 견적 시작</Link>
+              </div>
+            </div>
           )}
         </Panel>
 
@@ -87,13 +93,13 @@ export function MyQuotesPage() {
           </form>
         </Panel>
 
-        <Panel title="목표가 알림" className="col-span-2">
+        <Panel title="목표가 알림" className="lg:col-span-2">
           {alertsQuery.isLoading ? (
             <StateMessage type="info" title="알림 불러오는 중" body="등록된 목표가 알림을 조회하고 있습니다." />
           ) : alertsQuery.isError ? (
             <StateMessage type="warn" title="알림 조회 실패" body="GET /api/price-alerts 응답을 불러오지 못했습니다." />
           ) : alertRows.length ? (
-            <DataTable columns={['part', 'target', 'current', 'status', 'createdAt']} rows={alertRows} />
+            <DataTable columns={['부품', '목표가', '현재가', '상태', '등록일']} rows={alertRows} />
           ) : (
             <StateMessage type="info" title="등록된 알림 없음" body="부품 상세 또는 내 견적함에서 목표가를 등록할 수 있습니다." />
           )}
@@ -108,5 +114,12 @@ function shortId(id: string) {
 }
 
 function formatDateTime(value?: string) {
-  return value ? value.replace('T', ' ').slice(0, 19) : '-';
+  if (!value) {
+    return '—';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value.replace('T', ' ').slice(0, 19);
+  }
+  return date.toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' });
 }

@@ -14,7 +14,7 @@ export function PrimaryNav({ isAdmin = false }: { isAdmin?: boolean }) {
     <nav className="border-b border-commerce-line bg-white text-sm text-commerce-ink">
       <div className="mx-auto flex min-h-[46px] w-full max-w-[1320px] items-center gap-1 overflow-x-auto px-2 sm:px-6 lg:px-8 xl:px-0">
         {nav.map(([to, label]) => (
-          <NavLink key={to} to={to} className={({ isActive }) => `whitespace-nowrap border-b-2 px-4 py-3 font-black transition sm:px-6 ${isActive ? 'border-commerce-ink text-commerce-ink' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-commerce-ink'}`}>
+          <NavLink key={to} to={to} className={({ isActive }) => `whitespace-nowrap border-b-2 px-4 py-3 transition sm:px-6 ${isActive ? 'border-commerce-ink font-black text-commerce-ink' : 'border-transparent font-medium text-slate-500 hover:border-slate-300 hover:text-commerce-ink'}`}>
             {label}
           </NavLink>
         ))}
