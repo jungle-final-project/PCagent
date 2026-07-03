@@ -5,7 +5,7 @@ export function PrimaryNav({ isAdmin = false }: { isAdmin?: boolean }) {
     ['/', '홈'],
     // ['/requirements/new', 'AI 견적'],
     ['/self-quote', '셀프 견적'],
-    ['/builds/00000000-0000-4000-8000-000000002001', '추천 결과'],
+    ['/builds/latest', '추천 결과'],
     ['/my/quotes', '목표가 알림'],
     ['/support/new', 'AS 접수'],
     ...(isAdmin ? [['/admin', '관리자'] as [string, string]] : [])

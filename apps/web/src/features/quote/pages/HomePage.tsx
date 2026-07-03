@@ -28,6 +28,7 @@ import {
   clearLegacyAiStorage,
   normalizeAiRecommendedBuild,
   readAssistantSession,
+  recentBuildsForChatContext,
   saveSelectedAiBuild,
   type AiAssistantSession,
   type AiRecommendedBuild,
@@ -156,6 +157,7 @@ export function HomePage() {
   const [applyingBuildId, setApplyingBuildId] = useState<string | null>(null);
   const [applyingFeaturedBuildId, setApplyingFeaturedBuildId] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const latestHomeAiBuilds = recentBuildsForChatContext(assistantSession);
   const featuredBuildPartQueries = useQueries({
     queries: featuredBuilds.map((build) => ({
       queryKey: ['parts', 'home-featured-build', build.id],
@@ -179,7 +181,7 @@ export function HomePage() {
     }))
   });
   const aiBuildCaseQueries = useQueries({
-    queries: assistantSession.latestBuilds.map((build) => {
+    queries: latestHomeAiBuilds.map((build) => {
       const caseItem = build.items.find((item) => item.category === 'CASE');
       return {
         queryKey: ['parts', 'home-ai-build-case', build.id, caseItem?.partId],
@@ -189,7 +191,7 @@ export function HomePage() {
       };
     })
   });
-  const activeAiBuild = activeGraphBuild(assistantSession);
+  const activeAiBuild = activeGraphBuild(assistantSession, latestHomeAiBuilds);
   const activeGraphFocus = assistantSession.latestGraphFocus ?? defaultGraphFocus(activeAiBuild);
   const graphQuery = useQuery({
     queryKey: [
@@ -357,10 +359,10 @@ export function HomePage() {
             </div>
           ) : (
             <div data-testid="home-ai-recommendations">
-              {assistantSession.latestBuilds.length > 0 ? (
+              {latestHomeAiBuilds.length > 0 ? (
                 <>
                   <div className="grid gap-3 md:grid-cols-3">
-                    {assistantSession.latestBuilds.map((build, index) => (
+                    {latestHomeAiBuilds.map((build, index) => (
                       <AiRecommendationCard
                         key={build.id}
                         build={build}
@@ -415,12 +417,12 @@ export function HomePage() {
   );
 }
 
-function activeGraphBuild(session: AiAssistantSession) {
-  if (session.latestBuilds.length === 0) {
+function activeGraphBuild(session: AiAssistantSession, displayBuilds: AiRecommendedBuild[]) {
+  if (displayBuilds.length === 0) {
     return null;
   }
-  const storedActiveBuild = session.latestBuilds.find((build) => build.id === session.latestActiveBuildId);
-  return storedActiveBuild ?? session.latestBuilds.find((build) => build.tier === 'balanced') ?? session.latestBuilds[0];
+  const storedActiveBuild = displayBuilds.find((build) => build.id === session.latestActiveBuildId);
+  return storedActiveBuild ?? displayBuilds.find((build) => build.tier === 'balanced') ?? displayBuilds[0];
 }
 
 function defaultGraphFocus(build: AiRecommendedBuild | null): BuildGraphFocus {

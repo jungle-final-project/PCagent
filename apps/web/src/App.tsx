@@ -3,7 +3,7 @@ import { LoginPage, SignupPage } from './features/auth/AuthPages';
 import { RequireAdmin } from './features/auth/RequireAdmin';
 import { RequireUser } from './features/auth/RequireUser';
 import { CheckoutCompletePage, CheckoutPage, PartDetailPage, SelfQuotePage } from './features/parts/PartsPages';
-import { BuildResultPage, ChangePartPage, HomePage, MyQuotesPage, RequirementPage } from './features/quote/QuotePages';
+import { BuildResultPage, ChangePartPage, HomePage, LatestBuildResultPage, MyQuotesPage, RequirementPage } from './features/quote/QuotePages';
 import { AsChatPage, SupportNewPage, SupportTicketPage } from './features/support/SupportPages';
 import { AdminBuildGraphLayoutsPage, AdminDashboardPage, AdminLoadTestsPage, AdminPartsPage, AdminPriceJobsPage, AdminTicketDetailPage, AdminTicketsPage, AgentSessionAdminPage, AgentSessionsListAdminPage, RagEvidenceAdminPage, RagEvidenceListAdminPage, ToolInvocationAdminPage, ToolInvocationsListAdminPage } from './features/admin/AdminPages';
 
@@ -12,6 +12,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<RequireUser preserveRedirect={false}><HomePage /></RequireUser>} />
       <Route path="/requirements/new" element={<RequireUser><RequirementPage /></RequireUser>} />
+      <Route path="/builds/latest" element={<RequireUser><LatestBuildResultPage /></RequireUser>} />
       <Route path="/builds/:buildId" element={<RequireUser><BuildResultPage /></RequireUser>} />
       <Route path="/self-quote" element={<RequireUser><SelfQuotePage /></RequireUser>} />
       <Route path="/checkout" element={<RequireUser><CheckoutPage /></RequireUser>} />

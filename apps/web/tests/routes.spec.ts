@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 const routes = [
   '/',
   '/requirements/new',
+  '/builds/latest',
   '/builds/00000000-0000-4000-8000-000000002001',
   '/self-quote',
   '/checkout',
