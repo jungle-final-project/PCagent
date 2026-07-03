@@ -5,6 +5,7 @@ import com.buildgraph.prototype.common.MockData;
 import com.buildgraph.prototype.common.ApiException;
 import com.buildgraph.prototype.config.security.AgentPrincipal;
 import com.buildgraph.prototype.config.security.AgentTokenHasher;
+import com.buildgraph.prototype.support.AsLogRagAnalysisService;
 import com.buildgraph.prototype.user.CurrentUserService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,6 +23,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -550,6 +552,47 @@ public class PcAgentAsService {
         } catch (EmptyResultDataAccessException exception) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Agent device is not active.", exception);
         }
+    }
+
+    @Transactional
+    public Map<String, Object> previewAsRag(
+            AgentPrincipal principal,
+            MultipartFile file,
+            Map<String, Object> metadata,
+            String idempotencyKey
+    ) {
+        validateIdempotencyKey("Idempotency-Key", idempotencyKey);
+        if (file == null || file.isEmpty()) {
+            throw fileValidation("Agent log preview gzip file is required.");
+        }
+        String fileName = fileName(file);
+        if (!fileName.endsWith(".gz")) {
+            throw fileValidation("Agent log preview must be gzip.");
+        }
+
+        PcAgentLogAnalyzer.IncidentWindow incidentWindow = PcAgentLogAnalyzer.resolveIncidentWindow(metadata, clock);
+        GzipValidation gzip = validateGzip(file);
+        PcAgentLogAnalyzer.validateJsonl(gzip.contentText(), incidentWindow);
+        Integer consentCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM agent_consents
+                WHERE device_id = ?
+                  AND consent_type = 'SERVER_UPLOAD'
+                  AND accepted = true
+                  AND revoked_at IS NULL
+                """, Integer.class, principal.deviceInternalId());
+        if (consentCount == null || consentCount == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Server upload consent is required.");
+        }
+
+        Map<String, Object> analysis = new AsLogRagAnalysisService(jdbcTemplate)
+                .analyze(file, incidentWindow.durationMinutes());
+        Map<String, Object> response = new LinkedHashMap<>(analysis);
+        response.put("previewSource", "PC_AGENT_LOG_UPLOAD");
+        response.put("rangeMinutes", incidentWindow.durationMinutes());
+        response.put("incidentWindow", incidentWindow.toMap());
+        response.put("rawSamplesCount", listSize(response.get("rawSamples")));
+        return response;
     }
 
     @Transactional
@@ -1122,6 +1165,10 @@ public class PcAgentAsService {
         }
         Object rawSamples = map.get("rawSamples");
         return rawSamples instanceof List<?> list ? list.size() : 0;
+    }
+
+    private static int listSize(Object value) {
+        return value instanceof List<?> list ? list.size() : 0;
     }
 
     private static GzipValidation validateGzip(MultipartFile file) {

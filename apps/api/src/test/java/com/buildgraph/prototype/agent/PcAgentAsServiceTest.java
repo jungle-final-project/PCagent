@@ -646,6 +646,39 @@ class PcAgentAsServiceTest {
     }
 
     @Test
+    void previewAsRagAnalyzesAgentGzipWithoutCreatingTicket() {
+        when(jdbcTemplate.queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L)))
+                .thenReturn(1);
+        when(jdbcTemplate.queryForList(contains("FROM as_rag_evidence"))).thenReturn(List.of(asRagEvidence(
+                "00000000-0000-4000-8000-000000058101",
+                "as-rag-remote-driver-os",
+                "REMOTE_DRIVER_OS",
+                "REMOTE_SUPPORT",
+                "REMOTE_POSSIBLE",
+                "DRIVER_ERROR_REPEAT",
+                "드라이버 오류 반복",
+                "{\"keywords\":[\"display driver\",\"nvlddmkm\"],\"remoteActions\":[\"DRIVER_ROLLBACK\"],\"visitReasons\":[]}",
+                0.92
+        )));
+
+        Map<String, Object> response = service.previewAsRag(
+                AGENT,
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(driverErrorLogs())),
+                MockData.map("symptomType", "REMOTE_DRIVER_OS"),
+                "preview-key"
+        );
+
+        assertThat(response.get("previewSource")).isEqualTo("PC_AGENT_LOG_UPLOAD");
+        assertThat(response.get("recommendedService")).isEqualTo("REMOTE_SUPPORT");
+        assertThat(response.get("supportDecision")).isEqualTo("REMOTE_POSSIBLE");
+        assertThat(response.get("rangeMinutes")).isEqualTo(20);
+        assertThat(response.get("rawSamplesCount")).isEqualTo(2);
+        assertThat(response.get("incidentWindow")).isInstanceOf(Map.class);
+        verify(jdbcTemplate, never()).queryForMap(contains("INSERT INTO agent_upload_jobs"), any(), any(), any(), any());
+        verify(jdbcTemplate, never()).queryForMap(contains("INSERT INTO as_tickets"), any(), any(), any());
+    }
+
+    @Test
     void uploadLogsRejectsMissingServerUploadConsent() {
         when(jdbcTemplate.queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L)))
                 .thenReturn(0);
@@ -776,6 +809,33 @@ class PcAgentAsServiceTest {
                         .isEqualTo(HttpStatus.BAD_REQUEST));
 
         verify(jdbcTemplate, never()).queryForMap(contains("INSERT INTO as_tickets"), any(), any(), any());
+    }
+
+    private static Map<String, Object> asRagEvidence(
+            String id,
+            String sourceId,
+            String symptomType,
+            String recommendedService,
+            String supportDecision,
+            String reasonCode,
+            String summary,
+            String metadata,
+            double score
+    ) {
+        return MockData.map(
+                "id", id,
+                "source_id", sourceId,
+                "symptom_type", symptomType,
+                "source_type", "SUPPORT_POLICY",
+                "recommended_service", recommendedService,
+                "support_decision", supportDecision,
+                "reason_code", reasonCode,
+                "title", summary,
+                "chunk_text", summary,
+                "summary", summary,
+                "score", score,
+                "metadata", metadata
+        );
     }
 
     private static byte[] gzip(String content) {

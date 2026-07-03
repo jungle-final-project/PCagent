@@ -1017,6 +1017,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/agent/log-uploads/as-rag-preview:
+    post:
+      summary: PC Agent AS RAG recommendation preview
+      description: Agent-token based preview used by apps/pc-agent. It analyzes the selected gzip log window and does not create an AS ticket.
+      security:
+        - agentBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/PcAgentLogUploadRequest"
+      responses:
+        "200":
+          description: AS RAG recommendation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AsRagAnalysisDto"
+        "401":
+          description: Agent token is missing or invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Same Idempotency-Key was used with a different preview request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/agent/sessions:
     post:
       summary: Agent 세션 생성
