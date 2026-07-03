@@ -43,6 +43,7 @@ type BuildDependencyGraphProps = {
   };
 };
 type CandidateContext = NonNullable<BuildDependencyGraphProps['candidateContext']>;
+type BuildGraphInsight = BuildGraphResolveResponse['insights'][number];
 
 const categoryOrder = ['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'PSU', 'CASE', 'COOLER', 'STORAGE', 'PRICE'];
 const DEFAULT_NODE_SIZE = { width: 220, height: 108 };
@@ -94,12 +95,18 @@ export function BuildDependencyGraph({
 }: BuildDependencyGraphProps) {
   const [activeEdge, setActiveEdge] = useState<BuildGraphEdge | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
+  const [isEdgeGuideVisible, setIsEdgeGuideVisible] = useState(true);
+  const [isLegendExpanded, setIsLegendExpanded] = useState(true);
+  const [issueFocusNodeIds, setIssueFocusNodeIds] = useState<Set<string>>(new Set());
   const [isDesktopViewport, setIsDesktopViewport] = useState(false);
   const [showFloatingGraph, setShowFloatingGraph] = useState(false);
+  const mainFlowInstanceRef = useRef<ReactFlowInstance | null>(null);
   const graphCanvasRef = useRef<HTMLDivElement | null>(null);
   const hasSeenGraphRef = useRef(false);
+  const issueFocusTimeoutRef = useRef<number | null>(null);
   const displayGraph = useMemo(() => withDisplayTotalPrice(graph, totalPrice), [graph, totalPrice]);
   const graphModel = useMemo(() => buildGraphDisplayModel(displayGraph), [displayGraph]);
+  const issueInsight = useMemo(() => selectRepresentativeIssue(displayGraph), [displayGraph]);
   const activeNode = displayGraph?.nodes.find((node) => node.id === activeNodeId) ?? null;
   const activeNodeCategory = activeNode && typeof activeNode.category === 'string' && isPartCategory(activeNode.category)
     ? activeNode.category
@@ -121,11 +128,30 @@ export function BuildDependencyGraph({
     }),
     enabled: Boolean(candidateContext && activeNodeCategory)
   });
-  const { nodes, edges } = useMemo(
+  const flowElements = useMemo(
     () => toFlowElements(displayGraph, graphModel.nodes, graphModel.edges),
     [displayGraph, graphModel]
   );
+  const nodes = useMemo<Node[]>(() => flowElements.nodes.map((node) => {
+    const originalNodeId = typeof node.data.originalId === 'string' ? node.data.originalId : String(node.id);
+    return {
+      ...node,
+      className: [
+        node.className,
+        issueFocusNodeIds.has(originalNodeId) ? 'buildgraph-flow-node--issue-focus' : ''
+      ].filter(Boolean).join(' ')
+    };
+  }), [flowElements.nodes, issueFocusNodeIds]);
+  const edges = flowElements.edges;
   const canShowFloatingGraph = Boolean(displayGraph && graphModel.nodes.length > 0 && !isLoading && !isError);
+
+  useEffect(() => {
+    return () => {
+      if (issueFocusTimeoutRef.current !== null) {
+        window.clearTimeout(issueFocusTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(min-width: 1024px)');
@@ -172,6 +198,31 @@ export function BuildDependencyGraph({
     const graphEdge = displayGraph?.edges.find((item) => item.id === edge.id);
     setActiveNodeId(null);
     setActiveEdge(graphEdge ?? null);
+    setIsEdgeGuideVisible(true);
+  };
+
+  const focusIssueNodes = () => {
+    if (!issueInsight) return;
+    const relatedNodeIds = new Set(issueInsight.relatedNodeIds.map(String));
+    setIssueFocusNodeIds(relatedNodeIds);
+    const targetFlowNodes = nodes.filter((node) => {
+      const originalNodeId = typeof node.data.originalId === 'string' ? node.data.originalId : String(node.id);
+      return relatedNodeIds.has(originalNodeId);
+    });
+    if (targetFlowNodes.length > 0) {
+      mainFlowInstanceRef.current?.fitView({
+        nodes: targetFlowNodes.map((node) => ({ id: node.id })),
+        padding: 0.28,
+        duration: 360
+      });
+    }
+    if (issueFocusTimeoutRef.current !== null) {
+      window.clearTimeout(issueFocusTimeoutRef.current);
+    }
+    issueFocusTimeoutRef.current = window.setTimeout(() => {
+      setIssueFocusNodeIds(new Set());
+      issueFocusTimeoutRef.current = null;
+    }, 2200);
   };
 
   const scrollToMainGraph = () => {
@@ -197,18 +248,8 @@ export function BuildDependencyGraph({
       </div>
 
       {isLoading && !displayGraph ? (
-        <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_260px]">
-          <div className="grid h-[430px] place-items-center border-b border-commerce-line bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] p-6 text-sm font-bold text-slate-500 lg:h-[680px] lg:border-b-0 lg:border-r xl:h-[720px]">
-            관계 그래프를 계산하는 중입니다.
-          </div>
-          <aside className="hidden min-w-0 bg-white p-5 lg:block">
-            <div className="mb-4 h-5 w-20 rounded bg-slate-100" />
-            <div className="space-y-3">
-              <div className="h-20 rounded-lg border border-dashed border-commerce-line bg-slate-50" />
-              <div className="h-28 rounded-lg border border-amber-100 bg-amber-50/50" />
-              <div className="h-24 rounded-lg border border-commerce-line bg-slate-50" />
-            </div>
-          </aside>
+        <div className="grid h-[430px] place-items-center border-b border-commerce-line bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] p-6 text-sm font-bold text-slate-500 lg:h-[680px] xl:h-[720px]">
+          관계 그래프를 계산하는 중입니다.
         </div>
       ) : isError && !displayGraph ? (
         <div className="m-5 rounded-lg border border-orange-200 bg-orange-50 p-5 text-sm font-bold text-orange-700">
@@ -225,38 +266,65 @@ export function BuildDependencyGraph({
           </p>
         </div>
       ) : (
-        <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div>
           <div
             ref={graphCanvasRef}
             data-testid="graph-flow-canvas"
-            className="relative min-w-0 border-b border-commerce-line bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] lg:border-b-0 lg:border-r"
+            data-active-edge-id={activeEdge?.id}
+            className="relative min-w-0 border-b border-commerce-line bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] lg:border-b-0"
           >
-            <div className="h-[520px] lg:h-[calc(100vh-180px)] xl:h-[calc(100vh-160px)]">
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                nodeTypes={graphNodeTypes}
-                fitView
-                fitViewOptions={{ padding: 0.06 }}
-                minZoom={0.45}
-                maxZoom={1.35}
-                zoomOnScroll
-                zoomOnPinch
-                panOnDrag
-                nodesDraggable={false}
-                nodesConnectable={false}
-                proOptions={{ hideAttribution: true }}
-                onNodeClick={(_, node: Node) => handleNodeClick(node)}
-                onEdgeClick={(_, edge: Edge) => handleEdgeClick(edge)}
-              >
-                <Background color="#dbe4f0" gap={18} />
-                {isDesktopViewport ? <Controls showInteractive={false} /> : null}
-              </ReactFlow>
+            {isEdgeGuideVisible && !activeNode ? (
+              <GraphEdgeGuideCapsule
+                edge={activeEdge}
+                onClose={() => setIsEdgeGuideVisible(false)}
+              />
+            ) : null}
+
+            {issueInsight ? (
+              <GraphIssueCard
+                insight={issueInsight}
+                onFocusIssue={focusIssueNodes}
+              />
+            ) : null}
+
+            <div className={`h-[520px] ${issueInsight ? 'pt-0 lg:pt-[184px]' : 'pt-[96px] lg:pt-[88px]'} lg:h-[calc(100vh-180px)] xl:h-[calc(100vh-160px)]`}>
+              <div className="h-full">
+                <ReactFlow
+                  nodes={nodes}
+                  edges={edges}
+                  nodeTypes={graphNodeTypes}
+                  fitView
+                  fitViewOptions={{ padding: 0.06 }}
+                  minZoom={0.45}
+                  maxZoom={1.35}
+                  zoomOnScroll
+                  zoomOnPinch
+                  panOnDrag
+                  nodesDraggable={false}
+                  nodesConnectable={false}
+                  proOptions={{ hideAttribution: true }}
+                  onInit={(instance) => {
+                    mainFlowInstanceRef.current = instance;
+                  }}
+                  onNodeClick={(_, node: Node) => handleNodeClick(node)}
+                  onEdgeClick={(_, edge: Edge) => handleEdgeClick(edge)}
+                >
+                  <Background color="#dbe4f0" gap={18} />
+                  {isDesktopViewport ? <Controls showInteractive={false} /> : null}
+                </ReactFlow>
+              </div>
             </div>
             {isRefreshing ? (
               <div className="absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-full border border-blue-100 bg-white/95 px-3 py-1.5 text-xs font-black text-brand-blue shadow-product">
                 관계도 업데이트 중
               </div>
+            ) : null}
+
+            {!activeNode ? (
+              <GraphEdgeLegendCard
+                isExpanded={isLegendExpanded}
+                onToggle={() => setIsLegendExpanded((current) => !current)}
+              />
             ) : null}
 
             {activeNode ? (
@@ -271,83 +339,6 @@ export function BuildDependencyGraph({
               />
             ) : null}
           </div>
-          <aside data-testid="graph-summary-panel" className="min-w-0 bg-white p-5">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <h3 className="text-sm font-black text-commerce-ink">영향 요약</h3>
-              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600">
-                <Maximize2 size={12} />
-                Focused
-              </span>
-            </div>
-
-            {!activeEdge ? (
-              <div className="mb-4 rounded-lg border border-dashed border-commerce-line bg-slate-50 p-3">
-                <div className="text-sm font-black text-commerce-ink">관계를 선택하세요</div>
-                <p className="mt-1 break-keep text-xs leading-5 text-slate-500">
-                  선을 누르면 두 부품 사이의 제약과 판단 근거를 확인할 수 있습니다.
-                </p>
-              </div>
-            ) : null}
-
-            {activeEdge ? (
-              <div className={`mb-4 rounded-lg border p-3 ${statusPanelTone(activeEdge.status)}`}>
-                <div className="mb-1 flex items-center gap-2 text-xs font-black">
-                  {statusIcon(activeEdge.status)}
-                  선택한 관계
-                </div>
-                <div className="text-sm font-black text-commerce-ink">{activeEdge.label}</div>
-                <p className="mt-1 break-keep text-xs leading-5 text-slate-600">{activeEdge.summary}</p>
-              </div>
-            ) : null}
-
-            {graphModel.validationNodes.length > 0 ? (
-              <div data-testid="graph-validation-summary" className="mb-4 space-y-2">
-                <div className="text-xs font-black text-slate-500">검증 결과</div>
-                {graphModel.validationNodes.map((node) => (
-                  <article
-                    key={node.id}
-                    className={`rounded-lg border p-3 ${statusPanelTone(node.status)}`}
-                  >
-                    <div className="flex items-center gap-2 text-xs font-black">
-                      {statusIcon(node.status)}
-                      {statusLabel(node.status)}
-                    </div>
-                    <div className="mt-2 text-sm font-black text-commerce-ink">{validationSummaryTitle(node)}</div>
-                    <p className="mt-1 break-keep text-xs leading-5 text-slate-600">{validationSummaryDescription(node)}</p>
-                  </article>
-                ))}
-              </div>
-            ) : null}
-
-            <div className="space-y-2">
-              {displayGraph.insights.map((insight) => (
-                <article
-                  key={insight.id}
-                  className={`w-full rounded-lg border p-3 text-left ${statusPanelTone(insight.status)}`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 text-xs font-black">
-                      {statusIcon(insight.status)}
-                      {statusLabel(insight.status)}
-                    </div>
-                    <span className="text-[11px] font-black text-slate-400">{insight.relatedNodeIds.length} nodes</span>
-                  </div>
-                  <div className="mt-2 text-sm font-black text-commerce-ink">{insight.title}</div>
-                  <p className="mt-1 break-keep text-xs leading-5 text-slate-600">{insight.description}</p>
-                </article>
-              ))}
-            </div>
-
-            <div className="mt-4 rounded-lg border border-commerce-line bg-slate-50 p-3">
-              <div className="mb-2 flex items-center gap-2 text-xs font-black text-slate-700">
-                <Info size={14} />
-                그래프 읽는 법
-              </div>
-              <p className="break-keep text-xs leading-5 text-slate-500">
-                그래프의 선택 관계를 누르면 판단 근거를 확인할 수 있고, 검증 조건은 이 요약에서 확인합니다. 노란 선은 확인 필요, 빨간 선은 교체 후보를 먼저 봐야 하는 관계입니다.
-              </p>
-            </div>
-          </aside>
         </div>
       )}
       {showFloatingGraph && canShowFloatingGraph ? (
@@ -590,6 +581,169 @@ function PriceTotalNode({ data }: NodeProps<Node<{ label: ReactNode }>>) {
   return <>{data.label}</>;
 }
 
+function GraphEdgeGuideCapsule({
+  edge,
+  onClose
+}: {
+  edge: BuildGraphEdge | null;
+  onClose: () => void;
+}) {
+  const isRelationshipDetail = Boolean(edge);
+  const panelTone = edge ? statusPanelTone(edge.status) : 'border-blue-100 bg-white/95';
+
+  return (
+    <div
+      data-testid="graph-edge-guide-capsule"
+      onPointerDown={(event) => event.stopPropagation()}
+      className={`relative z-20 mx-3 mt-3 rounded-xl border px-3 py-2.5 shadow-product backdrop-blur lg:absolute lg:left-1/2 lg:right-auto lg:top-3 lg:m-0 lg:w-[640px] lg:max-w-[calc(100%-2rem)] lg:-translate-x-1/2 ${panelTone}`}
+    >
+      <div className="flex min-w-0 items-start gap-2.5">
+        <div className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white text-brand-blue shadow-product">
+          {edge ? statusIcon(edge.status) : <Info size={14} />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="shrink-0 text-[11px] font-black text-commerce-ink">
+              {isRelationshipDetail ? '선택한 관계' : '관계 안내'}
+            </div>
+            {edge ? (
+              <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-black ${statusBadgeTone(edge.status)}`}>
+                {statusLabel(edge.status)}
+              </span>
+            ) : null}
+          </div>
+          {edge ? (
+            <>
+              <div className="mt-1 truncate text-sm font-black text-commerce-ink" title={edge.label}>
+                {edge.label}
+              </div>
+              <p className="mt-0.5 break-keep text-xs font-bold leading-5 text-slate-600">
+                {edge.summary}
+              </p>
+            </>
+          ) : (
+            <p className="mt-0.5 break-keep text-xs font-bold leading-5 text-slate-600">
+              선을 누르면 두 부품 사이의 제약과 판단 근거를 확인할 수 있어요
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          aria-label="관계 안내 닫기"
+          onClick={onClose}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-slate-500 transition hover:bg-white hover:text-commerce-ink focus:outline-none focus:ring-2 focus:ring-brand-blue"
+        >
+          <X size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GraphIssueCard({
+  insight,
+  onFocusIssue
+}: {
+  insight: BuildGraphInsight;
+  onFocusIssue: () => void;
+}) {
+  const relatedNodeCount = insight.relatedNodeIds.length;
+  const hasRelatedNodes = relatedNodeCount > 0;
+
+  return (
+    <article
+      data-testid="graph-issue-card"
+      onPointerDown={(event) => event.stopPropagation()}
+      className={`relative z-20 mx-3 mt-4 rounded-xl border p-3 shadow-product backdrop-blur sm:mr-auto sm:w-[330px] lg:absolute lg:left-3 lg:right-auto lg:top-[92px] lg:m-0 ${statusPanelTone(insight.status)}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 text-xs font-black">
+          {statusIcon(insight.status)}
+          <span>{issueCardTitle(insight.status)}</span>
+        </div>
+        <span className="shrink-0 text-[11px] font-black text-slate-500">
+          {relatedNodeCount}개 노드
+        </span>
+      </div>
+      <div className="mt-2 line-clamp-1 text-sm font-black text-commerce-ink" title={insight.title}>
+        {insight.title}
+      </div>
+      <p className="mt-1 break-keep text-xs font-bold leading-5 text-slate-600">
+        {insight.description}
+      </p>
+      <button
+        type="button"
+        disabled={!hasRelatedNodes}
+        onClick={onFocusIssue}
+        className="mt-3 rounded-md px-0 py-1 text-xs font-black text-commerce-sale transition hover:text-red-700 focus:outline-none focus:ring-2 focus:ring-brand-blue disabled:text-slate-400"
+      >
+        문제 노드로 이동
+      </button>
+    </article>
+  );
+}
+
+function GraphEdgeLegendCard({
+  isExpanded,
+  onToggle
+}: {
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      data-testid="graph-edge-legend-card"
+      onPointerDown={(event) => event.stopPropagation()}
+      className="mb-3 ml-3 mr-24 rounded-xl border border-commerce-line bg-white/95 p-3 shadow-product backdrop-blur lg:absolute lg:bottom-4 lg:right-24 lg:z-10 lg:m-0 lg:w-[310px]"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 text-xs font-black text-commerce-ink">
+          <Info size={14} className="shrink-0 text-slate-500" />
+          <span className="truncate">그래프 읽는 법</span>
+        </div>
+        <button
+          type="button"
+          aria-label={isExpanded ? '그래프 읽는 법 접기' : '그래프 읽는 법 펼치기'}
+          onClick={onToggle}
+          className="shrink-0 rounded-md px-2 py-1 text-[11px] font-black text-slate-500 transition hover:bg-slate-50 hover:text-commerce-ink focus:outline-none focus:ring-2 focus:ring-brand-blue"
+        >
+          {isExpanded ? '접기' : '펼치기'}
+        </button>
+      </div>
+      {isExpanded ? (
+        <div className="mt-3 space-y-2">
+          <LegendLine color="#2563eb" label="파란 선" description="선택이 영향을 주는 관계" />
+          <LegendLine color="#d97706" label="노란 선" description="확인이 필요한 관계" />
+          <LegendLine color="#dc2626" label="빨간 선" description="교체 후보를 먼저 봐야 하는 관계" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LegendLine({
+  color,
+  label,
+  description
+}: {
+  color: string;
+  label: string;
+  description: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-xs leading-5">
+      <span className="relative h-0.5 w-9 shrink-0 rounded-full" style={{ backgroundColor: color }}>
+        <span
+          className="absolute right-0 top-1/2 h-2 w-2 -translate-y-1/2 rotate-45 border-r-2 border-t-2"
+          style={{ borderColor: color }}
+        />
+      </span>
+      <span className="shrink-0 font-black text-commerce-ink">{label}</span>
+      <span className="min-w-0 break-keep font-bold text-slate-500">{description}</span>
+    </div>
+  );
+}
+
 function buildGraphDisplayModel(graph?: BuildGraphResolveResponse | null) {
   if (!graph) {
     return { nodes: [], edges: [], validationNodes: [] };
@@ -603,6 +757,19 @@ function buildGraphDisplayModel(graph?: BuildGraphResolveResponse | null) {
   const validationNodes = graph.nodes.filter(isValidationSummaryNode);
 
   return { nodes, edges, validationNodes };
+}
+
+function selectRepresentativeIssue(graph?: BuildGraphResolveResponse | null) {
+  if (!graph) return null;
+  return graph.insights.find((insight) => insight.status === 'FAIL')
+    ?? graph.insights.find((insight) => insight.status === 'WARN')
+    ?? null;
+}
+
+function issueCardTitle(status: BuildGraphStatus) {
+  if (status === 'FAIL') return '장착 불가';
+  if (status === 'WARN') return '주의 필요';
+  return '검증 통과';
 }
 
 function isGraphCanvasNode(node: BuildGraphNode) {
@@ -623,21 +790,6 @@ function isBudgetGraphNode(node: Pick<BuildGraphNode, 'id' | 'label'>) {
   const id = String(node.id ?? '').toLowerCase();
   const label = String(node.label ?? '').trim();
   return id.includes('budget') || label.includes('예산');
-}
-
-function validationSummaryTitle(node: BuildGraphNode) {
-  const id = String(node.id ?? '').toLowerCase();
-  const category = String(node.category ?? '').toUpperCase();
-  if (id.includes('power') || category === 'PSU') return '전력 조건';
-  if (id.includes('size') || category === 'CASE') return '장착 규격';
-  if (id.includes('compat') || category === 'CPU' || category === 'MOTHERBOARD' || category === 'RAM' || category === 'COOLER') {
-    return '호환성 조건';
-  }
-  return '검증 조건';
-}
-
-function validationSummaryDescription(node: BuildGraphNode) {
-  return node.detail && node.detail.trim() ? node.detail : validationSummaryTitle(node);
 }
 
 function toFlowElements(
