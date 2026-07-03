@@ -19,6 +19,7 @@ public class AgentSecurityConfig {
             "/api/agent/consents",
             "/api/agent/heartbeat",
             "/api/agent/log-uploads",
+            "/api/agent/log-uploads/as-rag-preview",
             "/api/agent/as-drafts"
     };
 

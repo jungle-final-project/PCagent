@@ -280,6 +280,81 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertIn(b'name="supportRequestKind"', request.data)
             self.assertIn(b"\r\nREMOTE_REQUESTED\r\n", request.data)
 
+    def test_preview_as_rag_uses_agent_token_and_incident_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preview_file = Path(directory) / "incident-window.jsonl.gz"
+            preview_file.write_bytes(b"gzip-bytes")
+            detected = datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST)
+            window = agent.default_incident_window(
+                "REMOTE_DRIVER_OS",
+                detected_at=detected,
+                trigger_type="USER_REQUEST",
+                incident_id="incident-1",
+                consent_id="consent-1",
+            )
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="token",
+                log_dir=Path(directory),
+                agent_version="test-agent",
+                policy_version="test-policy",
+            )
+            response = MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"recommendedService":"REMOTE_SUPPORT"}'
+            response.__exit__.return_value = None
+
+            with patch("buildgraph_agent.urllib.request.urlopen", return_value=response) as urlopen:
+                result = agent.preview_as_rag(config, preview_file, "preview-key", window)
+
+            request = urlopen.call_args.args[0]
+            self.assertEqual(result["recommendedService"], "REMOTE_SUPPORT")
+            self.assertEqual(request.full_url, "http://localhost:8080/api/agent/log-uploads/as-rag-preview")
+            self.assertEqual(request.headers["Authorization"], "Bearer token")
+            self.assertEqual(request.headers["Idempotency-key"], "preview-key")
+            self.assertIn(b'name="incidentId"', request.data)
+            self.assertIn(b"\r\nincident-1\r\n", request.data)
+            self.assertIn(b'name="symptomType"', request.data)
+            self.assertIn(b"\r\nREMOTE_DRIVER_OS\r\n", request.data)
+
+    def test_preview_as_rag_requires_agent_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            preview_file = Path(directory) / "incident-window.jsonl.gz"
+            preview_file.write_bytes(b"gzip-bytes")
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                log_dir=Path(directory),
+                agent_version="test-agent",
+                policy_version="test-policy",
+            )
+            window = agent.default_incident_window(
+                "REMOTE_DRIVER_OS",
+                detected_at=datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST),
+                trigger_type="USER_REQUEST",
+            )
+
+            with self.assertRaises(agent.UploadError):
+                agent.preview_as_rag(config, preview_file, "preview-key", window)
+
+    def test_format_as_rag_preview_uses_korean_service_label(self) -> None:
+        text = agent.format_as_rag_preview(
+            {
+                "recommendedService": "VISIT_SUPPORT",
+                "confidence": "HIGH",
+                "recommendationMessage": "방문 점검 가능성이 높습니다.",
+                "summaryText": "Kernel-Power 이벤트가 반복되었습니다.",
+            }
+        )
+
+        self.assertIn("방문지원 신청", text)
+        self.assertIn("HIGH", text)
+        self.assertIn("Kernel-Power", text)
+
     def test_ensure_default_config_creates_background_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agent-config.json"

@@ -408,6 +408,77 @@ class PcAgentControllerSecurityTest {
     }
 
     @Test
+    void asRagPreviewRequiresAgentTokenBeforeService() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "agent-log.jsonl.gz",
+                "application/gzip",
+                gzip("demo log\n")
+        );
+
+        mockMvc.perform(multipart("/api/agent/log-uploads/as-rag-preview")
+                        .file(file)
+                        .header("Idempotency-Key", "preview-key")
+                        .param("symptomType", "REMOTE_DRIVER_OS"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+
+        verifyNoInteractions(agentIdempotencyService);
+        verifyNoInteractions(pcAgentAsService);
+    }
+
+    @Test
+    void asRagPreviewRejectsBadAgentTokenBeforeService() throws Exception {
+        when(agentTokenAuthenticationService.authenticate("bad-agent-token"))
+                .thenReturn(AgentTokenAuthenticationResult.invalid());
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "agent-log.jsonl.gz",
+                "application/gzip",
+                gzip("demo log\n")
+        );
+
+        mockMvc.perform(multipart("/api/agent/log-uploads/as-rag-preview")
+                        .file(file)
+                        .header("Authorization", "Bearer bad-agent-token")
+                        .header("Idempotency-Key", "preview-key")
+                        .param("symptomType", "REMOTE_DRIVER_OS"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+
+        verifyNoInteractions(agentIdempotencyService);
+        verifyNoInteractions(pcAgentAsService);
+    }
+
+    @Test
+    void asRagPreviewPassesAgentPrincipalAndIdempotencyKeyToService() throws Exception {
+        AgentPrincipal principal = authenticateAgent();
+        when(pcAgentAsService.previewAsRag(eq(principal), any(), any(), eq("preview-key"))).thenReturn(Map.of(
+                "recommendedService", "REMOTE_SUPPORT",
+                "recommendedDecision", "REMOTE_POSSIBLE",
+                "confidence", "HIGH",
+                "summary", "드라이버 오류 반복으로 원격지원이 적합합니다."
+        ));
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "agent-log.jsonl.gz",
+                "application/gzip",
+                gzip("demo log\n")
+        );
+
+        mockMvc.perform(multipart("/api/agent/log-uploads/as-rag-preview")
+                        .file(file)
+                        .header("Authorization", "Bearer " + AGENT_TOKEN)
+                        .header("Idempotency-Key", "preview-key")
+                        .param("symptomType", "REMOTE_DRIVER_OS"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recommendedService").value("REMOTE_SUPPORT"))
+                .andExpect(jsonPath("$.recommendedDecision").value("REMOTE_POSSIBLE"));
+
+        verify(pcAgentAsService).previewAsRag(eq(principal), any(), any(), eq("preview-key"));
+    }
+
+    @Test
     void authenticatedAgentLogUploadRequiresIdempotencyKey() throws Exception {
         authenticateAgent();
         MockMultipartFile file = new MockMultipartFile(

@@ -13,6 +13,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -71,6 +72,7 @@ REGISTER_PATH = "/api/agent/devices/register"
 CONSENT_PATH = "/api/agent/consents"
 LOG_UPLOAD_PATH = "/api/agent/log-uploads"
 AS_DRAFT_PATH = "/api/agent/as-drafts"
+AS_RAG_PREVIEW_PATH = "/api/agent/log-uploads/as-rag-preview"
 REGISTERED_STATUS = "REGISTERED"
 UNREGISTERED_STATUS = "UNREGISTERED"
 APP_NAME = "BuildGraphAgent"
@@ -1047,6 +1049,28 @@ def support_url(api_base_url: str, ticket_id: str, configured_web_base_url: str 
     return f"{base}/support/{ticket_id}"
 
 
+def as_rag_preview_endpoint(api_base_url: str) -> str:
+    return api_base_url.rstrip("/") + AS_RAG_PREVIEW_PATH
+
+
+def support_mode_label_for_service(recommended_service: Any) -> str:
+    return {
+        "REMOTE_SUPPORT": "원격지원 신청",
+        "VISIT_SUPPORT": "방문지원 신청",
+        "DIAGNOSIS_ONLY": "우선 진단만 받기",
+    }.get(str(recommended_service or "DIAGNOSIS_ONLY"), "우선 진단만 받기")
+
+
+def format_as_rag_preview(result: dict[str, Any]) -> str:
+    label = str(result.get("recommendedServiceLabel") or support_mode_label_for_service(result.get("recommendedService")))
+    confidence = str(result.get("confidence") or "LOW")
+    message = str(result.get("recommendationMessage") or "로그 기반 추천 결과를 확인했습니다.")
+    summary = str(result.get("summaryText") or "").strip()
+    if summary:
+        return f"추천: {label} / 신뢰도: {confidence}\n{message}\n요약: {summary}"
+    return f"추천: {label} / 신뢰도: {confidence}\n{message}"
+
+
 def build_multipart(fields: dict[str, str], file_field: str, file_path: Path) -> tuple[bytes, str]:
     boundary = f"----buildgraph-agent-{uuid.uuid4().hex}"
     parts: list[bytes] = []
@@ -1118,6 +1142,50 @@ def upload_gzip(
 
     if not isinstance(result, dict) or not result.get("ticketId"):
         raise UploadError(f"upload response did not include ticketId: {result}")
+    return result
+
+
+def preview_as_rag(
+    config: AgentConfig,
+    gzip_path: Path,
+    idempotency_key: str,
+    incident_window: IncidentWindow,
+    timeout_seconds: int = 8,
+) -> dict[str, Any]:
+    if not config.agent_token:
+        raise UploadError("agentToken is missing. Run register first or wait for Goal 10 token storage.")
+    if gzip_path.stat().st_size == 0:
+        raise UploadError(f"gzip file is empty: {gzip_path}")
+
+    fields = incident_window.metadata()
+    fields["schemaVersion"] = str(config.schema_version)
+    body, content_type = build_multipart(fields, "file", gzip_path)
+    request = urllib.request.Request(
+        as_rag_preview_endpoint(config.api_base_url),
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {config.agent_token}",
+            "Idempotency-Key": idempotency_key,
+            "Content-Type": content_type,
+            "Content-Length": str(len(body)),
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exception:
+        detail = exception.read().decode("utf-8", errors="replace")
+        raise UploadError(f"AS RAG preview failed: HTTP {exception.code} {detail}") from exception
+    except urllib.error.URLError as exception:
+        raise UploadError(f"AS RAG preview failed: {exception.reason}") from exception
+
+    try:
+        result = json.loads(payload)
+    except json.JSONDecodeError as exception:
+        raise UploadError(f"AS RAG preview response is not JSON: {payload[:200]}") from exception
+    if not isinstance(result, dict) or not result.get("recommendedService"):
+        raise UploadError(f"AS RAG preview response did not include recommendedService: {result}")
     return result
 
 
@@ -1594,6 +1662,26 @@ def event_panel_failure_message(exception: Exception) -> str:
     if "timed out" in text or "connection" in text or "refused" in text or "unreachable" in text:
         return "서버 연결을 확인할 수 없어 전송하지 못했습니다."
     return "전송하지 못했습니다. 등록, 동의, 서버 연결 상태를 확인해 주세요."
+
+
+def as_rag_preview_failure_message(exception: Exception) -> str:
+    text = str(exception).lower()
+    if "agenttoken is missing" in text or "http 401" in text or "http 403" in text:
+        return "Agent 등록 상태를 확인해야 AI 추천을 받을 수 있습니다."
+    if "consent" in text or "consentaccepted" in text:
+        return "서버 업로드 동의가 필요해 AI 추천을 받을 수 없습니다."
+    if "no log rows" in text or "log file does not exist" in text:
+        return "분석할 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요."
+    if (
+        "timed out" in text
+        or "timeout" in text
+        or "connection" in text
+        or "refused" in text
+        or "unreachable" in text
+        or "연결" in text
+    ):
+        return "서버 연결을 확인할 수 없어 AI 추천을 받지 못했습니다."
+    return "AI 추천을 받지 못했습니다. 등록, 동의, 서버 연결 상태를 확인해 주세요."
 
 
 def latest_upload_status(rows: Sequence[dict[str, Any]]) -> str:
@@ -2689,9 +2777,11 @@ def show_log_viewer(
     symptom_type = tk.StringVar(value="REMOTE_DRIVER_OS")
     symptom_time = tk.StringVar(value="")
     support_mode = tk.StringVar(value="우선 진단만 받기")
+    rag_preview_status = tk.StringVar(value="AI 추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
     support_status = tk.StringVar(value="")
     incident_window_value = tk.StringVar(value="전송 로그 범위는 증상 유형과 발생 시각 기준으로 계산됩니다.")
     support_signal_value: dict[str, Any] | None = None
+    preview_running = {"active": False}
 
     def add_form_label(parent: tk.Misc, text: str) -> None:
         tk.Label(
@@ -2756,6 +2846,34 @@ def show_log_viewer(
             selectcolor=colors["card_bg"],
             font=("Segoe UI", 9),
         ).pack(side="left", padx=(0, 16))
+
+    preview_block = tk.Frame(
+        support_inner,
+        background=colors["section_bg"],
+        highlightthickness=1,
+        highlightbackground=colors["border"],
+        padx=12,
+        pady=10,
+    )
+    preview_block.pack(fill="x", pady=(0, 10))
+    tk.Label(
+        preview_block,
+        text="AI 로그 요약",
+        font=("Segoe UI", 9, "bold"),
+        foreground=colors["text"],
+        background=colors["section_bg"],
+        anchor="w",
+    ).pack(fill="x", pady=(0, 4))
+    tk.Label(
+        preview_block,
+        textvariable=rag_preview_status,
+        font=("Segoe UI", 8),
+        foreground=colors["muted"],
+        background=colors["section_bg"],
+        justify="left",
+        anchor="w",
+        wraplength=720,
+    ).pack(fill="x")
 
     tk.Label(
         support_inner,
@@ -2928,6 +3046,50 @@ def show_log_viewer(
         except Exception as exception:
             support_status.set(event_panel_failure_message(exception))
 
+    def preview_support_recommendation() -> None:
+        if preview_running["active"]:
+            return
+        preview_running["active"] = True
+        rag_preview_status.set("선택 구간 로그를 준비하고 있습니다.")
+        support_status.set("")
+        symptom_time_text = symptom_time.get()
+        selected_type = symptom_type.get() or "REMOTE_DRIVER_OS"
+
+        def finish() -> None:
+            preview_running["active"] = False
+
+        def apply_result(window: IncidentWindow, result: dict[str, Any]) -> None:
+            support_mode.set(support_mode_label_for_service(result.get("recommendedService")))
+            incident_window_value.set(
+                f"문제 발생 전후 로그: {window.started_at.strftime('%Y-%m-%d %H:%M:%S')} ~ "
+                f"{window.ended_at.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            rag_preview_status.set(format_as_rag_preview(result))
+            finish()
+
+        def apply_error(exception: Exception) -> None:
+            rag_preview_status.set(as_rag_preview_failure_message(exception))
+            finish()
+
+        def run_preview() -> None:
+            try:
+                detected_at = parse_datetime(symptom_time_text, "symptomTime") if symptom_time_text.strip() else datetime.now(KST)
+                window = default_incident_window(selected_type, detected_at=detected_at, trigger_type="USER_REQUEST")
+                gzip_path = config.log_dir.parent / "previews" / f"{window.incident_id}.jsonl.gz"
+                gzip_window(path, gzip_path, window)
+                root.after(0, lambda: rag_preview_status.set("서버에서 AI 추천을 확인하고 있습니다."))
+                result = preview_as_rag(
+                    config,
+                    gzip_path,
+                    f"agent-rag-preview-{uuid.uuid4()}",
+                    window,
+                )
+                root.after(0, lambda: apply_result(window, result))
+            except Exception as exception:
+                root.after(0, lambda current=exception: apply_error(current))
+
+        threading.Thread(target=run_preview, daemon=True).start()
+
     def refresh_log_summary() -> None:
         rows = read_status_log_summary_rows(path, STATUS_LOG_SUMMARY_LIMIT)
         summary_table.delete(*summary_table.get_children())
@@ -3023,6 +3185,14 @@ def show_log_viewer(
         height=32,
     ).pack(side="left", padx=(8, 0))
 
+    rounded_button(
+        support_actions,
+        "AI 추천 확인",
+        preview_support_recommendation,
+        "secondary",
+        width=132,
+        height=34,
+    ).pack(side="left")
     rounded_button(
         support_actions,
         "AS 접수 신청",
