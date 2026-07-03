@@ -1525,11 +1525,20 @@ test('shows a read-only build graph preview on recommendation card hover and reu
   await page.getByRole('navigation').getByRole('link', { name: '추천 결과' }).click();
 
   await page.getByRole('button', { name: /200만원 실속형/ }).hover();
+  const firstCard = page.locator('[data-latest-build-card]').first();
   const preview = page.getByTestId('latest-build-graph-preview');
   await expect(preview).toBeVisible();
-  await expect(preview.getByRole('heading', { name: '견적 관계도 프리뷰' })).toBeVisible();
-  await expect(preview.getByText('200만원 실속형')).toBeVisible();
+  await expect(preview.getByRole('heading', { name: '견적 관계도' })).toBeVisible();
+  await expect(preview.getByText('총액')).toHaveCount(0);
+  await expect(preview.getByText('Tool 검증 요약')).toHaveCount(0);
   await expect(preview.locator('.react-flow__node').filter({ hasText: 'RTX 5070' })).toBeVisible();
+  const cardBox = await firstCard.boundingBox();
+  const previewBox = await preview.boundingBox();
+  expect(cardBox).not.toBeNull();
+  expect(previewBox).not.toBeNull();
+  expect(previewBox?.x).toBeGreaterThan((cardBox?.x ?? 0) + (cardBox?.width ?? 0));
+  expect(previewBox?.width).toBeLessThan(460);
+  expect(previewBox?.height).toBeLessThan(380);
   await expect.poll(() => buildGraphRequests.length).toBe(1);
   expect(buildGraphRequests[0]).toMatchObject({
     source: 'AI_BUILD',
@@ -1544,7 +1553,7 @@ test('shows a read-only build graph preview on recommendation card hover and reu
   await expect.poll(() => buildGraphRequests.length).toBe(1);
 
   await page.getByRole('button', { name: /200만원 균형형/ }).hover();
-  await expect(page.getByTestId('latest-build-graph-preview').getByText('200만원 균형형')).toBeVisible();
+  await expect(page.getByTestId('latest-build-graph-preview').locator('.react-flow__node').filter({ hasText: 'RTX 5070' })).toBeVisible();
   await expect.poll(() => buildGraphRequests.length).toBe(2);
 });
 

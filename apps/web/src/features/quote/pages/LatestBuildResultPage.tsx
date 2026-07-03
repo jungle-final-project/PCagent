@@ -32,9 +32,19 @@ type CompactGraphNodeData = {
   category?: string;
   status: BuildGraphStatus;
 };
+type GraphPreviewAnchor = {
+  left: number;
+  top: number;
+  width: number;
+  placement: 'left' | 'right';
+};
 
 const compactGraphNodeTypes = { compactGraphNode: CompactGraphNode };
 const COMPACT_GRAPH_STALE_TIME_MS = 5 * 60 * 1000;
+const GRAPH_PREVIEW_PANEL_WIDTH = 420;
+const GRAPH_PREVIEW_PANEL_HEIGHT = 330;
+const GRAPH_PREVIEW_GAP = 12;
+const GRAPH_PREVIEW_MARGIN = 16;
 const compactCategoryPositions: Record<string, { x: number; y: number }> = {
   CPU: { x: 0, y: 122 },
   MOTHERBOARD: { x: 210, y: 24 },
@@ -55,6 +65,7 @@ export function LatestBuildResultPage() {
   const [tierFilter, setTierFilter] = useState<RecommendationFilter>('all');
   const [savedBuildIds, setSavedBuildIds] = useState(assistantSession.savedBuildIds);
   const [canShowGraphPreview, setCanShowGraphPreview] = useState(false);
+  const [previewAnchor, setPreviewAnchor] = useState<GraphPreviewAnchor | null>(null);
   const previewOpenTimerRef = useRef<number | null>(null);
   const previewCloseTimerRef = useRef<number | null>(null);
   const visibleBuilds = useMemo(
@@ -64,7 +75,7 @@ export function LatestBuildResultPage() {
   const selectedBuild = selectedBuildId && visibleBuilds.some((build) => build.id === selectedBuildId)
     ? builds.find((build) => build.id === selectedBuildId)
     : undefined;
-  const previewBuild = !selectedBuild && canShowGraphPreview && previewBuildId && visibleBuilds.some((build) => build.id === previewBuildId)
+  const previewBuild = !selectedBuild && previewAnchor && canShowGraphPreview && previewBuildId && visibleBuilds.some((build) => build.id === previewBuildId)
     ? builds.find((build) => build.id === previewBuildId)
     : undefined;
   const selectedSavedBuildId = selectedBuild ? savedBuildIds[selectedBuild.id] : undefined;
@@ -82,11 +93,13 @@ export function LatestBuildResultPage() {
       previewCloseTimerRef.current = null;
     }
   }, []);
-  const openPreview = useCallback((buildId: string) => {
+  const openPreview = useCallback((buildId: string, anchorElement: HTMLElement) => {
     if (!canShowGraphPreview) return;
     clearPreviewOpenTimer();
     clearPreviewCloseTimer();
     previewOpenTimerRef.current = window.setTimeout(() => {
+      if (!anchorElement.isConnected) return;
+      setPreviewAnchor(getGraphPreviewAnchor(anchorElement.getBoundingClientRect()));
       setPreviewBuildId(buildId);
       previewOpenTimerRef.current = null;
     }, 180);
@@ -96,6 +109,7 @@ export function LatestBuildResultPage() {
     clearPreviewCloseTimer();
     previewCloseTimerRef.current = window.setTimeout(() => {
       setPreviewBuildId(null);
+      setPreviewAnchor(null);
       previewCloseTimerRef.current = null;
     }, 120);
   }, [clearPreviewCloseTimer, clearPreviewOpenTimer]);
@@ -103,6 +117,7 @@ export function LatestBuildResultPage() {
     clearPreviewOpenTimer();
     clearPreviewCloseTimer();
     setPreviewBuildId(null);
+    setPreviewAnchor(null);
     setSelectedBuildId(buildId);
   }, [clearPreviewCloseTimer, clearPreviewOpenTimer]);
   const saveMutation = useMutation({
@@ -138,12 +153,14 @@ export function LatestBuildResultPage() {
     }
     if (previewBuildId && !visibleBuilds.some((build) => build.id === previewBuildId)) {
       setPreviewBuildId(null);
+      setPreviewAnchor(null);
     }
   }, [previewBuildId, selectedBuildId, visibleBuilds]);
 
   useEffect(() => {
     if (!canShowGraphPreview || selectedBuild) {
       setPreviewBuildId(null);
+      setPreviewAnchor(null);
     }
   }, [canShowGraphPreview, selectedBuild]);
 
@@ -178,7 +195,7 @@ export function LatestBuildResultPage() {
                       selected={build.id === selectedBuildId}
                       savedBuildId={savedBuildIds[build.id]}
                       onSelect={() => selectBuild(build.id)}
-                      onPreviewOpen={() => openPreview(build.id)}
+                      onPreviewOpen={(anchorElement) => openPreview(build.id, anchorElement)}
                       onPreviewClose={schedulePreviewClose}
                     />
                   ))}
@@ -214,9 +231,10 @@ export function LatestBuildResultPage() {
             onClose={closeDetail}
           />
         ) : null}
-        {previewBuild ? (
+        {previewBuild && previewAnchor ? (
           <BuildGraphPreviewPanel
             build={previewBuild}
+            anchor={previewAnchor}
             onMouseEnter={clearPreviewCloseTimer}
             onMouseLeave={schedulePreviewClose}
           />
@@ -509,7 +527,7 @@ function TemporaryBuildCard({
   savedBuildId?: string;
   selected: boolean;
   onSelect: () => void;
-  onPreviewOpen: () => void;
+  onPreviewOpen: (anchorElement: HTMLElement) => void;
   onPreviewClose: () => void;
 }) {
   const primaryWarning = build.warnings?.[0];
@@ -518,9 +536,9 @@ function TemporaryBuildCard({
   return (
     <article
       data-latest-build-card="true"
-      onMouseEnter={onPreviewOpen}
+      onMouseEnter={(event) => onPreviewOpen(event.currentTarget)}
       onMouseLeave={onPreviewClose}
-      onFocus={onPreviewOpen}
+      onFocus={(event) => onPreviewOpen(event.currentTarget)}
       onBlur={(event) => {
         const nextTarget = event.relatedTarget;
         if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
@@ -573,10 +591,12 @@ function TemporaryBuildCard({
 
 function BuildGraphPreviewPanel({
   build,
+  anchor,
   onMouseEnter,
   onMouseLeave
 }: {
   build: AiRecommendedBuild;
+  anchor: GraphPreviewAnchor;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
 }) {
@@ -587,32 +607,29 @@ function BuildGraphPreviewPanel({
       data-testid="latest-build-graph-preview"
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      className="fixed right-0 top-0 z-30 hidden h-dvh w-full max-w-[520px] flex-col border-l border-commerce-line bg-white shadow-2xl md:flex"
+      style={{ left: anchor.left, top: anchor.top, width: anchor.width }}
+      className="pointer-events-none fixed z-[70] hidden rounded-lg border border-commerce-line bg-white p-2 shadow-2xl md:block"
     >
-      <div className="border-b border-commerce-line px-5 py-4">
-        <div className="text-xs font-black text-brand-blue">견적 관계도 프리뷰</div>
-        <h2 className="mt-1 text-lg font-black text-commerce-ink">{build.title}</h2>
-        <p className="mt-1 text-xs font-semibold text-slate-500">
-          hover 중인 추천 조합의 부품 관계를 읽기 전용으로 확인합니다.
-        </p>
+      <div
+        aria-hidden="true"
+        className={`absolute top-8 h-3 w-3 rotate-45 border-commerce-line bg-white ${
+          anchor.placement === 'right'
+            ? '-left-1.5 border-b border-l'
+            : '-right-1.5 border-r border-t'
+        }`}
+      />
+      <div className="flex items-center justify-between gap-3 px-2 pb-2">
+        <h2 className="text-sm font-black text-commerce-ink">견적 관계도</h2>
+        <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-brand-blue">{build.tierLabel}</span>
       </div>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-        <div className="rounded-md border border-blue-100 bg-blue-50 px-4 py-3">
-          <div className="text-xs font-black text-slate-500">총액</div>
-          <div className="mt-1 text-2xl font-black text-brand-blue">{build.totalPrice.toLocaleString()}원</div>
-        </div>
-        <section className="rounded-md border border-commerce-line bg-white">
-          <div className="border-b border-commerce-line px-4 py-3">
-            <h3 className="text-sm font-black text-commerce-ink">견적 관계도 프리뷰</h3>
-          </div>
-          <CompactBuildGraph
-            graph={graphQuery.data}
-            isLoading={graphQuery.isLoading}
-            isError={graphQuery.isError}
-            heightClassName="h-[300px]"
-          />
-        </section>
-        <GraphToolSummary graph={graphQuery.data} />
+      <div className="overflow-hidden rounded-md border border-slate-100">
+        <CompactBuildGraph
+          graph={graphQuery.data}
+          isLoading={graphQuery.isLoading}
+          isError={graphQuery.isError}
+          heightClassName="h-[260px]"
+          includePriceNode={false}
+        />
       </div>
     </aside>
   );
@@ -632,6 +649,7 @@ function BuildGraphInlineSection({ build }: { build: AiRecommendedBuild }) {
         isLoading={graphQuery.isLoading}
         isError={graphQuery.isError}
         heightClassName="h-[280px]"
+        includePriceNode
       />
     </section>
   );
@@ -641,14 +659,16 @@ function CompactBuildGraph({
   graph,
   isLoading,
   isError,
-  heightClassName
+  heightClassName,
+  includePriceNode = true
 }: {
   graph?: BuildGraphResolveResponse;
   isLoading: boolean;
   isError: boolean;
   heightClassName: string;
+  includePriceNode?: boolean;
 }) {
-  const flowElements = useMemo(() => graph ? toCompactFlowElements(graph) : { nodes: [], edges: [] }, [graph]);
+  const flowElements = useMemo(() => graph ? toCompactFlowElements(graph, includePriceNode) : { nodes: [], edges: [] }, [graph, includePriceNode]);
 
   if (isLoading && !graph) {
     return (
@@ -759,8 +779,33 @@ function buildGraphSignature(build: AiRecommendedBuild) {
     .join('|');
 }
 
-function toCompactFlowElements(graph: BuildGraphResolveResponse): { nodes: Node[]; edges: Edge[] } {
-  const graphNodes = graph.nodes.filter((node) => node.type === 'PART' || node.category === 'PRICE');
+function getGraphPreviewAnchor(rect: DOMRect): GraphPreviewAnchor {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const width = Math.min(GRAPH_PREVIEW_PANEL_WIDTH, viewportWidth - GRAPH_PREVIEW_MARGIN * 2);
+  const hasRightSpace = viewportWidth - rect.right >= width + GRAPH_PREVIEW_GAP + GRAPH_PREVIEW_MARGIN;
+  const hasLeftSpace = rect.left >= width + GRAPH_PREVIEW_GAP + GRAPH_PREVIEW_MARGIN;
+  const placement = hasRightSpace || !hasLeftSpace ? 'right' : 'left';
+  const preferredLeft = placement === 'right'
+    ? rect.right + GRAPH_PREVIEW_GAP
+    : rect.left - width - GRAPH_PREVIEW_GAP;
+  const maxLeft = viewportWidth - width - GRAPH_PREVIEW_MARGIN;
+  const maxTop = viewportHeight - GRAPH_PREVIEW_PANEL_HEIGHT - GRAPH_PREVIEW_MARGIN;
+
+  return {
+    left: clamp(preferredLeft, GRAPH_PREVIEW_MARGIN, Math.max(GRAPH_PREVIEW_MARGIN, maxLeft)),
+    top: clamp(rect.top, GRAPH_PREVIEW_MARGIN, Math.max(GRAPH_PREVIEW_MARGIN, maxTop)),
+    width,
+    placement
+  };
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function toCompactFlowElements(graph: BuildGraphResolveResponse, includePriceNode: boolean): { nodes: Node[]; edges: Edge[] } {
+  const graphNodes = graph.nodes.filter((node) => node.type === 'PART' || (includePriceNode && node.category === 'PRICE'));
   const nodeIds = new Set(graphNodes.map((node) => node.id));
 
   return {
