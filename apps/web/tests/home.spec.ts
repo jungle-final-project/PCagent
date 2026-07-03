@@ -725,7 +725,8 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   await expect(gpuGraphNode.locator('.buildgraph-node-card-main')).toBeVisible();
   await expect(gpuGraphNode.locator('.buildgraph-node-category-label')).toHaveText('GPU');
   await expect(gpuGraphNode.locator('.buildgraph-node-main-label')).toContainText('RTX 5070');
-  await expect(gpuGraphNode.locator('.buildgraph-node-status-label')).toHaveText('호환됨');
+  await expect(gpuGraphNode.locator('.buildgraph-node-status-label')).toHaveText('간섭 주의');
+  await expect(gpuGraphNode).toHaveCSS('border-color', 'rgb(245, 158, 11)');
   const gpuGraphNodeBox = await gpuGraphNode.boundingBox();
   expect(gpuGraphNodeBox).not.toBeNull();
   expect(gpuGraphNodeBox?.width).toBeGreaterThan((gpuGraphNodeBox?.height ?? 0) + 40);
@@ -735,6 +736,7 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   await expect(graphEdgePath).toHaveCSS('stroke-width', '2px');
   const candidatePanel = graphCanvas.getByTestId('graph-node-candidate-panel');
   await expect(candidatePanel).toContainText('선택한 부품 상세');
+  await expect(candidatePanel.getByTestId('graph-selected-node-detail')).toContainText('간섭 주의');
   await expect(candidatePanel).toContainText('250W · 길이 304mm');
   await expect(candidatePanel).toContainText('호환 후보');
   await expect(candidatePanel).toContainText('RTX 5070 Ti 호환 후보');

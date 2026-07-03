@@ -107,7 +107,7 @@ export function BuildDependencyGraph({
   const displayGraph = useMemo(() => withDisplayTotalPrice(graph, totalPrice), [graph, totalPrice]);
   const graphModel = useMemo(() => buildGraphDisplayModel(displayGraph), [displayGraph]);
   const issueInsight = useMemo(() => selectRepresentativeIssue(displayGraph), [displayGraph]);
-  const activeNode = displayGraph?.nodes.find((node) => node.id === activeNodeId) ?? null;
+  const activeNode = graphModel.nodes.find((node) => node.id === activeNodeId) ?? null;
   const activeNodeCategory = activeNode && typeof activeNode.category === 'string' && isPartCategory(activeNode.category)
     ? activeNode.category
     : null;
@@ -749,14 +749,55 @@ function buildGraphDisplayModel(graph?: BuildGraphResolveResponse | null) {
     return { nodes: [], edges: [], validationNodes: [] };
   }
 
-  const nodes = graph.nodes.filter(isGraphCanvasNode);
-  const visibleNodeIds = new Set(nodes.map((node) => node.id));
+  const canvasNodes = graph.nodes.filter(isGraphCanvasNode);
+  const nodeStatusById = new Map(canvasNodes.map((node) => [String(node.id), node.status]));
+  const visibleNodeIds = new Set(canvasNodes.map((node) => String(node.id)));
+
+  const applyStatus = (nodeId: unknown, status: BuildGraphStatus) => {
+    const key = String(nodeId);
+    if (!visibleNodeIds.has(key)) return;
+    nodeStatusById.set(key, worstStatus(nodeStatusById.get(key) ?? 'PASS', status));
+  };
+
+  for (const edge of graph.edges) {
+    if (edge.status === 'PASS') continue;
+    applyStatus(edge.source, edge.status);
+    applyStatus(edge.target, edge.status);
+  }
+
+  for (const insight of graph.insights) {
+    if (insight.status === 'PASS') continue;
+    for (const nodeId of insight.relatedNodeIds) {
+      applyStatus(nodeId, insight.status);
+    }
+  }
+
+  for (const validationNode of graph.nodes.filter(isValidationSummaryNode)) {
+    if (validationNode.status === 'PASS') continue;
+    const category = typeof validationNode.category === 'string' ? validationNode.category.toUpperCase() : '';
+    for (const node of canvasNodes) {
+      if (typeof node.category === 'string' && node.category.toUpperCase() === category) {
+        applyStatus(node.id, validationNode.status);
+      }
+    }
+  }
+
+  const nodes = canvasNodes.map((node) => {
+    const status = nodeStatusById.get(String(node.id)) ?? node.status;
+    return status === node.status ? node : { ...node, status };
+  });
+  const visibleFlowNodeIds = new Set(nodes.map((node) => node.id));
   const edges = graph.edges.filter((edge) => (
-    visibleNodeIds.has(String(edge.source)) && visibleNodeIds.has(String(edge.target))
+    visibleFlowNodeIds.has(String(edge.source)) && visibleFlowNodeIds.has(String(edge.target))
   ));
   const validationNodes = graph.nodes.filter(isValidationSummaryNode);
 
   return { nodes, edges, validationNodes };
+}
+
+function worstStatus(left: BuildGraphStatus, right: BuildGraphStatus): BuildGraphStatus {
+  const rank: Record<BuildGraphStatus, number> = { PASS: 0, WARN: 1, FAIL: 2 };
+  return rank[right] > rank[left] ? right : left;
 }
 
 function selectRepresentativeIssue(graph?: BuildGraphResolveResponse | null) {

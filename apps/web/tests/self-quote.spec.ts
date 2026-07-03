@@ -2334,10 +2334,26 @@ test('shows the highest severity issue in the quote dependency graph problem car
       contentType: 'application/json',
       body: JSON.stringify({
         ...graph,
-        nodes: graph.nodes.map((node) => (
-          node.id === 'part-MOTHERBOARD'
-            ? { ...node, status: 'FAIL', detail: '소켓 또는 메모리 호환성 확인이 필요합니다.' }
-            : node
+        nodes: [
+          ...graph.nodes.map((node) => ({ ...node, status: 'PASS' })),
+          {
+            id: 'constraint-compatibility-fail',
+            type: 'CONSTRAINT',
+            category: 'MOTHERBOARD',
+            label: '소켓 호환성',
+            status: 'FAIL',
+            detail: '소켓 또는 메모리 호환성 확인이 필요합니다.'
+          }
+        ],
+        edges: graph.edges.map((edge) => (
+          edge.id === 'edge-cpu-board-socket'
+            ? {
+                ...edge,
+                status: 'FAIL',
+                label: '소켓 불일치',
+                summary: '소켓 또는 메모리 호환성 확인이 필요합니다.'
+              }
+            : { ...edge, status: 'PASS' }
         )),
         insights: [
           ...graph.insights,
@@ -2346,7 +2362,7 @@ test('shows the highest severity issue in the quote dependency graph problem car
             status: 'FAIL',
             title: '호환성 확인',
             description: '소켓 또는 메모리 호환성 확인이 필요합니다.',
-            relatedNodeIds: ['part-MOTHERBOARD']
+            relatedNodeIds: ['part-CPU', 'part-MOTHERBOARD']
           }
         ]
       })
@@ -2382,11 +2398,18 @@ test('shows the highest severity issue in the quote dependency graph problem car
   const issueCard = graphCanvas.getByTestId('graph-issue-card');
   await expect(issueCard).toContainText('장착 불가');
   await expect(issueCard).toContainText('소켓 또는 메모리 호환성 확인이 필요합니다.');
-  await expect(issueCard).toContainText('1개 노드');
+  await expect(issueCard).toContainText('2개 노드');
   await expect(issueCard).not.toContainText('주의 필요');
 
   await issueCard.getByRole('button', { name: '문제 노드로 이동' }).click();
-  await expect(graphCanvas.locator('.react-flow__node').filter({ hasText: '메인보드' }).first()).toHaveClass(/buildgraph-flow-node--issue-focus/);
+  const cpuNode = graphCanvas.locator('.react-flow__node').filter({ hasText: 'CPU' }).first();
+  const motherboardNode = graphCanvas.locator('.react-flow__node').filter({ hasText: '메인보드' }).first();
+  await expect(cpuNode).toHaveClass(/buildgraph-flow-node--issue-focus/);
+  await expect(motherboardNode).toHaveClass(/buildgraph-flow-node--issue-focus/);
+  await expect(cpuNode.locator('.buildgraph-node-status-label')).toHaveText('장착 불가');
+  await expect(motherboardNode.locator('.buildgraph-node-status-label')).toHaveText('장착 불가');
+  await expect(cpuNode).toHaveCSS('border-color', 'rgb(239, 68, 68)');
+  await expect(motherboardNode).toHaveCSS('border-color', 'rgb(239, 68, 68)');
 });
 
 test('hides the quote dependency graph problem card when every insight passes', async ({ page }) => {
