@@ -1,5 +1,49 @@
 # 2026-07-03 PC Agent exe 이벤트 감지 모달 UI 적용
 
+## 2026-07-03 PC Agent 상태 홈 아이콘 깨짐 재수정
+
+### 현재 목표
+
+- 상태 홈 상단 카드 아이콘이 Windows/Tk 화면에서 깨져 보이는 문제를 수정한다.
+- 기존 상태 홈 제목/부제목과 로그/AS 접수 흐름은 유지한다.
+
+### 완료한 일
+
+- `apps/pc-agent/buildgraph_agent.py`의 카드 아이콘을 Tk Canvas 직접 선 그리기에서 내부 생성 PNG 이미지 기반 표시로 바꿨다.
+- Pillow/Tk 조합에서 이미지 생성이 실패할 경우에도 깨진 선 아이콘 대신 `OK`, `PC`, `UP`, `i` 텍스트 배지가 보이도록 fallback을 추가했다.
+
+### 마지막 검증 결과
+
+- `python -m py_compile apps/pc-agent/buildgraph_agent.py` 성공.
+- `apps/pc-agent`: `python -m unittest -q` 성공. 총 33개 테스트 통과.
+
+## 2026-07-03 이벤트 감지 모달 버튼/신청 방식 보강
+
+### 현재 목표
+
+- 기존 이벤트 감지 모달의 감지/업로드 로직은 유지하고, 하단 버튼이 보이도록 UI를 보강한다.
+- 모달 안에서 `원격 접수` / `방문 접수` 신청 방식을 선택할 수 있게 한다.
+
+### 완료한 일
+
+- `apps/pc-agent/buildgraph_agent.py`의 이벤트 감지 모달 높이를 조정해 하단 액션 영역이 보이도록 했다.
+- 모달에 `신청 방식` 라디오 선택을 추가했다.
+- `접수하기`, `무시하기`, `로그 보기 ↗` 구조를 유지했다.
+- 선택한 신청 방식은 새 서버 필드를 만들지 않고 기존 증상 문구 앞에 붙여 업로드 요청에 포함하도록 했다.
+- 기존 이벤트 감지 조건, IncidentWindow, gzip 생성, upload API 호출 구조는 변경하지 않았다.
+- `apps/pc-agent/test_buildgraph_agent.py`에서 신청 방식 문구가 기존 업로드 요청 증상 문자열에 포함되는지 검증했다.
+
+### 마지막 검증 결과
+
+- `apps/pc-agent`: `python -m py_compile buildgraph_agent.py` 성공.
+- `apps/pc-agent`: `python -m unittest -q` 성공. 총 33개 테스트 통과.
+
+### 남은 리스크
+
+- Tkinter 라디오 버튼과 버튼 폭은 Windows 배율별로 실제 exe에서 한 번 더 확인해야 한다.
+- exe 재빌드와 웹 다운로드용 `agent.exe` 교체는 수행하지 않았다.
+- 커밋은 생성하지 않았다.
+
 ## 2026-07-03 PC Agent 상태 홈 헤더/카드 아이콘 재보정
 
 ### 현재 목표

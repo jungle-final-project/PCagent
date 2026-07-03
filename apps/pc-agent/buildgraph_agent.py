@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import hashlib
 import json
@@ -19,7 +20,7 @@ import uuid
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from io import TextIOWrapper
+from io import BytesIO, TextIOWrapper
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -2000,44 +2001,76 @@ def show_log_viewer(
     for index in range(4):
         cards.columnconfigure(index, weight=1, uniform="status-card")
 
-    def draw_card_icon(parent: tk.Misc, kind: str) -> tk.Canvas:
-        icon = tk.Canvas(
-            parent,
-            width=46,
-            height=46,
-            background=colors["card_bg"],
-            highlightthickness=0,
-            borderwidth=0,
-        )
+    card_icon_images: list[tk.PhotoImage] = []
+
+    def make_card_icon(parent: tk.Misc, kind: str) -> tk.Widget:
         teal = colors["sidebar_active_bar"]
         soft = "#eef8f5"
         line = "#cae6df"
-        create_round_rect(icon, 3, 3, 43, 43, 12, fill=soft, outline=line)
-        if kind == "agent":
-            icon.create_polygon(23, 11, 34, 16, 32, 30, 23, 37, 14, 30, 12, 16, fill="", outline=teal, width=2)
-            icon.create_line(18, 24, 22, 28, 29, 20, fill=teal, width=2, capstyle="round", joinstyle="round")
-        elif kind == "server":
-            icon.create_rectangle(12, 15, 34, 29, outline=teal, width=2)
-            icon.create_line(15, 24, 19, 24, 21, 20, 25, 29, 27, 24, 31, 24, fill=teal, width=2)
-            icon.create_line(23, 29, 23, 34, fill=teal, width=2)
-            icon.create_line(17, 34, 29, 34, fill=teal, width=2)
-        elif kind == "upload":
-            icon.create_arc(13, 13, 33, 33, start=35, extent=280, outline=teal, width=2, style="arc")
-            icon.create_line(33, 16, 33, 10, 39, 10, fill=teal, width=2, capstyle="round", joinstyle="round")
-            icon.create_line(23, 34, 23, 21, fill=teal, width=2)
-            icon.create_line(17, 27, 23, 21, 29, 27, fill=teal, width=2, capstyle="round", joinstyle="round")
-        else:
-            icon.create_oval(14, 10, 32, 28, outline=teal, width=2)
-            icon.create_text(23, 20, text="i", fill=teal, font=("Segoe UI", 13, "bold"))
-            icon.create_line(16, 34, 30, 34, fill=teal, width=2)
-        return icon
+        if Image is not None and ImageDraw is not None:
+            try:
+                scale = 3
+                size = 46
+                canvas_size = size * scale
+
+                def x(value: int) -> int:
+                    return value * scale
+
+                def color(value: str) -> tuple[int, int, int, int]:
+                    value = value.lstrip("#")
+                    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16), 255)
+
+                image = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 0))
+                draw = ImageDraw.Draw(image)
+                draw.rounded_rectangle((x(3), x(3), x(43), x(43)), radius=x(12), fill=color(soft), outline=color(line), width=x(1))
+                stroke = color(teal)
+                width = x(2)
+                if kind == "agent":
+                    draw.line([(x(23), x(10)), (x(34), x(16)), (x(32), x(30)), (x(23), x(37)), (x(14), x(30)), (x(12), x(16)), (x(23), x(10))], fill=stroke, width=width)
+                    draw.line([(x(18), x(24)), (x(22), x(28)), (x(29), x(20))], fill=stroke, width=width)
+                elif kind == "server":
+                    draw.rounded_rectangle((x(12), x(15), x(34), x(29)), radius=x(2), outline=stroke, width=width)
+                    draw.line([(x(15), x(24)), (x(19), x(24)), (x(21), x(20)), (x(25), x(29)), (x(27), x(24)), (x(31), x(24))], fill=stroke, width=width)
+                    draw.line([(x(23), x(29)), (x(23), x(34)), (x(17), x(34)), (x(29), x(34))], fill=stroke, width=width)
+                elif kind == "upload":
+                    draw.arc((x(13), x(13), x(33), x(33)), start=35, end=315, fill=stroke, width=width)
+                    draw.line([(x(33), x(16)), (x(33), x(10)), (x(39), x(10))], fill=stroke, width=width)
+                    draw.line([(x(23), x(34)), (x(23), x(21)), (x(17), x(27))], fill=stroke, width=width)
+                    draw.line([(x(23), x(21)), (x(29), x(27))], fill=stroke, width=width)
+                else:
+                    draw.ellipse((x(14), x(10), x(32), x(28)), outline=stroke, width=width)
+                    draw.line([(x(23), x(18)), (x(23), x(25))], fill=stroke, width=width)
+                    draw.ellipse((x(22), x(14), x(24), x(16)), fill=stroke)
+                    draw.line([(x(16), x(34)), (x(30), x(34))], fill=stroke, width=width)
+                resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.LANCZOS)
+                image = image.resize((size, size), resampling)
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                photo = tk.PhotoImage(data=base64.b64encode(buffer.getvalue()).decode("ascii"))
+                card_icon_images.append(photo)
+                return tk.Label(parent, image=photo, background=colors["card_bg"], borderwidth=0, highlightthickness=0)
+            except Exception:
+                pass
+        fallback_text = {"agent": "OK", "server": "PC", "upload": "UP", "version": "i"}.get(kind, "i")
+        return tk.Label(
+            parent,
+            text=fallback_text,
+            width=4,
+            height=2,
+            font=("Segoe UI", 10, "bold"),
+            foreground=teal,
+            background=soft,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=line,
+        )
 
     def add_card(parent: tk.Frame, index: int, title: str, value: tk.StringVar, detail: str, icon_kind: str) -> None:
         card_canvas, card = rounded_container(parent, 92, padding=(14, 12), radius=16)
         card_canvas.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
         card.columnconfigure(0, weight=0)
         card.columnconfigure(1, weight=1)
-        draw_card_icon(card, icon_kind).grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 12))
+        make_card_icon(card, icon_kind).grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 12))
         tk.Label(
             card,
             text=title,
@@ -2590,6 +2623,7 @@ def upload_event_panel_request(
     config: AgentConfig,
     source: Path,
     signals: Sequence[dict[str, Any]],
+    request_mode: str | None = None,
 ) -> tuple[str, str]:
     selected = event_panel_signals(signals)
     if not selected:
@@ -2606,11 +2640,14 @@ def upload_event_panel_request(
     work_dir = config.log_dir.parent / "uploads"
     gzip_path = work_dir / f"{window.incident_id}.jsonl.gz"
     gzip_window(source, gzip_path, window)
+    symptom = event_panel_symptom(selected)
+    if request_mode:
+        symptom = f"{request_mode} / {symptom}"
     result = upload_gzip(
         config,
         gzip_path,
         f"agent-panel-{uuid.uuid4()}",
-        event_panel_symptom(selected),
+        symptom,
         window,
     )
     ticket_id = str(result["ticketId"])
@@ -2632,7 +2669,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     panel.resizable(False, False)
     panel.attributes("-topmost", True)
     width = 360
-    height = 296
+    height = 376
     screen_width = panel.winfo_screenwidth()
     screen_height = panel.winfo_screenheight()
     x = max(20, screen_width - width - 28)
@@ -2640,6 +2677,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     panel.geometry(f"{width}x{height}+{x}+{y}")
 
     status_text = tk.StringVar(value="선택한 구간의 로그를 함께 첨부해 접수합니다.")
+    request_mode = tk.StringVar(value="원격 접수")
     colors = {
         "bg": "#f8fbfc",
         "card": "#ffffff",
@@ -2740,6 +2778,30 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
         wraplength=318,
     ).pack(fill="x")
 
+    mode_row = tk.Frame(card, background=colors["card"])
+    mode_row.pack(fill="x", pady=(8, 0))
+    tk.Label(
+        mode_row,
+        text="신청 방식",
+        font=("Segoe UI", 8, "bold"),
+        foreground=colors["muted"],
+        background=colors["card"],
+        anchor="w",
+        width=8,
+    ).pack(side="left")
+    for label in ("원격 접수", "방문 접수"):
+        tk.Radiobutton(
+            mode_row,
+            text=label,
+            variable=request_mode,
+            value=label,
+            font=("Segoe UI", 8),
+            foreground=colors["deep"],
+            background=colors["card"],
+            activebackground=colors["card"],
+            selectcolor=colors["card"],
+        ).pack(side="left", padx=(0, 10))
+
     tk.Label(
         card,
         textvariable=status_text,
@@ -2756,7 +2818,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
         status_text.set("AS 접수를 준비하고 있습니다.")
         panel.update_idletasks()
         try:
-            ticket_id, url = upload_event_panel_request(config, source, signals)
+            ticket_id, url = upload_event_panel_request(config, source, signals, request_mode.get())
         except Exception as exception:
             send_button.configure(state="normal")
             status_text.set(event_panel_failure_message(exception))

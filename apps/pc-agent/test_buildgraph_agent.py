@@ -463,7 +463,7 @@ class AgentGoal1112Test(unittest.TestCase):
             ]
 
             with patch("buildgraph_agent.upload_gzip", return_value={"ticketId": "ticket-public-id"}) as upload:
-                ticket_id, url = agent.upload_event_panel_request(config, source, signals)
+                ticket_id, url = agent.upload_event_panel_request(config, source, signals, "방문 접수")
 
             self.assertEqual(ticket_id, "ticket-public-id")
             self.assertEqual(url, "http://localhost:5173/support/ticket-public-id")
@@ -471,6 +471,7 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertEqual(upload_args[0], config)
             self.assertTrue(upload_args[1].name.endswith(".jsonl.gz"))
             self.assertTrue(upload_args[2].startswith("agent-panel-"))
+            self.assertIn("방문 접수", upload_args[3])
             self.assertIn("드라이버", upload_args[3])
             self.assertEqual(upload_args[4].trigger_type, "SYSTEM_DETECTED")
             self.assertEqual(upload_args[4].symptom_type, "REMOTE_DRIVER_OS")
