@@ -1433,6 +1433,7 @@ test('renders a temporary chatbot build detail and saves it to a persisted build
 });
 
 test('opens chatbot build details in a side drawer and saves in place', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
   const latestBuilds = budgetBuilds(2_000_000);
   const temporaryBuild = latestBuilds[1];
   const saveRequests: unknown[] = [];
@@ -1469,16 +1470,15 @@ test('opens chatbot build details in a side drawer and saves in place', async ({
   await page.getByRole('button', { name: /200만원 성능형/ }).click();
   await expect(drawer.getByRole('heading', { name: `선택한 추천 조합 / ${latestBuilds[2].title}` })).toBeVisible();
 
-  await page.getByRole('button', { name: /200만원 균형형/ }).click();
   await drawer.getByRole('button', { name: '견적 저장' }).click();
 
   await expect.poll(() => saveRequests.length).toBe(1);
   expect(saveRequests[0]).toMatchObject({
-    sourceBuildId: temporaryBuild.id,
+    sourceBuildId: latestBuilds[2].id,
     lastUserMessage: '200만원 PC 추천',
     build: {
-      id: temporaryBuild.id,
-      title: temporaryBuild.title
+      id: latestBuilds[2].id,
+      title: latestBuilds[2].title
     }
   });
   await expect(page).toHaveURL('/builds/latest');
@@ -1488,8 +1488,31 @@ test('opens chatbot build details in a side drawer and saves in place', async ({
   const savedMapping = await page.evaluate((buildId) => {
     const raw = sessionStorage.getItem('buildgraph.ai.assistantSession:user-1004');
     return raw ? JSON.parse(raw).savedBuildIds?.[buildId] : null;
-  }, temporaryBuild.id);
+  }, latestBuilds[2].id);
   expect(savedMapping).toBe('saved-chat-build-inline');
+});
+
+test('keeps recommendation cards full width while the detail drawer overlays on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const latestBuilds = budgetBuilds(2_000_000);
+  await openHomeAsUser(page);
+  await page.evaluate(({ session }) => {
+    sessionStorage.setItem('buildgraph.ai.assistantSession:user-1004', JSON.stringify(session));
+  }, { session: storedAssistantSessionWithBuilds('200만원 PC 추천', latestBuilds) });
+  await page.getByRole('navigation').getByRole('link', { name: '추천 결과' }).click();
+
+  const layout = page.getByTestId('latest-build-results-layout');
+  const grid = page.getByTestId('latest-build-card-grid');
+  const gridWidthBefore = (await grid.boundingBox())?.width ?? 0;
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+  const drawer = page.getByRole('dialog', { name: '추천 조합 상세' });
+  await expect(drawer).toBeVisible();
+  await expect.poll(async () => (await grid.boundingBox())?.width ?? 0).toBeCloseTo(gridWidthBefore, 0);
+
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect(layout).toHaveCSS('margin-right', '0px');
+  await expect(drawer).toBeVisible();
 });
 
 test('closes the recommendation detail drawer with close button, escape, and outside click', async ({ page }) => {
@@ -1516,7 +1539,7 @@ test('closes the recommendation detail drawer with close button, escape, and out
   await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toHaveCount(0);
 });
 
-test('opens recommendation details as a bottom sheet on mobile', async ({ page }) => {
+test('opens recommendation details as a right overlay drawer on mobile', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const latestBuilds = budgetBuilds(2_000_000);
   await openHomeAsUser(page);
@@ -1527,10 +1550,11 @@ test('opens recommendation details as a bottom sheet on mobile', async ({ page }
 
   await page.getByRole('button', { name: '상세 보기' }).first().click();
 
-  const sheet = page.getByTestId('latest-build-detail-sheet');
-  await expect(sheet).toBeVisible();
-  await expect(sheet.getByRole('heading', { name: `선택한 추천 조합 / ${latestBuilds[0].title}` })).toBeVisible();
-  await expect(sheet.getByRole('heading', { name: '구성 부품' })).toBeVisible();
+  const drawer = page.getByTestId('latest-build-detail-drawer');
+  await expect(drawer).toBeVisible();
+  await expect(page.getByTestId('latest-build-detail-sheet')).toHaveCount(0);
+  await expect(drawer.getByRole('heading', { name: `선택한 추천 조합 / ${latestBuilds[0].title}` })).toBeVisible();
+  await expect(drawer.getByRole('heading', { name: '구성 부품' })).toBeVisible();
   await page.getByRole('button', { name: '추천 조합 상세 닫기' }).click();
   await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toHaveCount(0);
 });

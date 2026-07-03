@@ -51,7 +51,10 @@ export function LatestBuildResultPage() {
 
   return (
     <Screen>
-      <div className={`space-y-5 transition-[padding] duration-200 ${selectedBuild ? 'md:pr-[520px]' : ''}`}>
+      <div
+        data-testid="latest-build-results-layout"
+        className="space-y-5"
+      >
         <Panel
           title="추천 결과"
           subtitle="AI 챗봇이 방금 제안한 임시 추천 조합입니다. 저장 전까지 내 견적함에는 추가되지 않습니다."
@@ -66,7 +69,10 @@ export function LatestBuildResultPage() {
               </div>
               <RecommendationFilterTabs value={tierFilter} onChange={setTierFilter} />
               {visibleBuilds.length > 0 ? (
-                <div className={`grid gap-4 ${selectedBuild ? 'lg:grid-cols-2' : 'lg:grid-cols-3'}`}>
+                <div
+                  data-testid="latest-build-card-grid"
+                  className={`grid gap-4 ${selectedBuild ? 'lg:grid-cols-2' : 'lg:grid-cols-3'}`}
+                >
                   {visibleBuilds.map((build) => (
                     <TemporaryBuildCard
                       key={build.id}
@@ -143,7 +149,6 @@ function LatestBuildDetailDrawer({
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
-      if (window.matchMedia('(max-width: 767px)').matches) return;
       const target = event.target;
       if (target instanceof Element && target.closest('[data-latest-build-card], [data-latest-build-filter]')) return;
       if (target instanceof Node && desktopPanelRef.current && !desktopPanelRef.current.contains(target)) {
@@ -162,7 +167,7 @@ function LatestBuildDetailDrawer({
         aria-modal="false"
         aria-label="추천 조합 상세"
         data-testid="latest-build-detail-drawer"
-        className="fixed right-0 top-0 z-40 hidden h-dvh w-full max-w-[520px] flex-col border-l border-commerce-line bg-white shadow-2xl md:flex"
+        className="fixed right-0 top-0 z-40 flex h-dvh w-full max-w-[520px] flex-col border-l border-commerce-line bg-white shadow-2xl"
       >
         <LatestBuildDetailPanelContent
           build={build}
@@ -174,32 +179,6 @@ function LatestBuildDetailDrawer({
           onClose={onClose}
         />
       </section>
-
-      <div className="fixed inset-0 z-50 md:hidden">
-        <button
-          type="button"
-          aria-label="추천 조합 상세 바깥 닫기"
-          className="absolute inset-0 bg-slate-950/30"
-          onClick={onClose}
-        />
-        <section
-          role="dialog"
-          aria-modal="false"
-          aria-label="추천 조합 상세"
-          data-testid="latest-build-detail-sheet"
-          className="absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-xl border border-commerce-line bg-white shadow-2xl"
-        >
-          <LatestBuildDetailPanelContent
-            build={build}
-            displayBuild={displayBuild}
-            savedBuildId={savedBuildId}
-            isSaving={isSaving}
-            saveError={saveError}
-            onSave={onSave}
-            onClose={onClose}
-          />
-        </section>
-      </div>
     </>
   );
 }
@@ -437,7 +416,7 @@ function TemporaryBuildCard({
               <div className="text-xs font-black text-brand-blue">{build.tierLabel}</div>
               <h3 className="mt-1 text-lg font-black text-commerce-ink">{build.title}</h3>
             </div>
-            <StatusBadge status={build.confidence ?? 'MEDIUM'} />
+            
           </div>
           <p className="mt-2 min-h-10 text-xs leading-5 text-slate-600">{build.summary}</p>
         </div>
