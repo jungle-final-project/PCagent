@@ -1237,6 +1237,7 @@ test('shows chatbot session recommendations on the recommendation result page wi
   await expect(page.getByRole('button', { name: '상세 보기' })).toHaveCount(3);
   await expect(page.getByRole('button', { name: '견적 저장' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: /선택한 추천 조합/ })).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toHaveCount(0);
   expect(historyRequests).toHaveLength(0);
 });
 
@@ -1310,7 +1311,7 @@ test('deduplicates identical build compositions when accumulating chatbot recomm
   await expect(page.getByText('200만원 실속형 원본')).toHaveCount(0);
 });
 
-test('filters latest recommendation cards and closes inline detail when the selected build is hidden', async ({ page }) => {
+test('filters latest recommendation cards and closes the detail drawer when the selected build is hidden', async ({ page }) => {
   const latestBuilds = [
     ...uniqueBudgetBuilds(2_300_000, '4차'),
     ...uniqueBudgetBuilds(2_200_000, '3차'),
@@ -1324,7 +1325,9 @@ test('filters latest recommendation cards and closes inline detail when the sele
 
   await expect(page.getByRole('button', { name: '상세 보기' })).toHaveCount(9);
   await page.getByRole('button', { name: /230만원 성능형 4차/ }).click();
-  await expect(page.getByRole('heading', { name: '선택한 추천 조합 / 230만원 성능형 4차' })).toBeVisible();
+  const drawer = page.getByRole('dialog', { name: '추천 조합 상세' });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole('heading', { name: '선택한 추천 조합 / 230만원 성능형 4차' })).toBeVisible();
 
   await page.getByRole('button', { name: '실속형', exact: true }).click();
   await expect(page.getByRole('button', { name: '실속형', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -1332,6 +1335,7 @@ test('filters latest recommendation cards and closes inline detail when the sele
   await expect(page.getByText('230만원 실속형 4차')).toBeVisible();
   await expect(page.getByText('230만원 성능형 4차')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: /선택한 추천 조합/ })).toHaveCount(0);
+  await expect(drawer).toHaveCount(0);
 
   await page.getByRole('button', { name: '전체', exact: true }).click();
   await expect(page.getByRole('button', { name: '상세 보기' })).toHaveCount(9);
@@ -1428,7 +1432,7 @@ test('renders a temporary chatbot build detail and saves it to a persisted build
   expect(savedMapping).toBe('saved-chat-build-001');
 });
 
-test('expands chatbot build details inline on the recommendation result page and saves in place', async ({ page }) => {
+test('opens chatbot build details in a side drawer and saves in place', async ({ page }) => {
   const latestBuilds = budgetBuilds(2_000_000);
   const temporaryBuild = latestBuilds[1];
   const saveRequests: unknown[] = [];
@@ -1452,17 +1456,21 @@ test('expands chatbot build details inline on the recommendation result page and
   await page.getByRole('button', { name: '상세 보기' }).nth(1).click();
 
   await expect(page).toHaveURL('/builds/latest');
-  await expect(page.getByRole('heading', { name: `선택한 추천 조합 / ${temporaryBuild.title}` })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '구성 부품' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Tool 검증 결과' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '견적 요약 / 액션' })).toBeVisible();
-  await expect(page.getByRole('link', { name: temporaryBuild.items[0].name })).toBeVisible();
+  await expect(page.getByTestId('latest-build-inline-detail')).toHaveCount(0);
+  const drawer = page.getByRole('dialog', { name: '추천 조합 상세' });
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toHaveAttribute('aria-modal', 'false');
+  await expect(drawer.getByRole('heading', { name: `선택한 추천 조합 / ${temporaryBuild.title}` })).toBeVisible();
+  await expect(drawer.getByRole('heading', { name: '구성 부품' })).toBeVisible();
+  await expect(drawer.getByRole('heading', { name: 'Tool 검증 결과' })).toBeVisible();
+  await expect(drawer.getByRole('heading', { name: '견적 요약 / 액션' })).toBeVisible();
+  await expect(drawer.getByRole('link', { name: temporaryBuild.items[0].name })).toBeVisible();
 
   await page.getByRole('button', { name: /200만원 성능형/ }).click();
-  await expect(page.getByRole('heading', { name: `선택한 추천 조합 / ${latestBuilds[2].title}` })).toBeVisible();
+  await expect(drawer.getByRole('heading', { name: `선택한 추천 조합 / ${latestBuilds[2].title}` })).toBeVisible();
 
   await page.getByRole('button', { name: /200만원 균형형/ }).click();
-  await page.getByRole('button', { name: '견적 저장' }).click();
+  await drawer.getByRole('button', { name: '견적 저장' }).click();
 
   await expect.poll(() => saveRequests.length).toBe(1);
   expect(saveRequests[0]).toMatchObject({
@@ -1474,14 +1482,57 @@ test('expands chatbot build details inline on the recommendation result page and
     }
   });
   await expect(page).toHaveURL('/builds/latest');
-  await expect(page.getByText('내 견적함에 저장되었습니다.')).toBeVisible();
-  await expect(page.getByRole('link', { name: '내 견적함 보기' })).toHaveAttribute('href', '/my/quotes');
-  await expect(page.getByRole('button', { name: '견적 저장' })).toHaveCount(0);
+  await expect(drawer.getByText('내 견적함에 저장되었습니다.')).toBeVisible();
+  await expect(drawer.getByRole('link', { name: '내 견적함 보기' })).toHaveAttribute('href', '/my/quotes');
+  await expect(drawer.getByRole('button', { name: '견적 저장' })).toHaveCount(0);
   const savedMapping = await page.evaluate((buildId) => {
     const raw = sessionStorage.getItem('buildgraph.ai.assistantSession:user-1004');
     return raw ? JSON.parse(raw).savedBuildIds?.[buildId] : null;
   }, temporaryBuild.id);
   expect(savedMapping).toBe('saved-chat-build-inline');
+});
+
+test('closes the recommendation detail drawer with close button, escape, and outside click', async ({ page }) => {
+  const latestBuilds = budgetBuilds(2_000_000);
+  await openHomeAsUser(page);
+  await page.evaluate(({ session }) => {
+    sessionStorage.setItem('buildgraph.ai.assistantSession:user-1004', JSON.stringify(session));
+  }, { session: storedAssistantSessionWithBuilds('200만원 PC 추천', latestBuilds) });
+  await page.getByRole('navigation').getByRole('link', { name: '추천 결과' }).click();
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+  await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toBeVisible();
+  await page.getByRole('button', { name: '추천 조합 상세 닫기' }).click();
+  await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+  await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+  await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toBeVisible();
+  await page.getByRole('heading', { name: '추천 결과' }).click();
+  await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toHaveCount(0);
+});
+
+test('opens recommendation details as a bottom sheet on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const latestBuilds = budgetBuilds(2_000_000);
+  await openHomeAsUser(page);
+  await page.evaluate(({ session }) => {
+    sessionStorage.setItem('buildgraph.ai.assistantSession:user-1004', JSON.stringify(session));
+  }, { session: storedAssistantSessionWithBuilds('200만원 PC 추천', latestBuilds) });
+  await page.getByRole('navigation').getByRole('link', { name: '추천 결과' }).click();
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+
+  const sheet = page.getByTestId('latest-build-detail-sheet');
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByRole('heading', { name: `선택한 추천 조합 / ${latestBuilds[0].title}` })).toBeVisible();
+  await expect(sheet.getByRole('heading', { name: '구성 부품' })).toBeVisible();
+  await page.getByRole('button', { name: '추천 조합 상세 닫기' }).click();
+  await expect(page.getByRole('dialog', { name: '추천 조합 상세' })).toHaveCount(0);
 });
 
 test('redirects a previously saved temporary chatbot build to its persisted build detail', async ({ page }) => {
