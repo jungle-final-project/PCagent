@@ -1,5 +1,23 @@
 # 2026-07-03 PC Agent exe 이벤트 감지 모달 UI 적용
 
+## 2026-07-03 PC Agent 상태 홈 헤더/카드 아이콘 재보정
+
+### 현재 목표
+
+- 상태 홈 상단의 빈 공간에 제목과 부제목을 표시한다.
+- 깨져 보이던 상단 카드 아이콘을 더 안정적인 teal 배지형 라인 아이콘으로 수정한다.
+- 로그/AS 접수/서버/API/DB 흐름은 변경하지 않는다.
+
+### 완료한 일
+
+- `apps/pc-agent/buildgraph_agent.py`의 상태 홈에 `상태 홈` 제목과 `PC Agent가 시스템을 안전하게 보호하고 있습니다.` 부제목을 추가했다.
+- 카드 아이콘을 오른쪽 배치에서 왼쪽 고정 배지 배치로 바꿔 텍스트와 겹치거나 잘려 보이는 문제를 줄였다.
+
+### 마지막 검증 결과
+
+- `python -m py_compile apps/pc-agent/buildgraph_agent.py` 성공.
+- `apps/pc-agent`: `python -m unittest -q` 성공. 총 33개 테스트 통과.
+
 ## 현재 목표
 
 - `codex/pc-agent-exe-ui-front` 브랜치에서 기존 이벤트 감지 패널의 감지/업로드 동작은 유지하고, 모달 UI만 두 번째 참고 이미지처럼 작고 차분한 카드형으로 바꾼다.
@@ -139,6 +157,25 @@
 - 커밋은 생성하지 않았다.
 
 # 2026-07-03 FINAL_SUPPORT_SCENARIOS 100% 구현 Goal
+
+## 2026-07-03 PC Agent 상태 홈 카드 아이콘/사이드바 탭 보정
+
+### 현재 목표
+
+- PC Agent 상태 홈 상단 카드에 이미지 기준의 간단한 teal 라인 아이콘을 추가한다.
+- 왼쪽 사이드바 탭 시작 위치와 높이만 보정한다.
+- 로그/AS/상태 홈 본문 구조는 변경하지 않는다.
+
+### 완료한 일
+
+- `apps/pc-agent/buildgraph_agent.py`의 Tk 상태 홈 상단 카드 4개에 canvas 기반 아이콘을 추가했다.
+- 빈 로고 영역 때문에 내려가 있던 사이드바 탭 시작 위치를 위로 올렸다.
+- 사이드바 탭 높이와 간격을 소폭 정리했다.
+
+### 마지막 검증 결과
+
+- `python -m py_compile apps/pc-agent/buildgraph_agent.py` 성공.
+- `apps/pc-agent`: `python -m unittest -q` 성공. 총 33개 테스트 통과.
 
 ## 2026-07-03 PC Agent 이벤트 감지 모달 시안 이미지 생성
 

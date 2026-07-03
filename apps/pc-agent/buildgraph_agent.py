@@ -1895,15 +1895,7 @@ def show_log_viewer(
     sidebar = tk.Frame(shell, width=150, background=colors["sidebar_bg"])
     sidebar.pack(side="left", fill="y")
     sidebar.pack_propagate(False)
-    tk.Label(
-        sidebar,
-        text="",
-        font=("Segoe UI", 13, "bold"),
-        foreground=colors["text"],
-        background=colors["sidebar_bg"],
-        justify="left",
-        anchor="w",
-    ).pack(fill="x", padx=18, pady=(16, 18))
+    tk.Frame(sidebar, height=22, background=colors["sidebar_bg"]).pack(fill="x")
     nav_items: list[tuple[str, tk.Frame]] = []
 
     def render_nav() -> None:
@@ -1926,12 +1918,12 @@ def show_log_viewer(
     def add_nav_item(name: str, icon: str, command: Any) -> None:
         item = tk.Frame(
             sidebar,
-            height=42,
+            height=44,
             background=colors["sidebar_bg"],
             highlightthickness=1,
             highlightbackground=colors["sidebar_bg"],
         )
-        item.pack(fill="x", padx=12, pady=4)
+        item.pack(fill="x", padx=12, pady=5)
         item.pack_propagate(False)
         bar = tk.Frame(item, width=4, background=colors["sidebar_bg"])
         bar._agent_nav_role = "bar"  # type: ignore[attr-defined]
@@ -1984,15 +1976,68 @@ def show_log_viewer(
     log_view = tk.Frame(view_stack, background=colors["app_bg"])
     support_view = tk.Frame(view_stack, background=colors["app_bg"])
 
+    status_header = tk.Frame(status_view, background=colors["app_bg"])
+    status_header.pack(fill="x", pady=(0, 14))
+    tk.Label(
+        status_header,
+        text="상태 홈",
+        font=("Segoe UI", 15, "bold"),
+        foreground=colors["text"],
+        background=colors["app_bg"],
+        anchor="w",
+    ).pack(fill="x")
+    tk.Label(
+        status_header,
+        text="PC Agent가 시스템을 안전하게 보호하고 있습니다.",
+        font=("Segoe UI", 9),
+        foreground=colors["muted"],
+        background=colors["app_bg"],
+        anchor="w",
+    ).pack(fill="x", pady=(4, 0))
+
     cards = tk.Frame(status_view, background=colors["app_bg"])
-    cards.pack(fill="x", pady=(6, 10))
+    cards.pack(fill="x", pady=(0, 10))
     for index in range(4):
         cards.columnconfigure(index, weight=1, uniform="status-card")
 
-    def add_card(parent: tk.Frame, index: int, title: str, value: tk.StringVar, detail: str) -> None:
-        card_canvas, card = rounded_container(parent, 90, padding=(14, 10), radius=16)
+    def draw_card_icon(parent: tk.Misc, kind: str) -> tk.Canvas:
+        icon = tk.Canvas(
+            parent,
+            width=46,
+            height=46,
+            background=colors["card_bg"],
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        teal = colors["sidebar_active_bar"]
+        soft = "#eef8f5"
+        line = "#cae6df"
+        create_round_rect(icon, 3, 3, 43, 43, 12, fill=soft, outline=line)
+        if kind == "agent":
+            icon.create_polygon(23, 11, 34, 16, 32, 30, 23, 37, 14, 30, 12, 16, fill="", outline=teal, width=2)
+            icon.create_line(18, 24, 22, 28, 29, 20, fill=teal, width=2, capstyle="round", joinstyle="round")
+        elif kind == "server":
+            icon.create_rectangle(12, 15, 34, 29, outline=teal, width=2)
+            icon.create_line(15, 24, 19, 24, 21, 20, 25, 29, 27, 24, 31, 24, fill=teal, width=2)
+            icon.create_line(23, 29, 23, 34, fill=teal, width=2)
+            icon.create_line(17, 34, 29, 34, fill=teal, width=2)
+        elif kind == "upload":
+            icon.create_arc(13, 13, 33, 33, start=35, extent=280, outline=teal, width=2, style="arc")
+            icon.create_line(33, 16, 33, 10, 39, 10, fill=teal, width=2, capstyle="round", joinstyle="round")
+            icon.create_line(23, 34, 23, 21, fill=teal, width=2)
+            icon.create_line(17, 27, 23, 21, 29, 27, fill=teal, width=2, capstyle="round", joinstyle="round")
+        else:
+            icon.create_oval(14, 10, 32, 28, outline=teal, width=2)
+            icon.create_text(23, 20, text="i", fill=teal, font=("Segoe UI", 13, "bold"))
+            icon.create_line(16, 34, 30, 34, fill=teal, width=2)
+        return icon
+
+    def add_card(parent: tk.Frame, index: int, title: str, value: tk.StringVar, detail: str, icon_kind: str) -> None:
+        card_canvas, card = rounded_container(parent, 92, padding=(14, 12), radius=16)
         card_canvas.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
-        card.columnconfigure(0, weight=1)
+        card.columnconfigure(0, weight=0)
+        card.columnconfigure(1, weight=1)
+        draw_card_icon(card, icon_kind).grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 12))
         tk.Label(
             card,
             text=title,
@@ -2000,7 +2045,7 @@ def show_log_viewer(
             foreground=colors["muted"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", pady=(0, 2))
+        ).grid(row=0, column=1, sticky="ew", pady=(0, 2))
         tk.Label(
             card,
             textvariable=value,
@@ -2008,7 +2053,7 @@ def show_log_viewer(
             foreground=colors["text"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=1, column=0, sticky="ew")
+        ).grid(row=1, column=1, sticky="ew")
         tk.Label(
             card,
             text=detail,
@@ -2016,12 +2061,12 @@ def show_log_viewer(
             foreground=colors["subtle"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=2, column=0, sticky="ew", pady=(5, 0))
+        ).grid(row=2, column=1, sticky="ew", pady=(5, 0))
 
-    add_card(cards, 0, "Agent 상태", agent_status, "백그라운드 수집")
-    add_card(cards, 1, "서버 연결", server_status, "heartbeat 미호출")
-    add_card(cards, 2, "마지막 업로드", upload_status, "로컬 기록 기준")
-    add_card(cards, 3, "버전", version_status, "agent / policy")
+    add_card(cards, 0, "Agent 상태", agent_status, "백그라운드 수집", "agent")
+    add_card(cards, 1, "서버 연결", server_status, "heartbeat 미호출", "server")
+    add_card(cards, 2, "마지막 업로드", upload_status, "로컬 기록 기준", "upload")
+    add_card(cards, 3, "버전", version_status, "agent / policy", "version")
 
     signals_section, signals_inner = rounded_container(status_view, 124, padding=(14, 10), radius=16)
     signals_section.pack(fill="x", pady=(0, 10))
