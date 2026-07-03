@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="BuildGraph AI">
+  <rect width="64" height="64" rx="14" fill="#0f766e"/>
+  <path d="M18 42V18h16c7 0 12 4 12 10 0 3-2 6-5 8l7 6H37l-6-5h-5v5h-8Zm8-13h8c3 0 5-1 5-4s-2-4-5-4h-8v8Z" fill="#ecfeff"/>
+  <path d="M18 48h30" stroke="#99f6e4" stroke-width="4" stroke-linecap="round"/>
+</svg>

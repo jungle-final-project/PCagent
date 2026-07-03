@@ -2863,6 +2863,17 @@ def show_log_viewer(
         symptom_detail.delete("1.0", "end")
         symptom_detail.insert("1.0", text)
 
+    def reset_support_form() -> None:
+        nonlocal support_signal_value
+        support_signal_value = None
+        symptom_title.set("")
+        symptom_type.set("REMOTE_DRIVER_OS")
+        symptom_time.set("")
+        symptom_detail.delete("1.0", "end")
+        support_mode.set(support_mode_label_for_service("DIAGNOSIS_ONLY"))
+        rag_preview_status.set("AI 추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
+        incident_window_value.set("문제 발생 전후 로그 범위는 증상 유형과 발생 시각 기준으로 계산합니다.")
+
     def fill_support_from_signal(signal: dict[str, Any] | None) -> None:
         nonlocal support_signal_value
         support_signal_value = signal
@@ -2908,8 +2919,12 @@ def show_log_viewer(
                 window,
             )
             ticket_id = str(result["ticketId"])
-            support_status.set(f"AS 접수 신청이 전송되었습니다. 티켓 {ticket_id}")
-            webbrowser.open(support_url(config.api_base_url, ticket_id, config.web_base_url))
+            reset_support_form()
+            support_status.set(
+                f"AS 접수 신청이 완료되었습니다. 관리자 AS 티켓 목록에서 확인할 수 있습니다. 티켓 {ticket_id}"
+            )
+            refresh_status()
+            refresh_log()
         except Exception as exception:
             support_status.set(event_panel_failure_message(exception))
 
