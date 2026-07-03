@@ -48,6 +48,20 @@ const categoryOrder = ['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'PSU', 'CASE', 'COOLE
 const DEFAULT_NODE_SIZE = { width: 220, height: 108 };
 const WIDE_NODE_SIZE = { width: 250, height: 112 };
 const PRICE_NODE_SIZE = { width: 220, height: 88 };
+const NODE_COLLISION_GAP = 32;
+const NODE_POSITION_OFFSETS = [
+  { x: 0, y: 0 },
+  { x: 300, y: 0 },
+  { x: 0, y: 150 },
+  { x: 300, y: 150 },
+  { x: -300, y: 0 },
+  { x: 0, y: -150 },
+  { x: 300, y: -150 },
+  { x: -300, y: 150 },
+  { x: 600, y: 0 },
+  { x: 600, y: 150 },
+  { x: -300, y: -150 }
+];
 const FLOATING_GRAPH_DEFAULT_SIZE = { width: 500, graphHeight: 480 };
 const FLOATING_GRAPH_MIN_SIZE = { width: 300, graphHeight: 200 };
 const FLOATING_GRAPH_MAX_SIZE = { width: 760, graphHeight: 640 };
@@ -556,6 +570,7 @@ function toFlowElements(graph?: BuildGraphResolveResponse | null): { nodes: Node
   const focusNodeIds = new Set(graph.focusNodeIds);
   const nodeIdCounts = new Map<string, number>();
   const firstFlowNodeIdByGraphNodeId = new Map<string, string>();
+  const placedNodeRects: Array<{ x: number; y: number; width: number; height: number }> = [];
   const nodes = graph.nodes.map((node, index) => {
     const graphNodeId = String(node.id);
     const currentCount = nodeIdCounts.get(graphNodeId) ?? 0;
@@ -570,10 +585,13 @@ function toFlowElements(graph?: BuildGraphResolveResponse | null): { nodes: Node
       x: 20 + (index % 3) * 300,
       y: 80 + Math.floor(index / 3) * 210
     };
+    const size = nodeSize(node);
+    const position = resolveNodePosition(basePosition, size, placedNodeRects);
+    placedNodeRects.push({ ...position, ...size });
     return {
       id: flowNodeId,
       type: isPriceNode ? 'priceTotal' : 'graphCard',
-      position: basePosition,
+      position,
       ...(isPriceNode ? {} : {
         sourcePosition: Position.Right,
         targetPosition: Position.Left
@@ -585,7 +603,7 @@ function toFlowElements(graph?: BuildGraphResolveResponse | null): { nodes: Node
         status: node.status
       },
       className: focusNodeIds.has(node.id) ? 'buildgraph-flow-node buildgraph-flow-node--focus' : 'buildgraph-flow-node',
-      style: nodeStyle(node)
+      style: nodeStyle(node, size)
     } satisfies Node;
   });
   const edges = graph.edges.map((edge) => ({
@@ -670,9 +688,8 @@ function nodeCategoryLabel(node: BuildGraphResolveResponse['nodes'][number]) {
   return typeof node.category === 'string' && node.category.trim() ? node.category : node.type;
 }
 
-function nodeStyle(node: BuildGraphResolveResponse['nodes'][number]) {
+function nodeStyle(node: BuildGraphResolveResponse['nodes'][number], size = nodeSize(node)) {
   const status = node.status;
-  const size = nodeSize(node);
   const base = {
     borderRadius: 10,
     borderWidth: status === 'PASS' ? 1 : 2,
@@ -710,6 +727,41 @@ function nodeSize(node: BuildGraphResolveResponse['nodes'][number]) {
   if (category === 'MOTHERBOARD' || category === 'CASE') return WIDE_NODE_SIZE;
   if (String(node.label).length >= 16) return WIDE_NODE_SIZE;
   return DEFAULT_NODE_SIZE;
+}
+
+function resolveNodePosition(
+  basePosition: { x: number; y: number },
+  size: { width: number; height: number },
+  placedNodeRects: Array<{ x: number; y: number; width: number; height: number }>
+) {
+  for (const offset of NODE_POSITION_OFFSETS) {
+    const candidate = {
+      x: Math.max(0, basePosition.x + offset.x),
+      y: Math.max(0, basePosition.y + offset.y)
+    };
+    if (!placedNodeRects.some((rect) => nodeRectsOverlap(candidate, size, rect))) {
+      return candidate;
+    }
+  }
+
+  const fallbackIndex = placedNodeRects.length + 1;
+  return {
+    x: basePosition.x + 300 * (fallbackIndex % 4),
+    y: basePosition.y + 150 * Math.floor(fallbackIndex / 4)
+  };
+}
+
+function nodeRectsOverlap(
+  position: { x: number; y: number },
+  size: { width: number; height: number },
+  rect: { x: number; y: number; width: number; height: number }
+) {
+  return (
+    position.x < rect.x + rect.width + NODE_COLLISION_GAP
+    && position.x + size.width + NODE_COLLISION_GAP > rect.x
+    && position.y < rect.y + rect.height + NODE_COLLISION_GAP
+    && position.y + size.height + NODE_COLLISION_GAP > rect.y
+  );
 }
 
 function SelectedNodePanel({ node }: { node: BuildGraphNode }) {

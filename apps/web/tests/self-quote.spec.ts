@@ -2191,6 +2191,96 @@ test('renders quote dependency graph with card nodes in the reference layout', a
   expect(price.y).toBeGreaterThan(cooler.y);
 });
 
+test('spreads duplicate quote dependency graph category nodes instead of overlapping cards', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('buildgraph.token', 'jwt-user-token');
+  });
+
+  await page.unroute('**/api/build-graphs/resolve');
+  await page.route('**/api/build-graphs/resolve', async (route) => {
+    const graph = buildGraphResponse();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...graph,
+        nodes: [
+          ...graph.nodes,
+          {
+            id: 'constraint-PSU-WATTS',
+            type: 'CONSTRAINT',
+            category: 'PSU',
+            label: '정격 1000W',
+            status: 'PASS',
+            detail: '파워 정격 출력 조건'
+          }
+        ],
+        edges: [
+          ...graph.edges,
+          {
+            id: 'edge-gpu-psu-rated-watts',
+            source: 'part-GPU',
+            target: 'constraint-PSU-WATTS',
+            type: 'REQUIRES',
+            status: 'PASS',
+            label: '권장 출력',
+            summary: 'GPU 권장 출력 조건을 확인합니다.'
+          }
+        ]
+      })
+    });
+  });
+
+  await page.route('**/api/quote-drafts/current**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'draft-duplicate-category-layout-test',
+        status: 'ACTIVE',
+        name: '셀프 견적',
+        items: [],
+        totalPrice: 1980000,
+        itemCount: 0
+      })
+    });
+  });
+
+  await page.route('**/api/parts**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], page: 0, size: 20, total: 0 })
+    });
+  });
+
+  await page.goto('/self-quote');
+
+  const graphCanvas = page.getByTestId('graph-flow-canvas');
+  const psuPart = graphCanvas.locator('.react-flow__node').filter({ hasText: '750W 파워' }).first();
+  const psuConstraint = graphCanvas.locator('.react-flow__node').filter({ hasText: '정격 1000W' }).first();
+  await expect(psuPart).toBeVisible();
+  await expect(psuConstraint).toBeVisible();
+
+  const partBox = await psuPart.boundingBox();
+  const constraintBox = await psuConstraint.boundingBox();
+  expect(partBox).not.toBeNull();
+  expect(constraintBox).not.toBeNull();
+
+  const overlapX = Math.max(
+    0,
+    Math.min((partBox?.x ?? 0) + (partBox?.width ?? 0), (constraintBox?.x ?? 0) + (constraintBox?.width ?? 0))
+      - Math.max(partBox?.x ?? 0, constraintBox?.x ?? 0)
+  );
+  const overlapY = Math.max(
+    0,
+    Math.min((partBox?.y ?? 0) + (partBox?.height ?? 0), (constraintBox?.y ?? 0) + (constraintBox?.height ?? 0))
+      - Math.max(partBox?.y ?? 0, constraintBox?.y ?? 0)
+  );
+
+  expect(overlapX * overlapY).toBe(0);
+});
+
 test('updates quantity only for repeatable quote draft categories', async ({ page }) => {
   let ramQuantity = 1;
   const ramItem = {
