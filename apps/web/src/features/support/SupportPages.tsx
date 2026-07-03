@@ -261,7 +261,6 @@ export function SupportNewPage() {
   const [supportRequestKind, setSupportRequestKind] = useState<SupportRequestKind>('DIAGNOSIS_ONLY');
   const [consentAccepted, setConsentAccepted] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [logPreview, setLogPreview] = useState('');
   const [asRagPreview, setAsRagPreview] = useState<AsRagAnalysisDto | null>(null);
   const [asRagPreviewState, setAsRagPreviewState] = useState<AsRagPreviewState>('idle');
   const [asRagPreviewError, setAsRagPreviewError] = useState('');
@@ -299,7 +298,6 @@ export function SupportNewPage() {
     const file = event.target.files?.[0] ?? null;
     setError('');
     setSelectedFile(null);
-    setLogPreview('');
     setAsRagPreview(null);
     setAsRagPreviewState('idle');
     setAsRagPreviewError('');
@@ -326,12 +324,6 @@ export function SupportNewPage() {
         setAsRagPreviewState('error');
         setAsRagPreviewError(cause instanceof Error && cause.message ? cause.message : 'AS RAG 추천을 불러오지 못했습니다.');
       });
-    file.text()
-      .then((text) => {
-        const lines = text.split(/\r?\n/).filter(Boolean).slice(0, 8);
-        setLogPreview(lines.join('\n') || '선택한 파일에 표시할 로그 라인이 없습니다.');
-      })
-      .catch(() => setLogPreview('로그 미리보기를 읽지 못했습니다. 파일은 그대로 제출할 수 있습니다.'));
   }
 
   async function submit(event: FormEvent) {
@@ -357,7 +349,7 @@ export function SupportNewPage() {
     }
     if (!selectedFile) {
       setSubmitState('validation_error');
-      setError('선택한 IncidentWindow 구간의 PC Agent 로그 파일을 선택해 주세요. .jsonl 또는 .ndjson 파일을 사용할 수 있습니다.');
+      setError('선택한 문제 발생 전후 로그 구간의 PC Agent 로그 파일을 선택해 주세요. .jsonl 또는 .ndjson 파일을 사용할 수 있습니다.');
       return;
     }
     if (!consentAccepted) {
@@ -399,7 +391,7 @@ export function SupportNewPage() {
       detail,
       '',
       `[증상 유형] ${symptomLabel(symptomType)}`,
-      `[IncidentWindow] ${windowStartedAt} ~ ${windowEndedAt}`,
+      `[문제 발생 전후 로그] ${windowStartedAt} ~ ${windowEndedAt}`,
       `[지원 신청] ${supportRequestLabel(supportRequestKind)}`
     ].join('\n');
     try {
@@ -415,7 +407,7 @@ export function SupportNewPage() {
 
   return (
     <Screen>
-      <form onSubmit={submit} className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <form onSubmit={submit} className="grid gap-5">
         <Panel title="AS 접수" subtitle="증상과 PC Agent 로그를 함께 보내면 담당자가 더 정확히 확인할 수 있습니다.">
           <div className="space-y-4">
             <div>
@@ -468,7 +460,7 @@ export function SupportNewPage() {
             </div>
             <div className="rounded border border-slate-200 bg-slate-50 p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-bold text-slate-800">IncidentWindow 확인</p>
+                <p className="text-sm font-bold text-slate-800">문제 발생 전후 로그</p>
                 <button
                   type="button"
                   className="rounded border border-slate-300 bg-white px-3 py-2 text-xs font-bold"
@@ -554,11 +546,8 @@ export function SupportNewPage() {
               {selectedFile ? <p className="mt-2 text-xs text-slate-500">{selectedFile.name} · {selectedFile.size.toLocaleString()} bytes</p> : null}
             </div>
             {asRagPreviewState === 'loading' ? <StateMessage type="info" title="AS RAG 분석 중" body="업로드한 로그를 바탕으로 적절한 지원 방식을 찾고 있습니다." /> : null}
-            {asRagPreviewState === 'error' ? <StateMessage type="warn" title="AS RAG 추천 실패" body={asRagPreviewError || '추천 결과를 불러오지 못했습니다. 로그 미리보기와 접수는 계속 진행할 수 있습니다.'} /> : null}
+            {asRagPreviewState === 'error' ? <StateMessage type="warn" title="AS RAG 추천 실패" body={asRagPreviewError || '추천 결과를 불러오지 못했습니다. AS 접수는 계속 진행할 수 있습니다.'} /> : null}
             {asRagPreview ? <AsRagRecommendation analysis={asRagPreview} /> : null}
-            <div className="min-h-32 rounded bg-slate-900 p-4 font-mono text-xs leading-6 text-slate-200">
-              {logPreview ? <pre className="whitespace-pre-wrap">{logPreview}</pre> : '선택한 로그 파일의 일부가 여기에 표시됩니다.'}
-            </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={consentAccepted} onChange={(event) => setConsentAccepted(event.target.checked)} />
               선택한 구간의 로그 업로드와 30일 보관 후 삭제 정책에 동의합니다.
@@ -569,15 +558,6 @@ export function SupportNewPage() {
               {isUploading ? '로그 업로드 및 티켓 생성 중...' : 'AS 접수하기'}
             </button>
           </div>
-        </Panel>
-        <Panel title="접수 상태">
-          {submitState === 'default' ? <StateMessage type="info" title="접수 준비" body="증상 유형, 발생 시각, 선택 구간 로그를 함께 제출하면 AS 접수가 시작됩니다." /> : null}
-          {submitState === 'validation_error' ? <StateMessage type="warn" title="입력 확인 필요" body={error || '증상과 로그 파일 입력값을 확인해 주세요.'} /> : null}
-          {submitState === 'consent_required' ? <StateMessage type="warn" title="동의 필요" body="PC Agent 로그에는 사용 환경 정보가 포함될 수 있어 업로드 동의가 필요합니다." /> : null}
-          {submitState === 'uploading' ? <StateMessage type="info" title="접수 중" body="로그를 업로드한 뒤 AS 티켓을 생성하고 있습니다." /> : null}
-          {submitState === 'upload_error' ? <StateMessage type="warn" title="로그 업로드 실패" body={error || '로그 파일과 백엔드 실행 상태를 확인해 주세요.'} /> : null}
-          {submitState === 'ticket_error' ? <StateMessage type="warn" title="티켓 생성 실패" body={error || 'AS 티켓을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.'} /> : null}
-          {submitState === 'ticket_created' ? <StateMessage type="success" title="접수 완료" body="사용자 티켓 상세 화면에서 상태를 확인할 수 있습니다." /> : null}
         </Panel>
       </form>
     </Screen>
