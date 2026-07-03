@@ -4,6 +4,8 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Dist = Join-Path $Root "dist"
 $Work = Join-Path $Root "build"
 $Script = Join-Path $Root "buildgraph_agent.py"
+$Assets = Join-Path $Root "assets"
+$Icon = Join-Path $Assets "specup-agent.ico"
 
 python -m pip install -r (Join-Path $Root "requirements.txt") -r (Join-Path $Root "requirements-build.txt")
 
@@ -28,6 +30,14 @@ function Build-AgentExecutable {
     "--distpath", $Dist,
     "--workpath", (Join-Path $Work $Name)
   )
+  if (Test-Path $Icon) {
+    $Args += "--icon"
+    $Args += $Icon
+  }
+  if (Test-Path $Assets) {
+    $Args += "--add-data"
+    $Args += "$Assets;assets"
+  }
   if ($Windowed) {
     $Args += "--windowed"
   }
