@@ -76,6 +76,9 @@ AS_RAG_PREVIEW_PATH = "/api/agent/log-uploads/as-rag-preview"
 REGISTERED_STATUS = "REGISTERED"
 UNREGISTERED_STATUS = "UNREGISTERED"
 APP_NAME = "BuildGraphAgent"
+APP_ASSET_DIR = "assets"
+AGENT_ICON_PNG = "specup-agent.png"
+AGENT_ICON_ICO = "specup-agent.ico"
 DEFAULT_AGENT_VERSION = "0.1.0"
 DEFAULT_POLICY_VERSION = "policy-v1"
 STATUS_HOME_SIGNAL_LIMIT = 3
@@ -1301,9 +1304,44 @@ def remove_pid() -> None:
         return
 
 
+def app_asset_path(filename: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    bundled = base / APP_ASSET_DIR / filename
+    if bundled.exists():
+        return bundled
+    return Path(__file__).resolve().parent / APP_ASSET_DIR / filename
+
+
+def apply_agent_window_icon(window: object) -> None:
+    if tk is None:
+        return
+    ico_path = app_asset_path(AGENT_ICON_ICO)
+    png_path = app_asset_path(AGENT_ICON_PNG)
+    try:
+        if sys.platform.startswith("win") and ico_path.exists():
+            window.iconbitmap(str(ico_path))
+    except Exception:
+        pass
+    try:
+        if png_path.exists():
+            photo = tk.PhotoImage(file=str(png_path))
+            window.iconphoto(True, photo)
+            setattr(window, "_specup_agent_icon", photo)
+    except Exception:
+        pass
+
+
 def create_tray_image() -> object | None:
     if Image is None or ImageDraw is None:
         return None
+    icon_path = app_asset_path(AGENT_ICON_PNG)
+    if icon_path.exists():
+        try:
+            image = Image.open(icon_path).convert("RGBA")
+            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            return image.resize((64, 64), resample)
+        except Exception:
+            pass
     image = Image.new("RGB", (64, 64), "#1d4ed8")
     draw = ImageDraw.Draw(image)
     draw.ellipse((10, 10, 54, 54), fill="#ffffff")
@@ -2206,6 +2244,7 @@ def show_log_viewer(
 
     root = tk.Tk()
     root.title("PC Agent")
+    apply_agent_window_icon(root)
     root.geometry("1000x640")
     root.minsize(1000, 640)
     root.maxsize(1000, 2000)
@@ -3282,6 +3321,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
 
     panel = tk.Tk()
     panel.title("감지 신호")
+    apply_agent_window_icon(panel)
     panel.configure(background="#f8fbfc")
     panel.resizable(False, False)
     panel.attributes("-topmost", True)

@@ -687,6 +687,14 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertEqual(run_background.call_args.args[1], 1)
         self.assertFalse(run_background.call_args.args[2])
 
+    def test_specup_agent_icon_assets_are_available(self) -> None:
+        self.assertTrue(agent.app_asset_path(agent.AGENT_ICON_PNG).exists())
+        self.assertTrue(agent.app_asset_path(agent.AGENT_ICON_ICO).exists())
+        tray_image = agent.create_tray_image()
+        if agent.Image is not None:
+            self.assertIsNotNone(tray_image)
+            self.assertEqual(tray_image.size, (64, 64))
+
 
 if __name__ == "__main__":
     unittest.main()
