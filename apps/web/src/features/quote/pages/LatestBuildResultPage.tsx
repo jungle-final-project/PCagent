@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   Background,
   Handle,
@@ -12,10 +12,8 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { X } from 'lucide-react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Panel, Screen, StateMessage, StatusBadge } from '../../../components/ui';
-import { getToken } from '../../../lib/api';
-import { applyAiBuildToQuoteDraft, getCurrentQuoteDraft } from '../../parts/partsApi';
 import { latestUserMessage, temporaryBuildToBuildSummary } from '../components/BuildDetailSections';
 import {
   AI_ASSISTANT_BUILD_HISTORY_LIMIT,
@@ -26,8 +24,7 @@ import {
   type AiBuildTier,
   type AiRecommendedBuild,
   type BuildGraphResolveResponse,
-  type BuildGraphStatus,
-  type PartCategory
+  type BuildGraphStatus
 } from '../aiSelection';
 import { resolveBuildGraph, saveBuildFromChat } from '../quoteApi';
 
@@ -35,11 +32,7 @@ type RecommendationFilter = 'all' | AiBuildTier;
 type CompactGraphNodeData = {
   label: string;
   category?: string;
-  rawCategory?: PartCategory;
   status: BuildGraphStatus;
-  clickable?: boolean;
-  disabled?: boolean;
-  onClick?: (category: PartCategory) => void;
 };
 type BuildHistoryEntry = {
   key: string;
@@ -55,11 +48,6 @@ type GraphPreviewAnchor = {
   width: number;
   placement: 'left' | 'right';
 };
-type PendingSelfQuoteApply = {
-  build: AiRecommendedBuild;
-  category: PartCategory;
-};
-
 const compactGraphNodeTypes = { compactGraphNode: CompactGraphNode };
 const COMPACT_GRAPH_STALE_TIME_MS = 5 * 60 * 1000;
 const GRAPH_PREVIEW_PANEL_WIDTH = 760;
@@ -80,8 +68,6 @@ const compactCategoryPositions: Record<string, { x: number; y: number }> = {
 
 export function LatestBuildResultPage() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const queryClient = useQueryClient();
   const assistantSession = readAssistantSession();
   const builds = assistantSession.latestBuilds;
   const buildEntries = useMemo(() => createBuildHistoryEntries(builds), [builds]);
@@ -92,9 +78,6 @@ export function LatestBuildResultPage() {
   const [savedBuildIds, setSavedBuildIds] = useState(assistantSession.savedBuildIds);
   const [canShowGraphPreview, setCanShowGraphPreview] = useState(false);
   const [previewAnchor, setPreviewAnchor] = useState<GraphPreviewAnchor | null>(null);
-  const [pendingSelfQuoteApply, setPendingSelfQuoteApply] = useState<PendingSelfQuoteApply | null>(null);
-  const [checkingSelfQuoteCategory, setCheckingSelfQuoteCategory] = useState<PartCategory | null>(null);
-  const [selfQuoteApplyError, setSelfQuoteApplyError] = useState(false);
   const previewOpenTimerRef = useRef<number | null>(null);
   const previewCloseTimerRef = useRef<number | null>(null);
   const visibleBuildEntries = useMemo(
@@ -116,8 +99,6 @@ export function LatestBuildResultPage() {
   const selectedSavedBuildId = selectedEntry ? savedBuildIdForEntry(selectedEntry) : undefined;
   const lastUserMessage = latestUserMessage(assistantSession);
   const closeDetail = useCallback(() => {
-    setPendingSelfQuoteApply(null);
-    setSelfQuoteApplyError(false);
     setSelectedBuildKey(null);
   }, []);
   const clearPreviewOpenTimer = useCallback(() => {
@@ -157,8 +138,6 @@ export function LatestBuildResultPage() {
     clearPreviewCloseTimer();
     setPreviewBuildKey(null);
     setPreviewAnchor(null);
-    setPendingSelfQuoteApply(null);
-    setSelfQuoteApplyError(false);
     setSelectedBuildKey(buildKey);
   }, [clearPreviewCloseTimer, clearPreviewOpenTimer]);
   const saveMutation = useMutation({
@@ -179,73 +158,10 @@ export function LatestBuildResultPage() {
       }));
     }
   });
-  const applySelfQuoteMutation = useMutation({
-    mutationFn: async ({ build, category }: PendingSelfQuoteApply) => {
-      const normalizedBuild = normalizeAiRecommendedBuild(build);
-      saveSelectedAiBuild(normalizedBuild);
-      const draft = await applyAiBuildToQuoteDraft({
-        buildId: normalizedBuild.id,
-        conflictPolicy: 'REPLACE',
-        items: normalizedBuild.items.map((item) => ({
-          partId: item.partId,
-          category: item.category,
-          quantity: item.quantity
-        }))
-      });
-      return { draft, category };
-    },
-    onSuccess: ({ draft, category }) => {
-      setPendingSelfQuoteApply(null);
-      setSelfQuoteApplyError(false);
-      queryClient.setQueryData(['quote-draft', 'current'], draft);
-      void queryClient.invalidateQueries({ queryKey: ['quote-draft', 'current'] });
-      navigate(`/self-quote?category=${category}`);
-    },
-    onError: () => {
-      setPendingSelfQuoteApply(null);
-      setSelfQuoteApplyError(true);
-    }
-  });
-
-  const applyBuildToSelfQuote = useCallback((build: AiRecommendedBuild, category: PartCategory) => {
-    setSelfQuoteApplyError(false);
-    applySelfQuoteMutation.mutate({ build, category });
-  }, [applySelfQuoteMutation]);
-
-  const handleGraphPartNodeClick = useCallback(async (build: AiRecommendedBuild, category: PartCategory) => {
-    if (!getToken()) {
-      navigate(`/login?redirect=${encodeURIComponent(`${location.pathname}${location.search}`)}`);
-      return;
-    }
-    if (applySelfQuoteMutation.isPending || checkingSelfQuoteCategory) return;
-    setSelfQuoteApplyError(false);
-    setCheckingSelfQuoteCategory(category);
-    try {
-      const draft = await queryClient.fetchQuery({
-        queryKey: ['quote-draft', 'current'],
-        queryFn: getCurrentQuoteDraft
-      });
-      if ((draft.items ?? []).length > 0) {
-        setPendingSelfQuoteApply({ build, category });
-        return;
-      }
-      applyBuildToSelfQuote(build, category);
-    } catch {
-      setSelfQuoteApplyError(true);
-    } finally {
-      setCheckingSelfQuoteCategory(null);
-    }
-  }, [applyBuildToSelfQuote, applySelfQuoteMutation.isPending, checkingSelfQuoteCategory, location.pathname, location.search, navigate, queryClient]);
-
-  const confirmSelfQuoteReplace = useCallback(() => {
-    if (!pendingSelfQuoteApply) return;
-    applyBuildToSelfQuote(pendingSelfQuoteApply.build, pendingSelfQuoteApply.category);
-  }, [applyBuildToSelfQuote, pendingSelfQuoteApply]);
-
-  const cancelSelfQuoteReplace = useCallback(() => {
-    if (applySelfQuoteMutation.isPending) return;
-    setPendingSelfQuoteApply(null);
-  }, [applySelfQuoteMutation.isPending]);
+  const openSelfQuoteFromGraph = useCallback((build: AiRecommendedBuild) => {
+    saveSelectedAiBuild(normalizeAiRecommendedBuild(build));
+    navigate('/self-quote');
+  }, [navigate]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(min-width: 768px)');
@@ -265,8 +181,6 @@ export function LatestBuildResultPage() {
   useEffect(() => {
     if (selectedBuildKey && !visibleBuildEntries.some((entry) => entry.key === selectedBuildKey)) {
       setSelectedBuildKey(null);
-      setPendingSelfQuoteApply(null);
-      setSelfQuoteApplyError(false);
     }
     if (previewBuildKey && !visibleBuildEntries.some((entry) => entry.key === previewBuildKey)) {
       setPreviewBuildKey(null);
@@ -344,14 +258,8 @@ export function LatestBuildResultPage() {
             savedBuildId={selectedSavedBuildId}
             isSaving={saveMutation.isPending && saveMutation.variables?.key === selectedEntry?.key}
             saveError={saveMutation.isError && saveMutation.variables?.key === selectedEntry?.key}
-            pendingSelfQuoteApply={pendingSelfQuoteApply}
-            isCheckingSelfQuote={Boolean(checkingSelfQuoteCategory)}
-            isApplyingSelfQuote={applySelfQuoteMutation.isPending}
-            selfQuoteApplyError={selfQuoteApplyError}
             onSave={() => selectedEntry ? saveMutation.mutate(selectedEntry) : undefined}
-            onPartNodeClick={(category) => handleGraphPartNodeClick(selectedBuild, category)}
-            onConfirmSelfQuoteReplace={confirmSelfQuoteReplace}
-            onCancelSelfQuoteReplace={cancelSelfQuoteReplace}
+            onGraphCardClick={() => openSelfQuoteFromGraph(selectedBuild)}
             onClose={closeDetail}
           />
         ) : null}
@@ -373,28 +281,16 @@ function LatestBuildDetailDrawer({
   savedBuildId,
   isSaving,
   saveError,
-  pendingSelfQuoteApply,
-  isCheckingSelfQuote,
-  isApplyingSelfQuote,
-  selfQuoteApplyError,
   onSave,
-  onPartNodeClick,
-  onConfirmSelfQuoteReplace,
-  onCancelSelfQuoteReplace,
+  onGraphCardClick,
   onClose
 }: {
   build: AiRecommendedBuild;
   savedBuildId?: string;
   isSaving: boolean;
   saveError: boolean;
-  pendingSelfQuoteApply: PendingSelfQuoteApply | null;
-  isCheckingSelfQuote: boolean;
-  isApplyingSelfQuote: boolean;
-  selfQuoteApplyError: boolean;
   onSave: () => void;
-  onPartNodeClick: (category: PartCategory) => void;
-  onConfirmSelfQuoteReplace: () => void;
-  onCancelSelfQuoteReplace: () => void;
+  onGraphCardClick: () => void;
   onClose: () => void;
 }) {
   const desktopPanelRef = useRef<HTMLElement | null>(null);
@@ -438,49 +334,10 @@ function LatestBuildDetailDrawer({
           savedBuildId={savedBuildId}
           isSaving={isSaving}
           saveError={saveError}
-          isCheckingSelfQuote={isCheckingSelfQuote}
-          isApplyingSelfQuote={isApplyingSelfQuote}
-          selfQuoteApplyError={selfQuoteApplyError}
           onSave={onSave}
-          onPartNodeClick={onPartNodeClick}
+          onGraphCardClick={onGraphCardClick}
           onClose={onClose}
         />
-        {pendingSelfQuoteApply ? (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/25 p-4">
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-label="셀프 견적 교체 확인"
-              className="w-full max-w-sm rounded-lg border border-commerce-line bg-white p-5 shadow-2xl"
-            >
-              <div className="text-sm font-black text-commerce-ink">셀프 견적 교체 확인</div>
-              <p className="mt-2 break-keep text-sm leading-6 text-slate-600">
-                현재 셀프 견적 장바구니를 이 추천 조합으로 교체할까요?
-              </p>
-              <p className="mt-2 text-xs font-semibold text-slate-500">
-                적용 후 {labelForCategory(pendingSelfQuoteApply.category)} 카테고리 화면으로 이동합니다.
-              </p>
-              <div className="mt-4 flex gap-2">
-                <button
-                  type="button"
-                  disabled={isApplyingSelfQuote}
-                  onClick={onCancelSelfQuoteReplace}
-                  className="min-h-10 flex-1 rounded-md border border-slate-300 bg-white px-3 text-sm font-bold text-slate-700 hover:border-commerce-ink disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
-                >
-                  취소
-                </button>
-                <button
-                  type="button"
-                  disabled={isApplyingSelfQuote}
-                  onClick={onConfirmSelfQuoteReplace}
-                  className="min-h-10 flex-1 rounded-md bg-brand-blue px-3 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-wait disabled:bg-slate-400"
-                >
-                  {isApplyingSelfQuote ? '적용 중' : '교체하고 이동'}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
       </section>
     </>
   );
@@ -492,11 +349,8 @@ function LatestBuildDetailPanelContent({
   savedBuildId,
   isSaving,
   saveError,
-  isCheckingSelfQuote,
-  isApplyingSelfQuote,
-  selfQuoteApplyError,
   onSave,
-  onPartNodeClick,
+  onGraphCardClick,
   onClose
 }: {
   build: AiRecommendedBuild;
@@ -504,11 +358,8 @@ function LatestBuildDetailPanelContent({
   savedBuildId?: string;
   isSaving: boolean;
   saveError: boolean;
-  isCheckingSelfQuote: boolean;
-  isApplyingSelfQuote: boolean;
-  selfQuoteApplyError: boolean;
   onSave: () => void;
-  onPartNodeClick: (category: PartCategory) => void;
+  onGraphCardClick: () => void;
   onClose: () => void;
 }) {
   const toolResults = displayBuild.toolResults ?? [];
@@ -543,18 +394,8 @@ function LatestBuildDetailPanelContent({
 
         <BuildGraphInlineSection
           build={build}
-          onPartNodeClick={onPartNodeClick}
-          isApplyingSelfQuote={isCheckingSelfQuote || isApplyingSelfQuote}
+          onGraphCardClick={onGraphCardClick}
         />
-        {isCheckingSelfQuote ? (
-          <StateMessage type="info" title="셀프 견적 확인 중" body="현재 장바구니 상태를 확인하고 있습니다." />
-        ) : null}
-        {isApplyingSelfQuote ? (
-          <StateMessage type="info" title="셀프 견적 적용 중" body="추천 조합 전체를 견적 장바구니에 적용하고 있습니다." />
-        ) : null}
-        {selfQuoteApplyError ? (
-          <StateMessage type="warn" title="셀프 견적 적용 실패" body="추천 조합을 셀프 견적에 적용하지 못했습니다." />
-        ) : null}
 
         <section className="rounded-md border border-commerce-line bg-white">
           <div className="border-b border-commerce-line px-4 py-3">
@@ -868,20 +709,40 @@ function graphPreviewStatusClasses(status: BuildGraphStatus) {
 
 function BuildGraphInlineSection({
   build,
-  onPartNodeClick,
-  isApplyingSelfQuote = false
+  onGraphCardClick
 }: {
   build: AiRecommendedBuild;
-  onPartNodeClick?: (category: PartCategory) => void;
-  isApplyingSelfQuote?: boolean;
+  onGraphCardClick?: () => void;
 }) {
   const graphQuery = useRecommendationBuildGraph(build);
 
+  const handleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!onGraphCardClick) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onGraphCardClick();
+    }
+  }, [onGraphCardClick]);
+
   return (
-    <section className="rounded-md border border-commerce-line bg-white" data-testid="latest-build-detail-graph">
+    <section
+      role={onGraphCardClick ? 'button' : undefined}
+      tabIndex={onGraphCardClick ? 0 : undefined}
+      aria-label={onGraphCardClick ? '견적 관계도에서 셀프 견적으로 이동' : undefined}
+      onClick={onGraphCardClick}
+      onKeyDown={handleKeyDown}
+      className={`rounded-md border border-commerce-line bg-white ${
+        onGraphCardClick
+          ? 'cursor-pointer transition hover:border-brand-blue hover:shadow-product focus:outline-none focus:ring-4 focus:ring-blue-100'
+          : ''
+      }`}
+      data-testid="latest-build-detail-graph"
+    >
       <div className="border-b border-commerce-line px-4 py-3">
         <h3 className="text-sm font-black text-commerce-ink">견적 관계도</h3>
-        <p className="mt-1 text-xs font-semibold text-slate-500">선택한 추천 조합의 부품 관계를 읽기 전용으로 확인합니다.</p>
+        <p className="mt-1 text-xs font-semibold text-slate-500">
+          선택한 추천 조합의 부품 관계를 확인하고, 카드를 누르면 셀프 견적으로 이동합니다.
+        </p>
       </div>
       <CompactBuildGraph
         graph={graphQuery.data}
@@ -889,8 +750,7 @@ function BuildGraphInlineSection({
         isError={graphQuery.isError}
         heightClassName="h-[280px]"
         includePriceNode
-        onPartNodeClick={onPartNodeClick}
-        nodesDisabled={isApplyingSelfQuote}
+        isCardLink={Boolean(onGraphCardClick)}
       />
     </section>
   );
@@ -902,20 +762,18 @@ function CompactBuildGraph({
   isError,
   heightClassName,
   includePriceNode = true,
-  onPartNodeClick,
-  nodesDisabled = false
+  isCardLink = false
 }: {
   graph?: BuildGraphResolveResponse;
   isLoading: boolean;
   isError: boolean;
   heightClassName: string;
   includePriceNode?: boolean;
-  onPartNodeClick?: (category: PartCategory) => void;
-  nodesDisabled?: boolean;
+  isCardLink?: boolean;
 }) {
   const flowElements = useMemo(
-    () => graph ? toCompactFlowElements(graph, includePriceNode, onPartNodeClick, nodesDisabled) : { nodes: [], edges: [] },
-    [graph, includePriceNode, nodesDisabled, onPartNodeClick]
+    () => graph ? toCompactFlowElements(graph, includePriceNode) : { nodes: [], edges: [] },
+    [graph, includePriceNode]
   );
 
   if (isLoading && !graph) {
@@ -943,7 +801,7 @@ function CompactBuildGraph({
   }
 
   return (
-    <div className={`${heightClassName} bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] ${onPartNodeClick ? 'compact-build-graph--interactive' : ''}`}>
+    <div className={`${heightClassName} bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] ${isCardLink ? 'compact-build-graph--card-link' : ''}`}>
       <ReactFlow
         nodes={flowElements.nodes}
         edges={flowElements.edges}
@@ -968,13 +826,10 @@ function CompactBuildGraph({
 
 function CompactGraphNode({ data }: NodeProps) {
   const nodeData = data as CompactGraphNodeData;
-  const nodeClassName = `relative flex h-[78px] w-44 flex-col justify-between rounded-lg border bg-white px-3 py-2 text-left shadow-sm ${compactNodeClasses(nodeData.status)} ${
-    nodeData.clickable
-      ? 'cursor-pointer transition hover:border-brand-blue hover:shadow-product focus:outline-none focus:ring-4 focus:ring-blue-100 disabled:cursor-wait disabled:opacity-70'
-      : ''
-  }`;
-  const content = (
-    <>
+  const nodeClassName = `relative flex h-[78px] w-44 flex-col justify-between rounded-lg border bg-white px-3 py-2 text-left shadow-sm ${compactNodeClasses(nodeData.status)}`;
+
+  return (
+    <div className={nodeClassName}>
       <Handle type="target" position={Position.Left} className="!h-1.5 !w-1.5 !border-white !bg-slate-300 !opacity-60" />
       <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-white !bg-slate-300 !opacity-60" />
       <div className="flex items-start justify-between gap-2">
@@ -986,29 +841,6 @@ function CompactGraphNode({ data }: NodeProps) {
       <div className="line-clamp-2 text-[12px] font-black leading-4 text-commerce-ink" title={nodeData.label}>
         {nodeData.label}
       </div>
-    </>
-  );
-
-  if (nodeData.clickable && nodeData.rawCategory) {
-    return (
-      <button
-        type="button"
-        aria-label={`${nodeData.category ?? nodeData.rawCategory} 노드 선택: ${nodeData.label}`}
-        disabled={nodeData.disabled}
-        onClick={(event) => {
-          event.stopPropagation();
-          nodeData.onClick?.(nodeData.rawCategory as PartCategory);
-        }}
-        className={nodeClassName}
-      >
-        {content}
-      </button>
-    );
-  }
-
-  return (
-    <div className={nodeClassName}>
-      {content}
     </div>
   );
 }
@@ -1127,36 +959,24 @@ function clamp(value: number, min: number, max: number) {
 
 function toCompactFlowElements(
   graph: BuildGraphResolveResponse,
-  includePriceNode: boolean,
-  onPartNodeClick?: (category: PartCategory) => void,
-  nodesDisabled = false
+  includePriceNode: boolean
 ): { nodes: Node[]; edges: Edge[] } {
   const graphNodes = graph.nodes.filter((node) => node.type === 'PART' || (includePriceNode && node.category === 'PRICE'));
   const nodeIds = new Set(graphNodes.map((node) => node.id));
 
   return {
-    nodes: graphNodes.map((node, index) => {
-      const rawCategory = String(node.category ?? '').toUpperCase();
-      const partCategory = isPartCategory(rawCategory) ? rawCategory : undefined;
-      const clickable = Boolean(onPartNodeClick && node.type === 'PART' && partCategory);
-      return {
-        id: node.id,
-        type: 'compactGraphNode',
-        position: compactNodePosition(node.category, index),
-        data: {
-          label: node.label,
-          category: labelForCategory(String(node.category ?? '')),
-          rawCategory: partCategory,
-          status: node.status,
-          clickable,
-          disabled: nodesDisabled,
-          onClick: clickable ? onPartNodeClick : undefined
-        } satisfies CompactGraphNodeData,
-        zIndex: clickable ? 20 : undefined,
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left
-      };
-    }),
+    nodes: graphNodes.map((node, index) => ({
+      id: node.id,
+      type: 'compactGraphNode',
+      position: compactNodePosition(node.category, index),
+      data: {
+        label: node.label,
+        category: labelForCategory(String(node.category ?? '')),
+        status: node.status
+      } satisfies CompactGraphNodeData,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left
+    })),
     edges: graph.edges
       .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
       .map((edge) => {
@@ -1264,8 +1084,4 @@ function labelForCategory(category: string) {
     default:
       return category;
   }
-}
-
-function isPartCategory(category: string): category is PartCategory {
-  return ['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'CASE', 'COOLER'].includes(category);
 }
