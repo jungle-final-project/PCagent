@@ -242,6 +242,13 @@ async function dragFloatingGraphResizeHandle(page: Page, deltaX: number, deltaY:
   await page.mouse.up();
 }
 
+async function moveHomeFullPageDown(page: Page) {
+  const viewport = page.viewportSize() ?? { width: 1280, height: 720 };
+  await page.mouse.move(Math.floor(viewport.width / 2), Math.floor(viewport.height / 2));
+  await page.mouse.wheel(0, 1200);
+  await page.waitForTimeout(1100);
+}
+
 async function openDesktopAiAssistant(page: Page) {
   await expect(page.getByTestId('ai-chatbot-launcher')).toHaveCount(0);
   const logoutButton = page.getByRole('button', { name: '로그아웃' });
@@ -501,7 +508,16 @@ async function mockHomePartsApi(page: Page) {
     }
   }));
 
-  const recommendedOrder = ['home-gpu-rtx5070', 'home-cpu-ryzen7', 'home-ram-ddr5-32', 'home-psu-850-popular'];
+  const recommendedOrder = [
+    'home-gpu-rtx5070',
+    'home-cpu-ryzen7',
+    'home-ram-ddr5-32',
+    'home-psu-850-popular',
+    'home-ssd-nvme-1tb',
+    'home-board-b850',
+    'home-case-frame',
+    'home-cooler-phantom'
+  ];
   await page.route('**/api/recommendations/home-parts**', async (route) => {
     const items = recommendedOrder
       .map((id, index) => {
@@ -745,8 +761,13 @@ test('renders a single shopping home without the old hero prompt flow', async ({
   const main = page.getByRole('main');
 
   await expect(main.getByRole('textbox', { name: '원하는 PC 사양 입력' })).toHaveCount(0);
-  await expect(main.getByRole('img', { name: 'PC Build Festa 프리미엄 PC 완성 광고' })).toBeVisible();
-  await expect(main.getByRole('heading', { name: '부품 바로가기' })).toBeVisible();
+  await expect(main.getByRole('img', { name: '배틀그라운드 조립 PC 광고' })).toBeVisible();
+  await expect(main.getByRole('button', { name: /배틀그라운드 조립 PC/ })).toBeVisible();
+  for (const label of ['PC 견적', '전체 부품', 'AS 접수', '내 견적함']) {
+    await expect(main.getByRole('link', { name: new RegExp(label) }).first()).toBeVisible();
+  }
+  await expect(main.getByRole('link', { name: /AI 추천 견적/ })).toBeVisible();
+  await expect(main.getByRole('link', { name: /내부 DB 부품 가격/ })).toBeVisible();
   await expect(main.getByRole('heading', { name: '추천상품' })).toBeVisible();
   await expect(main.getByRole('tab', { name: '인기상품' })).toHaveAttribute('aria-selected', 'true');
   await expect(main.getByRole('tab', { name: 'AI 추천상품' })).toHaveAttribute('aria-selected', 'false');
@@ -765,9 +786,6 @@ test('renders a single shopping home without the old hero prompt flow', async ({
     '/parts/home-gpu-rtx5070?recId=home-part-home-gpu-rtx5070&recSurface=HOME_RECOMMENDED_PARTS&rank=0'
   );
 
-  for (const label of ['CPU', '메인보드', 'RAM', 'GPU', 'SSD', '파워', '케이스', '쿨러']) {
-    await expect(main.getByRole('link', { name: label, exact: true })).toBeVisible();
-  }
 });
 
 test('selects a featured recommendation and applies every build part to self quote', async ({ page }) => {
@@ -912,7 +930,7 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   expect(compatibleCandidateRequests[0].source).toBe('AI_BUILD');
   expect(compatibleCandidateRequests[0].category).toBe('GPU');
   expect(compatibleCandidateRequests[0].items?.length).toBe(8);
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await moveHomeFullPageDown(page);
   const floatingGraph = page.getByTestId('floating-dependency-graph');
   await expect(floatingGraph).toBeVisible();
   await expect(page.getByTestId('floating-graph-resize-handle')).toBeVisible();
@@ -1991,8 +2009,9 @@ test('keeps the unified home usable on mobile width', async ({ page }) => {
   await openHomeAsUser(page);
   const main = page.getByRole('main');
 
-  await expect(main.getByRole('img', { name: 'PC Build Festa 프리미엄 PC 완성 광고' })).toBeVisible();
-  await expect(main.getByRole('heading', { name: '부품 바로가기' })).toBeVisible();
+  await expect(main.getByRole('img', { name: '배틀그라운드 조립 PC 광고' })).toBeVisible();
+  await expect(main.getByRole('link', { name: /PC 견적/ }).first()).toBeVisible();
+  await expect(main.getByRole('link', { name: /전체 부품/ })).toBeVisible();
   await expect(main.getByRole('tab', { name: '인기상품' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'AI에게 물어보기' })).toBeHidden();
   await page.getByRole('button', { name: 'AI 견적 챗봇 열기' }).click();
@@ -2002,7 +2021,7 @@ test('keeps the unified home usable on mobile width', async ({ page }) => {
   await expect(main.getByTestId('build-dependency-graph')).toContainText('견적 관계도');
   await main.getByTestId('build-dependency-graph').getByText('RTX 5070', { exact: true }).click();
   await expect(main.getByTestId('graph-flow-canvas').getByTestId('graph-node-candidate-panel')).toContainText('호환 후보');
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await moveHomeFullPageDown(page);
   await expect(page.getByTestId('floating-dependency-graph')).toHaveCount(0);
 
   const hasBodyOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
