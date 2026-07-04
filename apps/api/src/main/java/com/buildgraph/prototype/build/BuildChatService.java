@@ -25,6 +25,7 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.slf4j.Logger;
@@ -36,12 +37,18 @@ import org.springframework.web.server.ResponseStatusException;
 public class BuildChatService {
     private static final Logger log = LoggerFactory.getLogger(BuildChatService.class);
     private static final Pattern BUDGET_MANWON = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:만원|만)");
-    private static final Pattern BUDGET_BAEKMANWON = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*백\\s*만원");
+    private static final Pattern BUDGET_BAEKMANWON = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*백\\s*만\\s*원?");
+    private static final Pattern BUDGET_CHEONMANWON = Pattern.compile("(\\d+(?:\\.\\d+)?)?\\s*천\\s*(?:(\\d+(?:\\.\\d+)?)\\s*백)?\\s*만\\s*(원)?");
     private static final Pattern BUDGET_WON = Pattern.compile("(\\d{6,})\\s*원?");
     private static final Pattern EXPLICIT_GPU_MODEL = Pattern.compile("(?i)(?:rtx|geforce|지포스)?\\s*(40[6-9]0|50[6-9]0)(?:\\s*(ti|super))?");
     private static final Pattern EXPLICIT_CPU_MODEL = Pattern.compile("(?i)\\b\\d{4,5}x3d\\b|\\b\\d{4,5}x\\b|\\bi[3579]-?\\d{4,5}\\b");
     private static final Pattern CAPACITY_GB_PATTERN = Pattern.compile("(\\d+)\\s*(?:gb|기가|기가바이트)", Pattern.CASE_INSENSITIVE);
     private static final Pattern WATT_PATTERN = Pattern.compile("(\\d{3,4})\\s*w", Pattern.CASE_INSENSITIVE);
+    // 팀 정책: 벤치마크 수치는 보장이 아니라 참고용이며, 제공 범위(내부 DB 등록 조합)를 함께 고지한다
+    static final String SIMULATION_DISCLAIMER =
+            "본 수치는 내부 벤치마크 DB 기준 참고용 추정치이며, 내부 DB에 등록된 부품·게임·해상도 조합에 한해 제공됩니다. "
+                    + "실제 성능은 게임 버전, 그래픽 옵션, 드라이버, 해상도, 냉각·전원 환경에 따라 달라질 수 있습니다.";
+
     private static final List<Tier> TIERS = List.of(
             new Tier("budget", "가성비", "가성비형"),
             new Tier("balanced", "균형", "균형형"),
@@ -125,6 +132,16 @@ public class BuildChatService {
         this(jdbcTemplate, toolCheckService, aiChatEngine, buildChatCacheService, partReplacementRanker, candidateReranker, new PartRouteResolver(jdbcTemplate), new BuildChatIntentRouter(), BuildChatSemanticCacheService.disabled());
     }
 
+    private BuildChatTierSnapshotStore tierSnapshotStore;
+
+    @Value("${ai.build-chat.tier-snapshot.tolerance-pct:15}")
+    private double tierSnapshotTolerancePct = 15;
+
+    @Autowired(required = false)
+    public void setTierSnapshotStore(BuildChatTierSnapshotStore tierSnapshotStore) {
+        this.tierSnapshotStore = tierSnapshotStore;
+    }
+
     public Map<String, Object> chat(Map<String, Object> request) {
         return chat(request, (String) null);
     }
@@ -185,26 +202,58 @@ public class BuildChatService {
             logBuildChatPath("FAST_UNSUPPORTED", startedNanos, userId, requestedAiProfile, false, BuildChatGuardStats.empty());
             return response;
         }
+        long stageStartNanos = System.nanoTime();
         var cachedResponse = buildChatCacheService.lookup(body, requestedAiProfile, userId);
+        long redisMs = elapsedMs(stageStartNanos);
         if (cachedResponse.isPresent()) {
             Map<String, Object> response = cachedResponse.get();
-            logBuildChatPath("CACHE_HIT", startedNanos, userId, requestedAiProfile, true, BuildChatGuardStats.empty());
+            logBuildChatPath("CACHE_HIT", startedNanos, userId, requestedAiProfile, true, BuildChatGuardStats.empty(),
+                    "redisMs=" + redisMs);
             return response;
         }
+        if (tierSnapshotStore != null
+                && rawBudgetIntent.hasBudget()
+                && !rawBudgetIntent.explicitHardConstraint()
+                && objectMaps(objectMap(body.get("currentQuoteDraft")).get("items")).isEmpty()) {
+            stageStartNanos = System.nanoTime();
+            Optional<BuildChatTierSnapshotStore.TierSnapshot> tierSnapshot =
+                    tierSnapshotStore.bestFor(rawBudgetIntent.budget(), rawBudgetIntent.mode(), tierSnapshotTolerancePct);
+            long tierMs = elapsedMs(stageStartNanos);
+            if (tierSnapshot.isPresent()) {
+                BuildChatTierSnapshotStore.TierSnapshot snapshot = tierSnapshot.get();
+                Map<String, Object> response = fastResponse(
+                        "BUDGET",
+                        "내부 자산과 Tool 검증 기준으로 미리 계산한 추천 조합을 바로 가져왔습니다.",
+                        snapshot.builds(),
+                        snapshot.warnings()
+                );
+                buildChatCacheService.storeAsync(body, requestedAiProfile, userId, response);
+                logBuildChatPath("FAST_TIER_SNAPSHOT", startedNanos, userId, requestedAiProfile, false, BuildChatGuardStats.empty(),
+                        "redisMs=" + redisMs + " tierMs=" + tierMs + " tierBudgetWon=" + snapshot.tierBudgetWon());
+                return response;
+            }
+        }
+        stageStartNanos = System.nanoTime();
         Optional<Map<String, Object>> deterministicResponse = deterministicFastResponse(body, message, rawBudgetIntent);
+        long deterministicMs = elapsedMs(stageStartNanos);
         if (deterministicResponse.isPresent()) {
             Map<String, Object> response = deterministicResponse.get();
             buildChatCacheService.storeAsync(body, requestedAiProfile, userId, response);
             semanticCacheService.storeAsync(body, requestedAiProfile, intentDecision, response);
-            logBuildChatPath("FAST_DETERMINISTIC", startedNanos, userId, requestedAiProfile, false, BuildChatGuardStats.routeFallback());
+            logBuildChatPath("FAST_DETERMINISTIC", startedNanos, userId, requestedAiProfile, false, BuildChatGuardStats.routeFallback(),
+                    "redisMs=" + redisMs + " deterministicMs=" + deterministicMs);
             return response;
         }
+        stageStartNanos = System.nanoTime();
         var semanticCachedResponse = semanticCacheService.lookup(body, requestedAiProfile, intentDecision);
+        long semanticMs = elapsedMs(stageStartNanos);
         if (semanticCachedResponse.isPresent()) {
             Map<String, Object> response = semanticCachedResponse.get();
-            logBuildChatPath("SEMANTIC_CACHE_HIT", startedNanos, userId, requestedAiProfile, true, BuildChatGuardStats.empty());
+            logBuildChatPath("SEMANTIC_CACHE_HIT", startedNanos, userId, requestedAiProfile, true, BuildChatGuardStats.empty(),
+                    "redisMs=" + redisMs + " deterministicMs=" + deterministicMs + " semanticMs=" + semanticMs);
             return response;
         }
+        stageStartNanos = System.nanoTime();
         AiChatEngineResponse engineResponse = aiChatEngine.respondLlmRequired(new AiChatEngineRequest(
                 message,
                 "HOME",
@@ -214,21 +263,48 @@ public class BuildChatService {
                 body,
                 userId
         ), requestedAiProfile);
+        long engineMs = elapsedMs(stageStartNanos);
         BuildChatGuardStats guardStats = new BuildChatGuardStats();
         Map<String, Object> response = responseMap(engineResponse, rawBudgetIntent, guardStats);
         candidateReranker.recordShadowScores(body, response, userId, requestedAiProfile);
         log.debug("Build Chat response generated: userId={}, requestedAiProfile={}, cacheStore=true", userId, requestedAiProfile);
         buildChatCacheService.storeAsync(body, requestedAiProfile, userId, response);
         semanticCacheService.storeAsync(body, requestedAiProfile, intentDecision, response);
-        logBuildChatPath("LLM_FULL", startedNanos, userId, requestedAiProfile, false, guardStats);
+        logBuildChatPath("LLM_FULL", startedNanos, userId, requestedAiProfile, false, guardStats,
+                "redisMs=" + redisMs + " deterministicMs=" + deterministicMs + " semanticMs=" + semanticMs + " engineMs=" + engineMs);
         return response;
+    }
+
+    private static long elapsedMs(long startNanos) {
+        return Math.max(0, (System.nanoTime() - startNanos) / 1_000_000);
+    }
+
+    public record TierBuilds(List<Map<String, Object>> builds, List<String> warnings) {
+    }
+
+    // 예산 티어 스냅샷용 계산: "티어 이하 & 최대 근접" 사다리 탐색 (총액 ≤ 티어 보장)
+    public TierBuilds computeBudgetTierBuilds(int budgetWon) {
+        List<String> warnings = new ArrayList<>();
+        List<Map<String, Object>> builds = nearBudgetLadderBuilds(budgetWon, List.of(), warnings, new BuildChatGuardStats());
+        if (!builds.isEmpty()) {
+            warnings.add("명시 예산 범위에 맞춰 내부 자산 기준 보조 견적을 재구성했습니다.");
+        }
+        return new TierBuilds(builds, warnings);
     }
 
     static Integer parseBudgetWon(String message) {
         if (message == null) {
             return null;
         }
-        String normalized = message.replace(",", "").toLowerCase(Locale.ROOT);
+        String normalized = normalizeKoreanNumerals(message.replace(",", "").toLowerCase(Locale.ROOT));
+        Matcher cheonManWonMatcher = BUDGET_CHEONMANWON.matcher(normalized);
+        // "천만에요" 같은 관용구 오탐을 막기 위해 선행 숫자, 백 단위, "원" 중 하나는 있어야 예산으로 본다
+        if (cheonManWonMatcher.find()
+                && (cheonManWonMatcher.group(1) != null || cheonManWonMatcher.group(2) != null || cheonManWonMatcher.group(3) != null)) {
+            double thousands = cheonManWonMatcher.group(1) == null ? 1 : Double.parseDouble(cheonManWonMatcher.group(1));
+            double hundreds = cheonManWonMatcher.group(2) == null ? 0 : Double.parseDouble(cheonManWonMatcher.group(2));
+            return (int) Math.round(thousands * 10_000_000 + hundreds * 1_000_000);
+        }
         Matcher baekManWonMatcher = BUDGET_BAEKMANWON.matcher(normalized);
         if (baekManWonMatcher.find()) {
             return (int) Math.round(Double.parseDouble(baekManWonMatcher.group(1)) * 1_000_000);
@@ -242,6 +318,16 @@ public class BuildChatService {
             return Integer.parseInt(wonMatcher.group(1));
         }
         return null;
+    }
+
+    // "삼백만원", "일천삼백만원", "2천만원" 같은 한글/혼합 숫자 표기를 아라비아 숫자로 정규화한다
+    private static String normalizeKoreanNumerals(String value) {
+        String result = value;
+        String digits = "일이삼사오육칠팔구";
+        for (int index = 0; index < digits.length(); index += 1) {
+            result = result.replace(String.valueOf(digits.charAt(index)), String.valueOf(index + 1));
+        }
+        return result;
     }
 
     static BudgetIntent budgetIntent(String message) {
@@ -268,10 +354,11 @@ public class BuildChatService {
         String normalized = normalizeCommand(message);
         boolean preferenceBuildLike = containsAnyNormalized(normalized, "위주", "말고", "cuda", "로컬ai", "실험용", "그래픽카드로추천");
         boolean buildLike = containsAnyNormalized(normalized,
-                "pc", "컴퓨터", "견적", "본체", "구성",
+                "pc", "피시", "컴퓨터", "컴", "견적", "본체", "구성", "데스크탑", "데스크톱", "워크스테이션", "머신", "사양", "조합",
                 "목표", "게임", "게이밍", "qhd", "fhd", "4k", "hz", "배그", "발로란트", "오버워치", "사이버펑크", "로스트아크")
                 || preferenceBuildLike;
-        boolean recommendLike = containsAnyNormalized(normalized, "추천", "맞춰", "구성", "용pc", "pc");
+        boolean recommendLike = containsAnyNormalized(normalized,
+                "추천", "맞춰", "맞추", "구성", "용pc", "pc", "뽑아", "짜줘", "짜주", "골라", "조립", "만들어", "세팅", "내줘", "부탁", "필요", "구해줘");
         boolean budgetUseCaseLike = rawBudgetIntent != null
                 && rawBudgetIntent.hasBudget()
                 && hasSpecificBuildSignal(message, normalized);
@@ -298,8 +385,8 @@ public class BuildChatService {
                 new CategoryKeywords("STORAGE", List.of("ssd", "스토리지", "저장장치", "저장 공간", "nvme")),
                 new CategoryKeywords("PSU", List.of("파워", "psu", "전원공급", "전원 공급")),
                 new CategoryKeywords("CASE", List.of("케이스", "case")),
-                new CategoryKeywords("GPU", List.of("gpu", "그래픽카드", "그래픽 카드", "그래픽", "vga", "rtx", "cuda", "nvidia", "엔비디아", "geforce", "지포스")),
-                new CategoryKeywords("CPU", List.of("cpu", "프로세서", "라이젠", "ryzen", "intel", "인텔")),
+                new CategoryKeywords("GPU", List.of("gpu", "지피유", "그래픽카드", "그래픽 카드", "그래픽", "글카", "vga", "rtx", "cuda", "nvidia", "엔비디아", "geforce", "지포스")),
+                new CategoryKeywords("CPU", List.of("cpu", "씨퓨", "씨피유", "프로세서", "라이젠", "ryzen", "intel", "인텔")),
                 new CategoryKeywords("RAM", List.of("ram", "램", "메모리", "memory"))
         );
         return checks.stream()
@@ -668,7 +755,7 @@ public class BuildChatService {
         result.put("fpsComparisons", fpsComparisons);
         result.put("specComparisons", specComparisons);
         result.put("warnings", distinct(simulationWarnings));
-        result.put("disclaimer", "실제 FPS는 게임 버전, 옵션, 드라이버, 냉각 상태에 따라 달라질 수 있습니다.");
+        result.put("disclaimer", SIMULATION_DISCLAIMER);
         return result;
     }
 
@@ -689,7 +776,7 @@ public class BuildChatService {
             return null;
         }
         return MockData.map(
-                "label", "벤치마크 기반 점수",
+                "label", "내부 벤치마크 정규화 점수 (참고용)",
                 "currentScore", current,
                 "targetScore", target,
                 "delta", current == null || target == null ? null : target - current
@@ -1077,47 +1164,92 @@ public class BuildChatService {
             return List.of();
         }
 
-        int ramQuantity = rawBudgetIntent.budget() <= 1_200_000 ? 1 : 2;
-        List<Map<String, Object>> result = new ArrayList<>();
-        boolean preferLiteBuild = rawBudgetIntent.budget() <= 1_500_000;
-        if (preferLiteBuild) {
-            collectBudgetFallbackBuilds(false, false, ramQuantity, rawBudgetIntent, engineResponse.evidenceIds(), result);
-            collectBudgetFallbackBuilds(true, true, ramQuantity, rawBudgetIntent, engineResponse.evidenceIds(), result);
-        } else {
-            collectBudgetFallbackBuilds(true, true, ramQuantity, rawBudgetIntent, engineResponse.evidenceIds(), result);
-            collectBudgetFallbackBuilds(false, false, ramQuantity, rawBudgetIntent, engineResponse.evidenceIds(), result);
+        int budgetWon = rawBudgetIntent.budget();
+        if ("MIN".equals(rawBudgetIntent.mode())) {
+            // "이상" 요청: 예산 하한을 지키는 조합을 우선 찾고, 없으면 이하 최대 구성으로 완화한다
+            int ramQuantity = budgetWon <= 1_200_000 ? 1 : 2;
+            List<Map<String, Object>> result = new ArrayList<>();
+            collectNearBudgetBuilds(true, true, ramQuantity, rawBudgetIntent, engineResponse.evidenceIds(), result, budgetWon, Integer.MAX_VALUE);
+            collectNearBudgetBuilds(false, false, ramQuantity, rawBudgetIntent, engineResponse.evidenceIds(), result, budgetWon, Integer.MAX_VALUE);
+            if (!result.isEmpty()) {
+                warnings.add("명시 예산 범위에 맞춰 내부 자산 기준 보조 견적을 재구성했습니다.");
+                if (guardStats != null) {
+                    guardStats.routeFallbackUsed = true;
+                }
+                return result.stream().limit(3).toList();
+            }
+            List<Map<String, Object>> relaxed = nearBudgetLadderBuilds(budgetWon, engineResponse.evidenceIds(), warnings, guardStats);
+            if (!relaxed.isEmpty()) {
+                warnings.add("요청 예산 하한 이상의 조합을 내부 자산으로 구성하지 못해, 예산 이하에서 구성 가능한 최대 조합을 추천합니다.");
+            }
+            return relaxed;
         }
 
-        if (!result.isEmpty()) {
+        // TARGET/MAX: 예산을 넘지 않으면서 최대한 근접한 조합을 사다리 방식으로 찾는다
+        List<Map<String, Object>> ladder = nearBudgetLadderBuilds(budgetWon, engineResponse.evidenceIds(), warnings, guardStats);
+        if (!ladder.isEmpty()) {
             warnings.add("명시 예산 범위에 맞춰 내부 자산 기준 보조 견적을 재구성했습니다.");
-            if (guardStats != null) {
-                guardStats.routeFallbackUsed = true;
-            }
         }
-        return result.stream().limit(3).toList();
+        return ladder;
     }
 
-    private void collectBudgetFallbackBuilds(
+    // 하한을 0.875→0.7→0.5→0.25→0 순으로 완화하며 "예산 이하 & 최대 근접" 조합을 찾는다.
+    // 후보 풀이 저가 우선이라 하한이 없으면 최저가 조합만 나오는 문제(전 예산 동일 조합)를 막는다.
+    private static final double[] NEAR_BUDGET_LOWER_FRACTIONS = {0.875, 0.7, 0.5, 0.25, 0.0};
+
+    private List<Map<String, Object>> nearBudgetLadderBuilds(
+            int budgetWon,
+            List<String> evidenceIds,
+            List<String> warnings,
+            BuildChatGuardStats guardStats
+    ) {
+        BudgetIntent guardIntent = new BudgetIntent(budgetWon, "MAX", false);
+        int ramQuantity = budgetWon <= 1_200_000 ? 1 : 2;
+        boolean preferLiteBuild = budgetWon <= 1_500_000;
+        for (double fraction : NEAR_BUDGET_LOWER_FRACTIONS) {
+            int lowerBound = (int) Math.floor(budgetWon * fraction);
+            List<Map<String, Object>> result = new ArrayList<>();
+            if (preferLiteBuild) {
+                collectNearBudgetBuilds(false, false, ramQuantity, guardIntent, evidenceIds, result, lowerBound, budgetWon);
+                collectNearBudgetBuilds(true, true, ramQuantity, guardIntent, evidenceIds, result, lowerBound, budgetWon);
+            } else {
+                collectNearBudgetBuilds(true, true, ramQuantity, guardIntent, evidenceIds, result, lowerBound, budgetWon);
+                collectNearBudgetBuilds(false, false, ramQuantity, guardIntent, evidenceIds, result, lowerBound, budgetWon);
+            }
+            if (!result.isEmpty()) {
+                if (fraction < 0.875) {
+                    warnings.add("예산에 근접한 조합을 내부 자산으로 구성하지 못해, 구성 가능한 범위에서 예산 이하 최대 조합을 추천합니다.");
+                }
+                if (guardStats != null) {
+                    guardStats.routeFallbackUsed = true;
+                }
+                return result.stream().limit(3).toList();
+            }
+        }
+        return List.of();
+    }
+
+    private void collectNearBudgetBuilds(
             boolean includeGpu,
             boolean includeCooler,
             int ramQuantity,
-            BudgetIntent rawBudgetIntent,
+            BudgetIntent guardIntent,
             List<String> evidenceIds,
-            List<Map<String, Object>> result
+            List<Map<String, Object>> result,
+            int lowerBound,
+            int upperBound
     ) {
         if (result.size() >= 3) {
             return;
         }
         List<List<PartCandidate>> groups = new ArrayList<>();
         for (String category : fallbackCategories(includeGpu, includeCooler)) {
-            List<PartCandidate> candidates = pricePartCandidates(category, fallbackCandidateLimit(category, includeGpu));
+            List<PartCandidate> candidates = nearBudgetPartCandidates(category, fallbackCandidateLimit(category, includeGpu), upperBound);
             if (candidates.isEmpty()) {
                 return;
             }
             groups.add(candidates);
         }
-        int lowerBound = budgetLowerBound(rawBudgetIntent);
-        int upperBound = budgetUpperBound(rawBudgetIntent);
         int[] minRemaining = minRemainingPrices(groups, ramQuantity);
         int[] maxRemaining = maxRemainingPrices(groups, ramQuantity);
         collectBudgetFallbackCombination(
@@ -1131,7 +1263,7 @@ public class BuildChatService {
                 minRemaining,
                 maxRemaining,
                 ramQuantity,
-                rawBudgetIntent,
+                guardIntent,
                 evidenceIds,
                 result
         );
@@ -1211,32 +1343,6 @@ public class BuildChatService {
                 return;
             }
         }
-    }
-
-    private static int budgetLowerBound(BudgetIntent rawBudgetIntent) {
-        if (rawBudgetIntent == null || !rawBudgetIntent.hasBudget()) {
-            return 0;
-        }
-        if ("MIN".equals(rawBudgetIntent.mode())) {
-            return rawBudgetIntent.budget();
-        }
-        if ("TARGET".equals(rawBudgetIntent.mode())) {
-            return (int) Math.floor(rawBudgetIntent.budget() * 0.875);
-        }
-        return 0;
-    }
-
-    private static int budgetUpperBound(BudgetIntent rawBudgetIntent) {
-        if (rawBudgetIntent == null || !rawBudgetIntent.hasBudget()) {
-            return Integer.MAX_VALUE;
-        }
-        if ("MAX".equals(rawBudgetIntent.mode())) {
-            return rawBudgetIntent.budget();
-        }
-        if ("TARGET".equals(rawBudgetIntent.mode())) {
-            return (int) Math.ceil(rawBudgetIntent.budget() * 1.125);
-        }
-        return Integer.MAX_VALUE;
     }
 
     private static int[] minRemainingPrices(List<List<PartCandidate>> groups, int ramQuantity) {
@@ -1412,10 +1518,22 @@ public class BuildChatService {
             boolean cacheHit,
             BuildChatGuardStats guardStats
     ) {
+        logBuildChatPath(pathType, startedNanos, userId, requestedAiProfile, cacheHit, guardStats, null);
+    }
+
+    private void logBuildChatPath(
+            String pathType,
+            long startedNanos,
+            Long userId,
+            String requestedAiProfile,
+            boolean cacheHit,
+            BuildChatGuardStats guardStats,
+            String stageSummary
+    ) {
         long latencyMs = Math.max(0, (System.nanoTime() - startedNanos) / 1_000_000);
         BuildChatGuardStats stats = guardStats == null ? BuildChatGuardStats.empty() : guardStats;
         log.info(
-                "Build Chat pathType={} latencyMs={} userId={} requestedAiProfile={} cacheHit={} budgetGuardDropped={} blockingFailDropped={} routeFallbackUsed={}",
+                "Build Chat pathType={} latencyMs={} userId={} requestedAiProfile={} cacheHit={} budgetGuardDropped={} blockingFailDropped={} routeFallbackUsed={} stages=[{}]",
                 pathType,
                 latencyMs,
                 userId,
@@ -1423,7 +1541,8 @@ public class BuildChatService {
                 cacheHit,
                 stats.budgetGuardDropped,
                 stats.blockingFailDropped,
-                stats.routeFallbackUsed
+                stats.routeFallbackUsed,
+                stageSummary == null ? "" : stageSummary
         );
     }
 
@@ -1550,6 +1669,49 @@ public class BuildChatService {
                 DbValueMapper.integer(row, "price"),
                 attributes
         );
+    }
+
+    // 예산 근접 탐색용 후보 풀: 저가 N개 + (상한 이하) 고가 N개 유니언을 가격 오름차순으로.
+    // 조합 탐색기의 가지치기가 오름차순 정렬을 가정하므로 정렬을 유지해야 한다.
+    private List<PartCandidate> nearBudgetPartCandidates(String category, int limit, int upperBound) {
+        List<PartCandidate> cheap = pricePartCandidates(category, limit);
+        List<PartCandidate> expensive = topPricePartCandidates(category, limit, upperBound);
+        LinkedHashMap<String, PartCandidate> merged = new LinkedHashMap<>();
+        for (PartCandidate candidate : cheap) {
+            merged.put(candidate.publicId(), candidate);
+        }
+        for (PartCandidate candidate : expensive) {
+            merged.putIfAbsent(candidate.publicId(), candidate);
+        }
+        return merged.values().stream()
+                .sorted(java.util.Comparator.comparingInt(PartCandidate::price))
+                .toList();
+    }
+
+    private List<PartCandidate> topPricePartCandidates(String category, int limit, int upperBound) {
+        if (category == null) {
+            return List.of();
+        }
+        return jdbcTemplate.queryForList("""
+                        SELECT id AS internal_id,
+                               public_id::text AS id,
+                               category,
+                               name,
+                               manufacturer,
+                               price,
+                               attributes
+                        FROM parts
+                        WHERE category = ?
+                          AND status = 'ACTIVE'
+                          AND deleted_at IS NULL
+                          AND price IS NOT NULL
+                          AND price <= ?
+                        ORDER BY price DESC, name ASC
+                        LIMIT ?
+                        """, category, upperBound, Math.max(1, limit))
+                .stream()
+                .map(this::partCandidate)
+                .toList();
     }
 
     private List<PartCandidate> pricePartCandidates(String category, int limit) {

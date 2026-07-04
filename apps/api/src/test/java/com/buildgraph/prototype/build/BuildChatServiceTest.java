@@ -39,6 +39,12 @@ class BuildChatServiceTest {
         assertThat(BuildChatService.parseBudgetWon("3백만원 PC 추천")).isEqualTo(300 * 10_000);
         assertThat(BuildChatService.parseBudgetWon("300만원대로 맞춰줘")).isEqualTo(3_000_000);
         assertThat(BuildChatService.parseBudgetWon("2,000,000원 안에서")).isEqualTo(200 * 10_000);
+        assertThat(BuildChatService.parseBudgetWon("삼백만원 정도로 디자인 작업용 컴")).isEqualTo(3_000_000);
+        assertThat(BuildChatService.parseBudgetWon("일천삼백만원 예산으로")).isEqualTo(13_000_000);
+        assertThat(BuildChatService.parseBudgetWon("천팔백만원 예산으로 방송용 컴퓨터")).isEqualTo(18_000_000);
+        assertThat(BuildChatService.parseBudgetWon("2천만원 예산인데")).isEqualTo(20_000_000);
+        assertThat(BuildChatService.parseBudgetWon("돈은 3천만원까지 괜찮으니")).isEqualTo(30_000_000);
+        assertThat(BuildChatService.parseBudgetWon("천만에요 감사합니다")).isNull();
         assertThat(BuildChatService.budgetIntent("800만원으로 최고급 PC 추천해줘").mode()).isEqualTo("TARGET");
         assertThat(BuildChatService.budgetIntent("300만원 이하 RTX 5090 PC").mode()).isEqualTo("MAX");
         assertThat(BuildChatService.budgetIntent("300만원 이상으로 게임용 PC 맞춰줘").mode()).isEqualTo("MIN");
@@ -49,6 +55,62 @@ class BuildChatServiceTest {
         assertThat(BuildChatService.detectPartCategory("GPU 추천해줘")).isEqualTo("GPU");
         assertThat(BuildChatService.detectPartCategory("CPU는 뭐가 좋아?")).isEqualTo("CPU");
         assertThat(BuildChatService.detectPartCategory("쿨러 추천")).isEqualTo("COOLER");
+    }
+
+    @Test
+    void buildChatServesTierSnapshotWithoutEngineWhenBudgetIsNearTier() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        ToolCheckService toolCheckService = mock(ToolCheckService.class);
+        AiChatEngine aiChatEngine = mock(AiChatEngine.class);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
+        BuildChatTierSnapshotStore store = new BuildChatTierSnapshotStore();
+        store.put(new BuildChatTierSnapshotStore.TierSnapshot(
+                4_000_000,
+                List.of(Map.of("id", "tier-build-400", "tier", "balanced")),
+                List.of("미리 계산된 조합"),
+                java.time.Instant.now()
+        ));
+        service.setTierSnapshotStore(store);
+
+        Map<String, Object> response = service.chat(Map.of("message", "437만원 PC 추천해줘"));
+
+        assertThat(response).containsEntry("answerType", "BUDGET");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> builds = (List<Map<String, Object>>) response.get("builds");
+        assertThat(builds).extracting(build -> build.get("id")).containsExactly("tier-build-400");
+        assertThat(response.get("warnings")).asList().contains("미리 계산된 조합");
+        verifyNoInteractions(aiChatEngine);
+    }
+
+    @Test
+    void buildChatSkipsTierSnapshotForExplicitPartConstraintOrDraftContext() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        ToolCheckService toolCheckService = mock(ToolCheckService.class);
+        AiChatEngine aiChatEngine = mock(AiChatEngine.class);
+        BuildChatService service = new BuildChatService(jdbcTemplate, toolCheckService, aiChatEngine, BuildChatCacheService.disabled());
+        BuildChatTierSnapshotStore store = new BuildChatTierSnapshotStore();
+        store.put(new BuildChatTierSnapshotStore.TierSnapshot(
+                4_000_000,
+                List.of(Map.of("id", "tier-build-400", "tier", "balanced")),
+                List.of(),
+                java.time.Instant.now()
+        ));
+        service.setTierSnapshotStore(store);
+        when(aiChatEngine.respondLlmRequired(any(AiChatEngineRequest.class), nullable(String.class))).thenReturn(buildResponse());
+        when(toolCheckService.checkBuild(anyList(), anyInt())).thenReturn(List.of());
+
+        // 명시적 부품 제약(5090)이 있으면 티어 즉시 응답을 쓰지 않는다
+        Map<String, Object> constrained = service.chat(Map.of("message", "437만원 RTX 5090 넣어서 PC 추천해줘"));
+        assertThat(constrained.get("builds")).asList()
+                .noneMatch(build -> "tier-build-400".equals(((Map<?, ?>) build).get("id")));
+
+        // 드래프트 문맥이 있으면 티어 즉시 응답을 쓰지 않는다
+        Map<String, Object> withDraft = service.chat(Map.of(
+                "message", "437만원 PC 추천해줘",
+                "currentQuoteDraft", Map.of("items", List.of(Map.of("partId", "gpu-1", "category", "GPU", "quantity", 1)))
+        ));
+        assertThat(withDraft.get("builds")).asList()
+                .noneMatch(build -> "tier-build-400".equals(((Map<?, ?>) build).get("id")));
     }
 
     @Test
