@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import calendar
 import gzip
 import hashlib
 import json
@@ -84,7 +85,13 @@ DEFAULT_POLICY_VERSION = "policy-v1"
 STATUS_HOME_SIGNAL_LIMIT = 3
 LOG_TABLE_LIMIT = 500
 EVENT_PANEL_SIGNAL_LIMIT = 3
-STATUS_LOG_SUMMARY_LIMIT = 6
+STATUS_LOG_SUMMARY_LIMIT = 8
+CARD_ICON_FILES = {
+    "server": Path("assets/icons/server-cloud.png"),
+    "upload": Path("assets/icons/upload-cloud.png"),
+    "startup": Path("assets/icons/startup-windows.png"),
+    "version": Path("assets/icons/version-info.png"),
+}
 EVENT_PANEL_SIGNAL_CODES = {
     "REMOTE_DRIVER_OS",
     "REMOTE_APP_LAUNCHER",
@@ -421,6 +428,11 @@ def app_data_dir() -> Path:
     if root:
         return Path(root) / APP_NAME
     return Path.home() / f".{APP_NAME.lower()}"
+
+
+def runtime_asset_path(relative_path: Path) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / relative_path
 
 
 def default_background_config_path() -> Path:
@@ -760,42 +772,214 @@ def auto_register_agent(config_path: Path) -> bool:
     return True
 
 
-def metric_snapshot(ts: datetime, index: int) -> dict:
-    if psutil:
-        cpu_usage = psutil.cpu_percent(interval=0.05)
-        memory_usage = psutil.virtual_memory().percent
-        disk_usage = psutil.disk_usage("/").percent
-    else:
-        cpu_usage = 38 + index * 3 + random.random() * 8
-        memory_usage = 62 + index * 2 + random.random() * 6
-        disk_usage = 49 + random.random()
+DISK_DELTA_FIELDS = (
+    "diskReadBytesPerSec",
+    "diskWriteBytesPerSec",
+    "diskReadCountPerSec",
+    "diskWriteCountPerSec",
+    "diskBusyEstimatePercent",
+)
+GPU_FIELDS = (
+    "gpuUsage",
+    "gpuUsagePercent",
+    "vramUsage",
+    "vramUsagePercent",
+    "gpuTemp",
+    "gpuTempCelsius",
+)
+CPU_TEMP_FIELDS = ("cpuTemp", "cpuTempCelsius", "cpuTemperatureCelsius")
+CPU_USAGE_FIELDS = ("cpuUsage", "cpuUsagePercent")
+MEMORY_USAGE_FIELDS = ("memoryUsage", "ramUsage", "memoryUsedPercent")
+DISK_USAGE_FIELDS = ("diskUsage", "diskUsedPercent")
+GPU_USAGE_FIELDS = ("gpuUsage", "gpuUsagePercent")
+GPU_VRAM_FIELDS = ("vramUsage", "vramUsagePercent")
+GPU_TEMP_FIELDS = ("gpuTemp", "gpuTempCelsius")
+WINDOWS_GPU_ENGINE_COUNTER = r"\GPU Engine(*)\Utilization Percentage"
 
-    event_type = "DISPLAY_DRIVER_WARNING" if index % 7 == 0 else "DEMO_METRIC"
-    message = "Display driver warning observed." if event_type != "DEMO_METRIC" else "Demo metric collected."
-    cpu_usage = round(cpu_usage, 1)
-    memory_usage = round(memory_usage, 1)
-    disk_usage = round(disk_usage, 1)
-    gpu_usage = round(min(98, 64 + index * 4 + random.random() * 8), 1)
-    vram_usage = round(min(95, 58 + index * 3 + random.random() * 5), 1)
-    gpu_temp = round(min(91, 70 + index * 1.8 + random.random() * 3), 1)
-    cpu_temp = round(min(86, 62 + index * 1.2 + random.random() * 2), 1)
+
+def is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def rounded_or_none(value: Any) -> float | None:
+    if not is_number(value):
+        return None
+    return round(float(value), 1)
+
+
+def parse_float(value: Any) -> float | None:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def clamp_percent(value: Any) -> float | None:
+    number = rounded_or_none(value)
+    if number is None:
+        return None
+    return max(0.0, min(100.0, number))
+
+
+def set_metric_aliases(payload: dict[str, Any], fields: Sequence[str], value: Any) -> None:
+    for field in fields:
+        payload[field] = value
+
+
+def mark_unavailable(
+    payload: dict[str, Any],
+    reasons: dict[str, str],
+    fields: Sequence[str],
+    reason: str,
+) -> None:
+    for field in fields:
+        payload[field] = None
+        reasons.setdefault(field, reason)
+
+
+def safe_process_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().replace("/", "\\")
+    if not text:
+        return None
+    return text.rsplit("\\", 1)[-1] or None
+
+
+def disk_usage_root() -> str:
+    if os.name == "nt":
+        drive = os.environ.get("SystemDrive", "C:")
+        return drive + "\\"
+    return "/"
+
+
+def counter_delta(current: Any, previous: Any, field: str) -> float | None:
+    if not hasattr(current, field) or not hasattr(previous, field):
+        return None
+    current_value = parse_float(getattr(current, field, None))
+    previous_value = parse_float(getattr(previous, field, None))
+    if current_value is None or previous_value is None:
+        return None
+    return max(0.0, current_value - previous_value)
+
+
+def disk_busy_percent_from_counters(current: Any, previous: Any, elapsed: float) -> tuple[float | None, str | None]:
+    if elapsed <= 0:
+        return None, "disk delta elapsed time unavailable"
+    busy_delta_ms = counter_delta(current, previous, "busy_time")
+    if busy_delta_ms is not None:
+        return round(max(0.0, min(100.0, busy_delta_ms / 1000.0 / elapsed * 100.0)), 1), None
+    read_delta_ms = counter_delta(current, previous, "read_time")
+    write_delta_ms = counter_delta(current, previous, "write_time")
+    if read_delta_ms is not None and write_delta_ms is not None:
+        io_delta_ms = read_delta_ms + write_delta_ms
+        return round(max(0.0, min(100.0, io_delta_ms / 1000.0 / elapsed * 100.0)), 1), None
+    return None, "disk busy_time/read_time/write_time unavailable"
+
+
+def read_windows_gpu_usage_percent_win32pdh(win32pdh_module: Any = None) -> tuple[float | None, str | None]:
+    if os.name != "nt" and win32pdh_module is None:
+        return None, "Windows GPU performance counters unavailable on this OS"
+    if win32pdh_module is None:
+        try:
+            import win32pdh as win32pdh_module  # type: ignore[import-not-found]
+        except Exception:
+            return None, "pywin32 win32pdh unavailable"
+    try:
+        counters, instances = win32pdh_module.EnumObjectItems(
+            None,
+            None,
+            "GPU Engine",
+            win32pdh_module.PERF_DETAIL_WIZARD,
+        )
+    except Exception:
+        return None, "Windows GPU counter enumeration failed"
+    if "Utilization Percentage" not in counters or not instances:
+        return None, "Windows GPU counters unavailable"
+
+    query = None
+    try:
+        query = win32pdh_module.OpenQuery()
+        counter_handles = []
+        for instance in instances:
+            try:
+                counter_path = win32pdh_module.MakeCounterPath(
+                    (None, "GPU Engine", instance, None, 0, "Utilization Percentage"),
+                )
+                counter_handles.append(win32pdh_module.AddCounter(query, counter_path))
+            except Exception:
+                continue
+        if not counter_handles:
+            return None, "Windows GPU counters could not be opened"
+        win32pdh_module.CollectQueryData(query)
+        time.sleep(0.1)
+        win32pdh_module.CollectQueryData(query)
+        values: list[float] = []
+        for handle in counter_handles:
+            try:
+                _, value = win32pdh_module.GetFormattedCounterValue(handle, win32pdh_module.PDH_FMT_DOUBLE)
+            except Exception:
+                continue
+            number = parse_float(value)
+            if number is not None:
+                values.append(max(0.0, number))
+        if not values:
+            return None, "Windows GPU counter values unavailable"
+        # GPU Engine exposes per-engine utilization. Sum active engines, then clamp
+        # to a task-manager-like 0-100 estimate for the single UI percentage column.
+        return round(max(0.0, min(100.0, sum(values))), 1), None
+    except Exception:
+        return None, "Windows GPU performance counter query failed"
+    finally:
+        if query is not None:
+            try:
+                win32pdh_module.CloseQuery(query)
+            except Exception:
+                pass
+
+
+def read_windows_gpu_usage_percent_powershell(
+    runner: Any = subprocess.run,
+) -> tuple[float | None, str | None]:
+    if os.name != "nt":
+        return None, "PowerShell GPU counters unavailable on this OS"
+    command = (
+        "$samples = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -ErrorAction Stop).CounterSamples; "
+        "$sum = ($samples | Measure-Object -Property CookedValue -Sum).Sum; "
+        "if ($null -eq $sum) { '' } else { [Math]::Min(100, [Math]::Max(0, $sum)) }"
+    )
+    try:
+        result = runner(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None, "PowerShell unavailable"
+    except subprocess.TimeoutExpired:
+        return None, "PowerShell GPU counter timed out"
+    except Exception:
+        return None, "PowerShell GPU counter query failed"
+    if getattr(result, "returncode", 1) != 0:
+        return None, "PowerShell GPU counter query failed"
+    lines = [line.strip() for line in str(getattr(result, "stdout", "")).splitlines() if line.strip()]
+    if not lines:
+        return None, "PowerShell GPU counter returned no values"
+    value = clamp_percent(parse_float(lines[-1]))
+    if value is None:
+        return None, "PowerShell GPU counter output parse failed"
+    return value, None
+
+
+def should_initialize_log_filter(log_tab_opened: bool, user_touched_filter: bool) -> bool:
+    return not log_tab_opened and not user_touched_filter
+
+
+def build_metric_snapshot(ts: datetime, index: int, event_type: str, payload: dict[str, Any]) -> dict:
     collected_at = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    payload = {
-        "cpuUsage": cpu_usage,
-        "memoryUsage": memory_usage,
-        "ramUsage": memory_usage,
-        "gpuUsage": gpu_usage,
-        "vramUsage": vram_usage,
-        "gpuTemp": gpu_temp,
-        "cpuTemp": cpu_temp,
-        "diskUsage": disk_usage,
-        "eventType": event_type,
-        "message": message,
-        "osErrorEvent": None if event_type == "DEMO_METRIC" else "Display driver warning",
-        "topCpuProcess": "game.exe" if index % 2 else "ide64.exe",
-        "topRamProcess": "game.exe",
-    }
-    return {
+    snapshot = {
         "schemaVersion": str(DEFAULT_SCHEMA_VERSION),
         "collectedAt": collected_at,
         "agentId": socket.gethostname() or "local-agent",
@@ -808,32 +992,443 @@ def metric_snapshot(ts: datetime, index: int) -> dict:
             "containsUserContent": False,
         },
         "timestamp": ts.isoformat(),
+    }
+    snapshot.update(payload)
+    return snapshot
+
+
+class HardwareMetricCollector:
+    def __init__(
+        self,
+        psutil_module: Any = psutil,
+        nvidia_smi_runner: Any = None,
+        gpu_counter_reader: Any = None,
+        powershell_gpu_counter_reader: Any = None,
+        time_fn: Any = time.monotonic,
+    ) -> None:
+        self.psutil = psutil_module
+        self.nvidia_smi_runner = nvidia_smi_runner or self.run_nvidia_smi
+        self.gpu_counter_reader = gpu_counter_reader or read_windows_gpu_usage_percent_win32pdh
+        self.powershell_gpu_counter_reader = powershell_gpu_counter_reader or read_windows_gpu_usage_percent_powershell
+        self.time_fn = time_fn
+        self._last_disk_io: Any = None
+        self._last_disk_at: float | None = None
+        self._last_process_cpu: dict[int, tuple[float, str]] | None = None
+        self._last_process_at: float | None = None
+
+    def collect(self, ts: datetime, index: int) -> dict:
+        observed_at = float(self.time_fn())
+        payload: dict[str, Any] = {
+            "eventType": "SYSTEM_METRIC",
+            "message": "System metrics collected.",
+            "osErrorEvent": None,
+        }
+        reasons: dict[str, str] = {}
+
+        self.collect_cpu_memory(payload, reasons)
+        self.collect_disk_usage(payload, reasons)
+        self.collect_disk_io(payload, reasons, observed_at)
+        self.collect_gpu(payload, reasons)
+        self.collect_cpu_temperature(payload, reasons)
+        self.collect_top_processes(payload, reasons, observed_at)
+
+        payload["unavailableReason"] = reasons
+        return build_metric_snapshot(ts, index, "SYSTEM_METRIC", payload)
+
+    def collect_cpu_memory(self, payload: dict[str, Any], reasons: dict[str, str]) -> None:
+        if self.psutil is None:
+            mark_unavailable(payload, reasons, CPU_USAGE_FIELDS, "psutil unavailable")
+            mark_unavailable(payload, reasons, MEMORY_USAGE_FIELDS, "psutil unavailable")
+            return
+        try:
+            cpu_usage = clamp_percent(self.psutil.cpu_percent(interval=0.05))
+        except Exception:
+            cpu_usage = None
+        try:
+            memory_usage = clamp_percent(self.psutil.virtual_memory().percent)
+        except Exception:
+            memory_usage = None
+        if cpu_usage is None:
+            mark_unavailable(payload, reasons, CPU_USAGE_FIELDS, "psutil cpu_percent unavailable")
+        else:
+            set_metric_aliases(payload, CPU_USAGE_FIELDS, cpu_usage)
+        if memory_usage is None:
+            mark_unavailable(payload, reasons, MEMORY_USAGE_FIELDS, "psutil virtual_memory unavailable")
+        else:
+            set_metric_aliases(payload, MEMORY_USAGE_FIELDS, memory_usage)
+
+    def collect_disk_usage(self, payload: dict[str, Any], reasons: dict[str, str]) -> None:
+        if self.psutil is None:
+            mark_unavailable(payload, reasons, DISK_USAGE_FIELDS, "psutil unavailable")
+            return
+        try:
+            disk_usage = clamp_percent(self.psutil.disk_usage(disk_usage_root()).percent)
+        except Exception:
+            disk_usage = None
+        if disk_usage is None:
+            mark_unavailable(payload, reasons, DISK_USAGE_FIELDS, "psutil disk_usage unavailable")
+        else:
+            set_metric_aliases(payload, DISK_USAGE_FIELDS, disk_usage)
+
+    def collect_disk_io(self, payload: dict[str, Any], reasons: dict[str, str], observed_at: float) -> None:
+        if self.psutil is None:
+            mark_unavailable(payload, reasons, DISK_DELTA_FIELDS, "psutil unavailable")
+            return
+        try:
+            current = self.psutil.disk_io_counters()
+        except Exception:
+            current = None
+        if current is None:
+            mark_unavailable(payload, reasons, DISK_DELTA_FIELDS, "psutil disk_io_counters unavailable")
+            return
+        previous = self._last_disk_io
+        previous_at = self._last_disk_at
+        self._last_disk_io = current
+        self._last_disk_at = observed_at
+        if previous is None or previous_at is None:
+            mark_unavailable(payload, reasons, DISK_DELTA_FIELDS, "disk delta requires previous sample")
+            return
+        elapsed = observed_at - previous_at
+        if elapsed <= 0:
+            mark_unavailable(payload, reasons, DISK_DELTA_FIELDS, "disk delta elapsed time unavailable")
+            return
+        payload["diskReadBytesPerSec"] = round(
+            max(0.0, float(getattr(current, "read_bytes", 0) - getattr(previous, "read_bytes", 0))) / elapsed,
+            1,
+        )
+        payload["diskWriteBytesPerSec"] = round(
+            max(0.0, float(getattr(current, "write_bytes", 0) - getattr(previous, "write_bytes", 0))) / elapsed,
+            1,
+        )
+        payload["diskReadCountPerSec"] = round(
+            max(0.0, float(getattr(current, "read_count", 0) - getattr(previous, "read_count", 0))) / elapsed,
+            1,
+        )
+        payload["diskWriteCountPerSec"] = round(
+            max(0.0, float(getattr(current, "write_count", 0) - getattr(previous, "write_count", 0))) / elapsed,
+            1,
+        )
+        disk_busy, disk_busy_reason = disk_busy_percent_from_counters(current, previous, elapsed)
+        if disk_busy is None:
+            payload["diskBusyEstimatePercent"] = None
+            reasons["diskBusyEstimatePercent"] = disk_busy_reason or "disk busy counter unavailable"
+        else:
+            payload["diskBusyEstimatePercent"] = disk_busy
+
+    def run_nvidia_smi(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+
+    def collect_nvidia_gpu(self, payload: dict[str, Any], reasons: dict[str, str]) -> tuple[bool, str | None]:
+        try:
+            result = self.nvidia_smi_runner()
+        except FileNotFoundError:
+            return False, "nvidia-smi unavailable"
+        except subprocess.TimeoutExpired:
+            return False, "nvidia-smi timed out"
+        except Exception:
+            return False, "nvidia-smi query failed"
+        if getattr(result, "returncode", 1) != 0:
+            return False, "nvidia-smi query failed"
+        lines = [line.strip() for line in str(getattr(result, "stdout", "")).splitlines() if line.strip()]
+        if not lines:
+            return False, "nvidia-smi returned no GPU metrics"
+        parts = [part.strip() for part in lines[0].split(",")]
+        if len(parts) < 4:
+            return False, "nvidia-smi output parse failed"
+        gpu_usage = clamp_percent(parse_float(parts[0]))
+        memory_used = parse_float(parts[1])
+        memory_total = parse_float(parts[2])
+        gpu_temp = rounded_or_none(parse_float(parts[3]))
+        if gpu_usage is None:
+            payload["gpuUsage"] = None
+            payload["gpuUsagePercent"] = None
+            reasons["gpuUsage"] = "nvidia-smi GPU utilization unavailable"
+            reasons["gpuUsagePercent"] = "nvidia-smi GPU utilization unavailable"
+        else:
+            payload["gpuUsage"] = gpu_usage
+            payload["gpuUsagePercent"] = gpu_usage
+        if memory_used is None or memory_total is None or memory_total <= 0:
+            payload["vramUsage"] = None
+            payload["vramUsagePercent"] = None
+            reasons["vramUsage"] = "nvidia-smi VRAM utilization unavailable"
+            reasons["vramUsagePercent"] = "nvidia-smi VRAM utilization unavailable"
+        else:
+            vram_usage = round(max(0.0, min(100.0, memory_used / memory_total * 100.0)), 1)
+            payload["vramUsage"] = vram_usage
+            payload["vramUsagePercent"] = vram_usage
+        if gpu_temp is None:
+            payload["gpuTemp"] = None
+            payload["gpuTempCelsius"] = None
+            reasons["gpuTemp"] = "nvidia-smi GPU temperature unavailable"
+            reasons["gpuTempCelsius"] = "nvidia-smi GPU temperature unavailable"
+        else:
+            payload["gpuTemp"] = gpu_temp
+            payload["gpuTempCelsius"] = gpu_temp
+        payload["gpuCollectorSource"] = "nvidia-smi"
+        return True, None
+
+    def collect_gpu_counter_fallback(
+        self,
+        payload: dict[str, Any],
+        reasons: dict[str, str],
+        reader: Any,
+        source: str,
+    ) -> tuple[bool, str | None]:
+        try:
+            usage, reason = reader()
+        except Exception:
+            return False, f"{source} query failed"
+        usage = clamp_percent(usage)
+        if usage is None:
+            return False, reason or f"{source} unavailable"
+        set_metric_aliases(payload, GPU_USAGE_FIELDS, usage)
+        mark_unavailable(payload, reasons, GPU_VRAM_FIELDS, f"VRAM utilization unavailable from {source}")
+        mark_unavailable(payload, reasons, GPU_TEMP_FIELDS, f"GPU temperature unavailable from {source}")
+        payload["gpuCollectorSource"] = source
+        return True, None
+
+    def collect_gpu(self, payload: dict[str, Any], reasons: dict[str, str]) -> None:
+        nvidia_ok, nvidia_reason = self.collect_nvidia_gpu(payload, reasons)
+        if nvidia_ok:
+            return
+
+        counter_ok, counter_reason = self.collect_gpu_counter_fallback(
+            payload,
+            reasons,
+            self.gpu_counter_reader,
+            "windows-performance-counter",
+        )
+        if counter_ok:
+            return
+
+        powershell_ok, powershell_reason = self.collect_gpu_counter_fallback(
+            payload,
+            reasons,
+            self.powershell_gpu_counter_reader,
+            "powershell-get-counter",
+        )
+        if powershell_ok:
+            return
+
+        reason = "; ".join(
+            part
+            for part in (nvidia_reason, counter_reason, powershell_reason)
+            if part
+        ) or "GPU metrics unavailable"
+        mark_unavailable(payload, reasons, GPU_FIELDS, reason)
+        payload["gpuCollectorSource"] = "unavailable"
+
+    def collect_cpu_temperature(self, payload: dict[str, Any], reasons: dict[str, str]) -> None:
+        if self.psutil is None:
+            mark_unavailable(payload, reasons, CPU_TEMP_FIELDS, "psutil unavailable")
+            return
+        sensors = getattr(self.psutil, "sensors_temperatures", None)
+        if not callable(sensors):
+            mark_unavailable(payload, reasons, CPU_TEMP_FIELDS, "CPU temperature sensor unavailable")
+            return
+        try:
+            readings = sensors(fahrenheit=False) or {}
+        except Exception:
+            readings = {}
+        selected: float | None = None
+        fallback: float | None = None
+        for entries in readings.values():
+            for entry in entries:
+                current = rounded_or_none(getattr(entry, "current", None))
+                if current is None:
+                    continue
+                if fallback is None:
+                    fallback = current
+                label = str(getattr(entry, "label", "")).lower()
+                if "cpu" in label or "package" in label or "core" in label:
+                    selected = current
+                    break
+            if selected is not None:
+                break
+        cpu_temp = selected if selected is not None else fallback
+        if cpu_temp is None:
+            mark_unavailable(payload, reasons, CPU_TEMP_FIELDS, "CPU temperature sensor unavailable")
+        else:
+            set_metric_aliases(payload, CPU_TEMP_FIELDS, cpu_temp)
+
+    def collect_top_processes(self, payload: dict[str, Any], reasons: dict[str, str], observed_at: float) -> None:
+        if self.psutil is None:
+            payload["topCpuProcess"] = None
+            payload["topRamProcess"] = None
+            reasons["topCpuProcess"] = "psutil unavailable"
+            reasons["topRamProcess"] = "psutil unavailable"
+            return
+        samples: dict[int, tuple[float, str]] = {}
+        top_ram: tuple[int, str] | None = None
+        try:
+            processes = self.psutil.process_iter(["name", "memory_info", "cpu_times"])
+        except Exception:
+            processes = []
+        for process in processes:
+            try:
+                info = getattr(process, "info", {}) or {}
+                name = safe_process_name(info.get("name"))
+                if not name:
+                    name = safe_process_name(process.name())
+                if not name:
+                    continue
+                memory_info = info.get("memory_info")
+                if memory_info is None and hasattr(process, "memory_info"):
+                    memory_info = process.memory_info()
+                rss = getattr(memory_info, "rss", None)
+                if isinstance(rss, int) and (top_ram is None or rss > top_ram[0]):
+                    top_ram = (rss, name)
+                cpu_times = info.get("cpu_times")
+                if cpu_times is None and hasattr(process, "cpu_times"):
+                    cpu_times = process.cpu_times()
+                user_time = getattr(cpu_times, "user", None)
+                system_time = getattr(cpu_times, "system", None)
+                if is_number(user_time) and is_number(system_time):
+                    samples[int(getattr(process, "pid", id(process)))] = (float(user_time) + float(system_time), name)
+            except Exception:
+                continue
+        previous = self._last_process_cpu
+        previous_at = self._last_process_at
+        self._last_process_cpu = samples
+        self._last_process_at = observed_at
+        if top_ram is None:
+            payload["topRamProcess"] = None
+            reasons["topRamProcess"] = "process memory info unavailable"
+        else:
+            payload["topRamProcess"] = top_ram[1]
+        if not samples:
+            payload["topCpuProcess"] = None
+            reasons["topCpuProcess"] = "process CPU info unavailable"
+            return
+        if previous is None or previous_at is None:
+            payload["topCpuProcess"] = None
+            reasons["topCpuProcess"] = "process CPU delta requires previous sample"
+            return
+        elapsed = observed_at - previous_at
+        if elapsed <= 0:
+            payload["topCpuProcess"] = None
+            reasons["topCpuProcess"] = "process CPU delta elapsed time unavailable"
+            return
+        cpu_count = 1
+        try:
+            cpu_count = int(self.psutil.cpu_count() or 1)
+        except Exception:
+            cpu_count = 1
+        top_cpu: tuple[float, str] | None = None
+        for pid, (total_time, name) in samples.items():
+            previous_sample = previous.get(pid)
+            if previous_sample is None:
+                continue
+            delta = max(0.0, total_time - previous_sample[0])
+            percent = delta / elapsed / max(1, cpu_count) * 100.0
+            if top_cpu is None or percent > top_cpu[0]:
+                top_cpu = (percent, name)
+        if top_cpu is None or top_cpu[0] <= 0:
+            payload["topCpuProcess"] = None
+            reasons["topCpuProcess"] = "no process CPU activity observed"
+        else:
+            payload["topCpuProcess"] = top_cpu[1]
+
+
+DEFAULT_METRIC_COLLECTOR = HardwareMetricCollector()
+
+
+def metric_snapshot(ts: datetime, index: int, collector: Any = None) -> dict:
+    metric_collector = collector or DEFAULT_METRIC_COLLECTOR
+    return metric_collector.collect(ts, index)
+
+
+def metric_payload_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    payload = snapshot.get("payload")
+    if isinstance(payload, dict):
+        return payload
+    return snapshot
+
+
+def sample_metric_snapshot(ts: datetime, index: int) -> dict:
+    event_type = "DISPLAY_DRIVER_WARNING" if index % 7 == 0 else "DEMO_METRIC"
+    message = "Display driver warning observed." if event_type != "DEMO_METRIC" else "Demo metric collected."
+    cpu_usage = round(min(99, 38 + index * 3 + random.random() * 8), 1)
+    memory_usage = round(min(99, 62 + index * 2 + random.random() * 6), 1)
+    disk_usage = round(49 + random.random(), 1)
+    gpu_usage = round(min(98, 64 + index * 4 + random.random() * 8), 1)
+    vram_usage = round(min(95, 58 + index * 3 + random.random() * 5), 1)
+    gpu_temp = round(min(91, 70 + index * 1.8 + random.random() * 3), 1)
+    cpu_temp = round(min(86, 62 + index * 1.2 + random.random() * 2), 1)
+    payload = {
         "cpuUsage": cpu_usage,
+        "cpuUsagePercent": cpu_usage,
         "memoryUsage": memory_usage,
         "ramUsage": memory_usage,
+        "memoryUsedPercent": memory_usage,
+        "gpuUsage": gpu_usage,
+        "gpuUsagePercent": gpu_usage,
+        "vramUsage": vram_usage,
+        "vramUsagePercent": vram_usage,
+        "gpuTemp": gpu_temp,
+        "gpuTempCelsius": gpu_temp,
+        "cpuTemp": cpu_temp,
+        "cpuTempCelsius": cpu_temp,
+        "cpuTemperatureCelsius": cpu_temp,
+        "diskUsage": disk_usage,
+        "diskUsedPercent": disk_usage,
         "eventType": event_type,
         "message": message,
-        "gpuUsage": gpu_usage,
-        "vramUsage": vram_usage,
-        "gpuTemp": gpu_temp,
-        "cpuTemp": cpu_temp,
-        "diskUsage": disk_usage,
-        "osErrorEvent": payload["osErrorEvent"],
-        "topCpuProcess": payload["topCpuProcess"],
-        "topRamProcess": payload["topRamProcess"],
+        "osErrorEvent": None if event_type == "DEMO_METRIC" else "Display driver warning",
+        "topCpuProcess": "game.exe" if index % 2 else "ide64.exe",
+        "topRamProcess": "game.exe",
+        "unavailableReason": {},
     }
+    return build_metric_snapshot(ts, index, event_type, payload)
 
 
-def metric_log_row(ts: datetime, index: int, schema_version: int, agent_id: str) -> dict:
-    payload = metric_snapshot(ts, index)
+def metric_log_row(
+    ts: datetime,
+    index: int,
+    schema_version: int,
+    agent_id: str,
+    collector: Any = None,
+) -> dict:
+    snapshot = metric_snapshot(ts, index, collector)
+    payload = metric_payload_from_snapshot(snapshot)
     return {
         **payload,
         "schemaVersion": schema_version,
         "collectedAt": ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         "agentId": agent_id,
         "sequence": index,
-        "kind": payload.get("eventType") or "DEMO_METRIC",
+        "kind": payload.get("eventType") or snapshot.get("kind") or "SYSTEM_METRIC",
         "payload": payload,
+        "timestamp": ts.isoformat(),
+        "privacyFlags": {
+            "containsRawPath": False,
+            "masked": True,
+        },
+    }
+
+
+def sample_metric_log_row(ts: datetime, index: int, schema_version: int, agent_id: str) -> dict:
+    snapshot = sample_metric_snapshot(ts, index)
+    payload = metric_payload_from_snapshot(snapshot)
+    return {
+        **payload,
+        "schemaVersion": schema_version,
+        "collectedAt": ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "agentId": agent_id,
+        "sequence": index,
+        "kind": payload.get("eventType") or snapshot.get("kind") or "DEMO_METRIC",
+        "payload": payload,
+        "timestamp": ts.isoformat(),
         "privacyFlags": {
             "containsRawPath": False,
             "masked": True,
@@ -846,7 +1441,7 @@ def write_sample(out: Path, count: int, interval_seconds: int) -> None:
     start = datetime.now(KST) - timedelta(seconds=count * interval_seconds)
     with out.open("w", encoding="utf-8") as file:
         for index in range(count):
-            row = metric_log_row(
+            row = sample_metric_log_row(
                 start + timedelta(seconds=index * interval_seconds),
                 index,
                 DEFAULT_SCHEMA_VERSION,
@@ -992,7 +1587,7 @@ def export_window(source: Path, out: Path, window: IncidentWindow) -> None:
             file.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def append_metric_with_row(config: AgentConfig, index: int = 0) -> tuple[Path, dict]:
+def append_metric_with_row(config: AgentConfig, index: int = 0, collector: Any = None) -> tuple[Path, dict]:
     path = log_file(config)
     path.parent.mkdir(parents=True, exist_ok=True)
     row = metric_log_row(
@@ -1000,6 +1595,7 @@ def append_metric_with_row(config: AgentConfig, index: int = 0) -> tuple[Path, d
         index,
         config.schema_version,
         config.device_fingerprint_hash,
+        collector,
     )
     row["agentVersion"] = config.agent_version
     row["policyVersion"] = config.policy_version
@@ -1008,8 +1604,8 @@ def append_metric_with_row(config: AgentConfig, index: int = 0) -> tuple[Path, d
     return path, row
 
 
-def append_metric(config: AgentConfig, index: int = 0) -> Path:
-    path, _ = append_metric_with_row(config, index)
+def append_metric(config: AgentConfig, index: int = 0, collector: Any = None) -> Path:
+    path, _ = append_metric_with_row(config, index, collector)
     return path
 
 
@@ -1244,9 +1840,10 @@ def create_as_draft(
 
 def collect_metrics(config: AgentConfig, iterations: int | None, interval_seconds: int) -> None:
     index = 0
+    collector = HardwareMetricCollector()
     while iterations is None or index < iterations:
-        path = append_metric(config, index)
-        print(f"appended demo metric to {path}")
+        path = append_metric(config, index, collector)
+        print(f"appended system metric to {path}")
         index += 1
         if iterations is None or index < iterations:
             time.sleep(interval_seconds)
@@ -1305,11 +1902,7 @@ def remove_pid() -> None:
 
 
 def app_asset_path(filename: str) -> Path:
-    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    bundled = base / APP_ASSET_DIR / filename
-    if bundled.exists():
-        return bundled
-    return Path(__file__).resolve().parent / APP_ASSET_DIR / filename
+    return runtime_asset_path(Path(APP_ASSET_DIR) / filename)
 
 
 def apply_agent_window_icon(window: object) -> None:
@@ -1518,7 +2111,7 @@ def display_log_table_values(row: dict[str, Any]) -> tuple[str, ...]:
         display_log_kind(row),
         format_percent(log_value(row, "cpuUsage", "cpuUsagePercent")),
         format_percent(log_value(row, "memoryUsage", "ramUsage", "memoryUsedPercent")),
-        format_percent(log_value(row, "diskUsage", "diskUsedPercent")),
+        format_percent(log_value(row, "diskBusyEstimatePercent")),
         format_percent(log_value(row, "gpuUsage", "gpuUsagePercent")),
         format_percent(log_value(row, "vramUsage", "vramUsagePercent")),
         format_temperature(log_value(row, "cpuTemp", "cpuTempCelsius", "cpuTemperatureCelsius")),
@@ -1532,7 +2125,7 @@ def display_log_summary_values(row: dict[str, Any]) -> tuple[str, ...]:
         format_log_time(row),
         format_percent(log_value(row, "cpuUsage", "cpuUsagePercent")),
         format_percent(log_value(row, "memoryUsage", "ramUsage", "memoryUsedPercent")),
-        format_percent(log_value(row, "diskUsage", "diskUsedPercent")),
+        format_percent(log_value(row, "diskBusyEstimatePercent")),
         format_percent(log_value(row, "gpuUsage", "gpuUsagePercent")),
         display_log_event_summary(row),
     )
@@ -1732,6 +2325,16 @@ def latest_upload_status(rows: Sequence[dict[str, Any]]) -> str:
     return "기록 없음"
 
 
+def latest_upload_card(rows: Sequence[dict[str, Any]]) -> dict[str, str]:
+    for row in reversed(list(rows)):
+        text = signal_search_text(row)
+        if "upload failed" in text or "upload_failed" in text:
+            return {"value": format_log_time(row), "detail": "업로드 상태: 실패", "tone": "danger"}
+        if "upload succeeded" in text or "upload success" in text or "upload_succeeded" in text:
+            return {"value": format_log_time(row), "detail": "업로드 상태: 성공", "tone": "ok"}
+    return {"value": "기록 없음", "detail": "업로드 상태: 대기", "tone": "muted"}
+
+
 def latest_server_status(rows: Sequence[dict[str, Any]]) -> str:
     for row in reversed(list(rows)):
         text = signal_search_text(row)
@@ -1742,14 +2345,41 @@ def latest_server_status(rows: Sequence[dict[str, Any]]) -> str:
     return "확인 전"
 
 
+def latest_server_card(rows: Sequence[dict[str, Any]]) -> dict[str, str]:
+    for row in reversed(list(rows)):
+        text = signal_search_text(row)
+        if "heartbeat failed" in text or "heartbeat missing" in text:
+            return {"value": "● 연결 실패", "detail": f"마지막 확인 : {format_log_time(row)}", "tone": "danger"}
+        if "heartbeat succeeded" in text or "heartbeat success" in text:
+            return {"value": "● 연결됨", "detail": f"마지막 확인 : {format_log_time(row)}", "tone": "ok"}
+    return {"value": "● 확인 전", "detail": "heartbeat 대기", "tone": "muted"}
+
+
+def startup_card_status() -> dict[str, str]:
+    try:
+        path = startup_dir() / f"{APP_NAME}.cmd"
+    except Exception:
+        return {"value": "확인 불가", "detail": "시작프로그램 경로 확인 실패", "tone": "warning"}
+    if path.exists():
+        return {"value": "사용 중", "detail": "시스템 시작 시 자동 실행", "tone": "ok"}
+    return {"value": "미등록", "detail": "시작프로그램 미등록", "tone": "warning"}
+
+
 def status_home_model(config: AgentConfig, path: Path) -> dict[str, Any]:
     rows = read_log_tail(path, LOG_TABLE_LIMIT)
+    server_card = latest_server_card(rows)
+    upload_card = latest_upload_card(rows)
+    startup_card = startup_card_status()
     return {
         "agentStatus": "정상 실행 중" if config.agent_token else "등록 필요",
         "serverStatus": latest_server_status(rows),
+        "serverCard": server_card,
         "lastUpload": latest_upload_status(rows),
+        "uploadCard": upload_card,
+        "startupCard": startup_card,
         "version": config.agent_version,
         "policyVersion": config.policy_version,
+        "versionCard": {"value": config.agent_version, "detail": "최신 버전", "tone": "ok"},
         "signals": detect_recent_signals(rows),
     }
 
@@ -1776,11 +2406,14 @@ Add-Type -AssemblyName System.Drawing
 $logPath = {powershell_string(str(log_file(config).resolve()))}
 $logDir = {powershell_string(str(config.log_dir.resolve()))}
 $supportUrl = {powershell_string(support_new_url(config))}
-$agentStatus = {powershell_string(model["agentStatus"])}
-$serverStatus = {powershell_string(model["serverStatus"])}
-$lastUpload = {powershell_string(model["lastUpload"])}
-$versionText = {powershell_string(str(model["version"]))}
-$policyText = {powershell_string(str(model["policyVersion"]))}
+$serverStatus = {powershell_string(str(model["serverCard"]["value"]))}
+$serverDetail = {powershell_string(str(model["serverCard"]["detail"]))}
+$uploadStatus = {powershell_string(str(model["uploadCard"]["value"]))}
+$uploadDetail = {powershell_string(str(model["uploadCard"]["detail"]))}
+$startupStatus = {powershell_string(str(model["startupCard"]["value"]))}
+$startupDetail = {powershell_string(str(model["startupCard"]["detail"]))}
+$versionText = {powershell_string(str(model["versionCard"]["value"]))}
+$versionDetail = {powershell_string(str(model["versionCard"]["detail"]))}
 $signalsText = {powershell_string(signals_text)}
 
 $appBg = [System.Drawing.ColorTranslator]::FromHtml("#f5f7f8")
@@ -1907,7 +2540,7 @@ function Get-FilteredLogText {{
         $kind = Hide-SensitiveText (Get-RowValue $row @("kind", "eventType"))
         $cpu = Format-Percent (Get-RowValue $row @("cpuUsage", "cpuUsagePercent"))
         $memory = Format-Percent (Get-RowValue $row @("memoryUsage", "ramUsage", "memoryUsedPercent"))
-        $disk = Format-Percent (Get-RowValue $row @("diskUsage", "diskUsedPercent"))
+        $disk = Format-Percent (Get-RowValue $row @("diskBusyEstimatePercent"))
         $gpu = Format-Percent (Get-RowValue $row @("gpuUsage", "gpuUsagePercent"))
         $cpuTemp = Format-Temp (Get-RowValue $row @("cpuTemp", "cpuTempCelsius", "cpuTemperatureCelsius"))
         $message = Hide-SensitiveText (Get-RowValue $row @("message", "osErrorEvent", "status", "summary"))
@@ -1916,7 +2549,7 @@ function Get-FilteredLogText {{
     }} catch {{}}
   }}
   if ($output.Count -eq 2) {{
-    return "선택한 1시간 구간에 표시할 로그가 없습니다."
+    return "선택한 구간에 표시할 로그가 없습니다."
   }}
   if ($output.Count -gt 500) {{
     $output = $output.GetRange($output.Count - 500, 500)
@@ -2026,38 +2659,38 @@ function Add-Card {{
   $iconBox.ForeColor = $primaryBg
   $iconBox.BackColor = $sectionBg
   $iconBox.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-  $iconBox.Location = New-Object System.Drawing.Point(14, 16)
-  $iconBox.Size = New-Object System.Drawing.Size(36, 38)
+  $iconBox.Location = New-Object System.Drawing.Point(144, 12)
+  $iconBox.Size = New-Object System.Drawing.Size(28, 28)
   $card.Controls.Add($iconBox)
   $cardTitle = New-Object System.Windows.Forms.Label
   $cardTitle.Text = $Title
   $cardTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
   $cardTitle.ForeColor = $textColor
   $cardTitle.BackColor = $cardBg
-  $cardTitle.Location = New-Object System.Drawing.Point(62, 14)
-  $cardTitle.Size = New-Object System.Drawing.Size(108, 20)
+  $cardTitle.Location = New-Object System.Drawing.Point(14, 14)
+  $cardTitle.Size = New-Object System.Drawing.Size(124, 20)
   $card.Controls.Add($cardTitle)
   $cardValue = New-Object System.Windows.Forms.Label
   $cardValue.Text = $Value
   $cardValue.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-  $cardValue.ForeColor = $textColor
+  $cardValue.ForeColor = $primaryBg
   $cardValue.BackColor = $cardBg
-  $cardValue.Location = New-Object System.Drawing.Point(62, 38)
-  $cardValue.Size = New-Object System.Drawing.Size(112, 24)
+  $cardValue.Location = New-Object System.Drawing.Point(14, 38)
+  $cardValue.Size = New-Object System.Drawing.Size(136, 24)
   $card.Controls.Add($cardValue)
   $cardDetail = New-Object System.Windows.Forms.Label
   $cardDetail.Text = $Detail
   $cardDetail.ForeColor = $mutedColor
   $cardDetail.BackColor = $cardBg
-  $cardDetail.Location = New-Object System.Drawing.Point(62, 68)
-  $cardDetail.Size = New-Object System.Drawing.Size(112, 18)
+  $cardDetail.Location = New-Object System.Drawing.Point(14, 68)
+  $cardDetail.Size = New-Object System.Drawing.Size(154, 18)
   $card.Controls.Add($cardDetail)
 }}
 
-Add-Card 170 "OK" "Agent 상태" $agentStatus "백그라운드 수집"
-Add-Card 365 "PC" "서버 연결" $serverStatus "heartbeat 미호출"
-Add-Card 560 "UP" "마지막 업로드" $lastUpload "로컬 기록 기준"
-Add-Card 755 "i" "버전" "$versionText / $policyText" "agent / policy"
+Add-Card 170 "PC" "서버 연결" $serverStatus $serverDetail
+Add-Card 365 "UP" "마지막 업로드" $uploadStatus $uploadDetail
+Add-Card 560 "ST" "시작프로그램" $startupStatus $startupDetail
+Add-Card 755 "i" "버전" $versionText $versionDetail
 
 $signalsPanel = New-Object System.Windows.Forms.Panel
 $signalsPanel.Location = New-Object System.Drawing.Point(170, 216)
@@ -2136,7 +2769,7 @@ Add-SoftBorder $logPanel
 $form.Controls.Add($logPanel)
 
 $logTitle = New-Object System.Windows.Forms.Label
-$logTitle.Text = "1시간 로그 요약"
+$logTitle.Text = "로그 현황"
 $logTitle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $logTitle.ForeColor = $textColor
 $logTitle.BackColor = $cardBg
@@ -2159,7 +2792,7 @@ $textbox.Text = Get-FilteredLogText $dateInput.Text $hourSelect.SelectedIndex
 $logPanel.Controls.Add($textbox)
 
 $refresh = New-Object System.Windows.Forms.Button
-$refresh.Text = "1시간 로그"
+$refresh.Text = "로그 갱신"
 $refresh.Location = New-Object System.Drawing.Point(420, 277)
 $refresh.Size = New-Object System.Drawing.Size(88, 24)
 Style-Button $refresh $true
@@ -2397,8 +3030,32 @@ def show_log_viewer(
         style.theme_use("clam")
     except tk.TclError:
         pass
-    style.configure("Agent.TEntry", padding=(6, 3))
-    style.configure("Agent.TCombobox", padding=(6, 3))
+    style.configure(
+        "Agent.TEntry",
+        padding=(8, 5),
+        fieldbackground=colors["card_bg"],
+        foreground=colors["text"],
+        bordercolor=colors["border"],
+        lightcolor=colors["border"],
+        darkcolor=colors["border"],
+    )
+    style.configure(
+        "Agent.TCombobox",
+        padding=(8, 5),
+        fieldbackground=colors["card_bg"],
+        foreground=colors["text"],
+        bordercolor=colors["border"],
+        lightcolor=colors["border"],
+        darkcolor=colors["border"],
+        arrowcolor=colors["muted"],
+    )
+    style.map(
+        "Agent.TCombobox",
+        fieldbackground=[("readonly", colors["card_bg"])],
+        foreground=[("readonly", colors["text"])],
+        bordercolor=[("focus", colors["sidebar_active_bar"])],
+        arrowcolor=[("focus", colors["sidebar_active_bar"])],
+    )
     style.configure("Agent.Toolbar.TButton", padding=(12, 5), font=("Segoe UI", 9))
     style.configure(
         "Agent.Treeview",
@@ -2423,10 +3080,14 @@ def show_log_viewer(
     )
 
     range_status = tk.StringVar(value="")
-    agent_status = tk.StringVar(value="-")
     server_status = tk.StringVar(value="-")
+    server_detail = tk.StringVar(value="-")
     upload_status = tk.StringVar(value="-")
+    upload_detail = tk.StringVar(value="-")
+    startup_status = tk.StringVar(value="-")
+    startup_detail = tk.StringVar(value="-")
     version_status = tk.StringVar(value="-")
+    version_detail = tk.StringVar(value="-")
     selected_nav = tk.StringVar(value="상태")
 
     shell = tk.Frame(root, background=colors["app_bg"])
@@ -2495,7 +3156,7 @@ def show_log_viewer(
     add_nav_item("설정", "○", lambda: open_log_folder(config_path))
     render_nav()
 
-    content = tk.Frame(shell, background=colors["app_bg"], padx=14, pady=8)
+    content = tk.Frame(shell, background=colors["app_bg"], padx=14, pady=0)
     content.pack(side="left", fill="both", expand=True)
 
     header = tk.Frame(content, background=colors["app_bg"])
@@ -2517,7 +3178,7 @@ def show_log_viewer(
     support_view = tk.Frame(view_stack, background=colors["app_bg"])
 
     status_header = tk.Frame(status_view, background=colors["app_bg"])
-    status_header.pack(fill="x", pady=(0, 14))
+    status_header.pack(fill="x", pady=(0, 8))
     tk.Label(
         status_header,
         text="상태 홈",
@@ -2540,105 +3201,114 @@ def show_log_viewer(
     for index in range(4):
         cards.columnconfigure(index, weight=1, uniform="status-card")
 
-    card_icon_images: list[tk.PhotoImage] = []
+    card_icons: dict[str, tk.Label] = {}
+    card_value_labels: dict[str, tk.Label] = {}
+    tone_colors = {
+        "ok": "#0f8f83",
+        "warning": "#b7791f",
+        "danger": "#b42318",
+        "muted": colors["muted"],
+    }
 
-    def make_card_icon(parent: tk.Misc, kind: str) -> tk.Widget:
-        teal = colors["sidebar_active_bar"]
-        soft = "#eef8f5"
-        line = "#cae6df"
-        if Image is not None and ImageDraw is not None:
+    def card_tone_color(tone: str) -> str:
+        return tone_colors.get(tone, tone_colors["muted"])
+
+    def draw_card_icon(label: tk.Label, kind: str, tone: str) -> None:
+        stroke_hex = card_tone_color(tone)
+        soft = "#eef8f5" if tone == "ok" else "#f7fafb"
+        line = "#cae6df" if tone == "ok" else colors["border"]
+        if Image is not None:
             try:
-                scale = 3
-                size = 46
-                canvas_size = size * scale
-
-                def x(value: int) -> int:
-                    return value * scale
-
                 def color(value: str) -> tuple[int, int, int, int]:
                     value = value.lstrip("#")
                     return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16), 255)
 
-                image = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 0))
-                draw = ImageDraw.Draw(image)
-                draw.rounded_rectangle((x(3), x(3), x(43), x(43)), radius=x(12), fill=color(soft), outline=color(line), width=x(1))
-                stroke = color(teal)
-                width = x(2)
-                if kind == "agent":
-                    draw.line([(x(23), x(10)), (x(34), x(16)), (x(32), x(30)), (x(23), x(37)), (x(14), x(30)), (x(12), x(16)), (x(23), x(10))], fill=stroke, width=width)
-                    draw.line([(x(18), x(24)), (x(22), x(28)), (x(29), x(20))], fill=stroke, width=width)
-                elif kind == "server":
-                    draw.rounded_rectangle((x(12), x(15), x(34), x(29)), radius=x(2), outline=stroke, width=width)
-                    draw.line([(x(15), x(24)), (x(19), x(24)), (x(21), x(20)), (x(25), x(29)), (x(27), x(24)), (x(31), x(24))], fill=stroke, width=width)
-                    draw.line([(x(23), x(29)), (x(23), x(34)), (x(17), x(34)), (x(29), x(34))], fill=stroke, width=width)
-                elif kind == "upload":
-                    draw.arc((x(13), x(13), x(33), x(33)), start=35, end=315, fill=stroke, width=width)
-                    draw.line([(x(33), x(16)), (x(33), x(10)), (x(39), x(10))], fill=stroke, width=width)
-                    draw.line([(x(23), x(34)), (x(23), x(21)), (x(17), x(27))], fill=stroke, width=width)
-                    draw.line([(x(23), x(21)), (x(29), x(27))], fill=stroke, width=width)
+                icon_path = runtime_asset_path(CARD_ICON_FILES[kind])
+                original = Image.open(icon_path).convert("RGBA")
+                alpha = original.getchannel("A")
+                if alpha.getextrema() == (255, 255):
+                    grayscale = original.convert("L")
+                    mask = Image.eval(grayscale, lambda pixel: 255 - pixel)
                 else:
-                    draw.ellipse((x(14), x(10), x(32), x(28)), outline=stroke, width=width)
-                    draw.line([(x(23), x(18)), (x(23), x(25))], fill=stroke, width=width)
-                    draw.ellipse((x(22), x(14), x(24), x(16)), fill=stroke)
-                    draw.line([(x(16), x(34)), (x(30), x(34))], fill=stroke, width=width)
+                    mask = alpha
+                tinted = Image.new("RGBA", original.size, color(stroke_hex))
+                tinted.putalpha(mask)
+                size = 34
                 resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.LANCZOS)
-                image = image.resize((size, size), resampling)
+                tinted.thumbnail((size, size), resampling)
+                image = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+                offset = ((size - tinted.width) // 2, (size - tinted.height) // 2)
+                image.alpha_composite(tinted, offset)
                 buffer = BytesIO()
                 image.save(buffer, format="PNG")
                 photo = tk.PhotoImage(data=base64.b64encode(buffer.getvalue()).decode("ascii"))
-                card_icon_images.append(photo)
-                return tk.Label(parent, image=photo, background=colors["card_bg"], borderwidth=0, highlightthickness=0)
+                label.configure(image=photo, text="", background=colors["card_bg"], borderwidth=0, highlightthickness=0)
+                label._agent_card_photo = photo  # type: ignore[attr-defined]
+                return
             except Exception:
                 pass
-        fallback_text = {"agent": "OK", "server": "PC", "upload": "UP", "version": "i"}.get(kind, "i")
-        return tk.Label(
-            parent,
+        fallback_text = {"server": "PC", "upload": "UP", "startup": "ST", "version": "i"}.get(kind, "i")
+        label.configure(
+            image="",
             text=fallback_text,
-            width=4,
-            height=2,
-            font=("Segoe UI", 10, "bold"),
-            foreground=teal,
+            width=3,
+            height=1,
+            font=("Segoe UI", 9, "bold"),
+            foreground=stroke_hex,
             background=soft,
             borderwidth=0,
             highlightthickness=1,
             highlightbackground=line,
         )
 
-    def add_card(parent: tk.Frame, index: int, title: str, value: tk.StringVar, detail: str, icon_kind: str) -> None:
-        card_canvas, card = rounded_container(parent, 92, padding=(14, 12), radius=16)
+    def add_card(
+        parent: tk.Frame,
+        key: str,
+        index: int,
+        title: str,
+        value: tk.StringVar,
+        detail: tk.StringVar,
+        icon_kind: str,
+    ) -> None:
+        card_canvas, card = rounded_container(parent, 88, padding=(14, 12), radius=12)
         card_canvas.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
-        card.columnconfigure(0, weight=0)
-        card.columnconfigure(1, weight=1)
-        make_card_icon(card, icon_kind).grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 12))
+        card.columnconfigure(0, weight=1)
+        card.columnconfigure(1, weight=0)
         tk.Label(
             card,
             text=title,
             font=("Segoe UI", 9, "bold"),
-            foreground=colors["muted"],
+            foreground=colors["text"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=0, column=1, sticky="ew", pady=(0, 2))
-        tk.Label(
+        ).grid(row=0, column=0, sticky="ew")
+        icon_label = tk.Label(card, background=colors["card_bg"], borderwidth=0, highlightthickness=0)
+        icon_label.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(8, 0))
+        draw_card_icon(icon_label, icon_kind, "muted")
+        card_icons[key] = icon_label
+        value_label = tk.Label(
             card,
             textvariable=value,
             font=("Segoe UI", 12, "bold"),
             foreground=colors["text"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=1, column=1, sticky="ew")
+        )
+        value_label.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        card_value_labels[key] = value_label
         tk.Label(
             card,
-            text=detail,
+            textvariable=detail,
             font=("Segoe UI", 8),
             foreground=colors["subtle"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=2, column=1, sticky="ew", pady=(5, 0))
+        ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
-    add_card(cards, 0, "Agent 상태", agent_status, "백그라운드 수집", "agent")
-    add_card(cards, 1, "서버 연결", server_status, "heartbeat 미호출", "server")
-    add_card(cards, 2, "마지막 업로드", upload_status, "로컬 기록 기준", "upload")
-    add_card(cards, 3, "버전", version_status, "agent / policy", "version")
+    add_card(cards, "server", 0, "서버 연결", server_status, server_detail, "server")
+    add_card(cards, "upload", 1, "마지막 업로드", upload_status, upload_detail, "upload")
+    add_card(cards, "startup", 2, "시작프로그램", startup_status, startup_detail, "startup")
+    add_card(cards, "version", 3, "버전", version_status, version_detail, "version")
 
     signals_section, signals_inner = rounded_container(status_view, 124, padding=(14, 10), radius=16)
     signals_section.pack(fill="x", pady=(0, 10))
@@ -2657,7 +3327,7 @@ def show_log_viewer(
     summary_section.pack(fill="both", expand=True)
     tk.Label(
         summary_inner,
-        text="1시간 로그 요약",
+        text="로그 현황",
         font=("Segoe UI", 10, "bold"),
         foreground=colors["text"],
         background=colors["card_bg"],
@@ -2668,7 +3338,7 @@ def show_log_viewer(
         summary_inner,
         columns=summary_columns,
         show="headings",
-        height=6,
+        height=8,
         style="Agent.Treeview",
     )
     summary_table.heading("time", text="시간")
@@ -2711,9 +3381,58 @@ def show_log_viewer(
         foreground=colors["muted"],
         background=colors["app_bg"],
     ).pack(side="left")
-    date_value = tk.StringVar(value=datetime.now(KST).strftime("%Y-%m-%d"))
-    date_entry = ttk.Entry(filters, textvariable=date_value, width=12, style="Agent.TEntry")
-    date_entry.pack(side="left", padx=(6, 14))
+    now_for_filter = datetime.now(KST)
+    year_value = tk.StringVar(value=str(now_for_filter.year))
+    month_value = tk.StringVar(value=f"{now_for_filter.month:02d}")
+    day_value = tk.StringVar(value=f"{now_for_filter.day:02d}")
+    year_select = ttk.Combobox(
+        filters,
+        textvariable=year_value,
+        values=[str(year) for year in range(now_for_filter.year - 3, now_for_filter.year + 2)],
+        width=6,
+        state="readonly",
+        style="Agent.TCombobox",
+    )
+    year_select.pack(side="left", padx=(6, 4))
+    tk.Label(
+        filters,
+        text="년",
+        font=("Segoe UI", 9),
+        foreground=colors["muted"],
+        background=colors["app_bg"],
+    ).pack(side="left", padx=(0, 6))
+    month_select = ttk.Combobox(
+        filters,
+        textvariable=month_value,
+        values=[f"{month:02d}" for month in range(1, 13)],
+        width=4,
+        state="readonly",
+        style="Agent.TCombobox",
+    )
+    month_select.pack(side="left", padx=(0, 4))
+    tk.Label(
+        filters,
+        text="월",
+        font=("Segoe UI", 9),
+        foreground=colors["muted"],
+        background=colors["app_bg"],
+    ).pack(side="left", padx=(0, 6))
+    day_select = ttk.Combobox(
+        filters,
+        textvariable=day_value,
+        values=[f"{day:02d}" for day in range(1, 32)],
+        width=4,
+        state="readonly",
+        style="Agent.TCombobox",
+    )
+    day_select.pack(side="left", padx=(0, 4))
+    tk.Label(
+        filters,
+        text="일",
+        font=("Segoe UI", 9),
+        foreground=colors["muted"],
+        background=colors["app_bg"],
+    ).pack(side="left", padx=(0, 14))
     tk.Label(
         filters,
         text="시간",
@@ -2731,11 +3450,6 @@ def show_log_viewer(
         style="Agent.TCombobox",
     )
     hour_select.pack(side="left", padx=(6, 14))
-    rounded_button(filters, "1시간 로그", lambda: refresh_log(), "primary", width=104, height=32).pack(side="left")
-    rounded_button(filters, "현재", lambda: set_current_hour(), "secondary", width=76, height=32).pack(
-        side="left",
-        padx=(8, 0),
-    )
 
     columns = ("time", "kind", "cpu", "memory", "disk", "gpu", "vram", "cpu_temp", "gpu_temp", "message")
     table_frame = tk.Frame(
@@ -2747,7 +3461,7 @@ def show_log_viewer(
     table_frame.pack(fill="both", expand=True)
     tk.Label(
         table_frame,
-        text="1시간 로그",
+        text="전체 로그내용",
         font=("Segoe UI", 10, "bold"),
         foreground=colors["text"],
         background=colors["section_bg"],
@@ -2815,6 +3529,7 @@ def show_log_viewer(
     symptom_title = tk.StringVar(value="")
     symptom_type = tk.StringVar(value="REMOTE_DRIVER_OS")
     symptom_time = tk.StringVar(value="")
+    rag_preview_status = tk.StringVar(value="AI 추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
     support_mode = tk.StringVar(value="우선 진단만 받기")
     rag_preview_status = tk.StringVar(value="AI 추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
     support_status = tk.StringVar(value="")
@@ -2933,10 +3648,42 @@ def show_log_viewer(
 
     support_actions = tk.Frame(support_inner, background=colors["card_bg"])
     support_actions.pack(fill="x")
+    log_filter_state = {"logTabOpened": False, "userTouched": False}
+
+    def selected_date_text() -> str:
+        return f"{year_value.get()}-{month_value.get()}-{day_value.get()}"
+
+    def set_date_filter(date_text: str) -> None:
+        try:
+            parsed = datetime.strptime(date_text, "%Y-%m-%d")
+        except ValueError:
+            parsed = datetime.now(KST)
+        year_value.set(f"{parsed.year:04d}")
+        month_value.set(f"{parsed.month:02d}")
+        day_value.set(f"{parsed.day:02d}")
+        sync_day_values()
+
+    def sync_day_values() -> None:
+        try:
+            year = int(year_value.get())
+            month = int(month_value.get())
+            max_day = calendar.monthrange(year, month)[1]
+        except ValueError:
+            max_day = 31
+        values = [f"{day:02d}" for day in range(1, max_day + 1)]
+        day_select.configure(values=values)
+        if day_value.get() not in values:
+            day_value.set(values[-1])
+
+    def refresh_log_from_filter_change(event: object = None) -> None:
+        log_filter_state["userTouched"] = True
+        sync_day_values()
+        refresh_log()
 
     def select_signal(signal: dict[str, Any]) -> None:
-        date_value.set(str(signal["date"]))
+        set_date_filter(str(signal["date"]))
         hour_value.set(f"{int(signal['hour']):02d}:00")
+        log_filter_state["userTouched"] = True
         show_log_tab()
 
     def refresh_signals(signals: Sequence[dict[str, Any]]) -> None:
@@ -3150,10 +3897,27 @@ def show_log_viewer(
 
     def refresh_status() -> None:
         model = status_home_model(config, path)
-        agent_status.set(str(model["agentStatus"]))
-        server_status.set(str(model["serverStatus"]))
-        upload_status.set(str(model["lastUpload"]))
-        version_status.set(f"{model['version']} / {model['policyVersion']}")
+        cards_model = {
+            "server": model["serverCard"],
+            "upload": model["uploadCard"],
+            "startup": model["startupCard"],
+            "version": model["versionCard"],
+        }
+        server_status.set(str(cards_model["server"]["value"]))
+        server_detail.set(str(cards_model["server"]["detail"]))
+        upload_status.set(str(cards_model["upload"]["value"]))
+        upload_detail.set(str(cards_model["upload"]["detail"]))
+        startup_status.set(str(cards_model["startup"]["value"]))
+        startup_detail.set(str(cards_model["startup"]["detail"]))
+        version_status.set(str(cards_model["version"]["value"]))
+        version_detail.set(str(cards_model["version"]["detail"]))
+        for key, card in cards_model.items():
+            tone = str(card.get("tone", "muted"))
+            if key in card_value_labels:
+                card_value_labels[key].configure(foreground=card_tone_color(tone))
+            if key in card_icons:
+                icon_kind = "startup" if key == "startup" else key
+                draw_card_icon(card_icons[key], icon_kind, tone)
         refresh_signals(model["signals"])
         refresh_log_summary()
 
@@ -3162,7 +3926,8 @@ def show_log_viewer(
             selected_hour = int(hour_value.get().split(":", 1)[0])
         except ValueError:
             selected_hour = datetime.now(KST).hour
-        rows = read_log_hour(path, date_value.get(), selected_hour, LOG_TABLE_LIMIT)
+        selected_date = selected_date_text()
+        rows = read_log_hour(path, selected_date, selected_hour, LOG_TABLE_LIMIT)
         tree.delete(*tree.get_children())
         for index, row in enumerate(rows):
             tree.insert("", "end", values=display_log_table_values(row), tags=("odd" if index % 2 else "even",))
@@ -3171,7 +3936,7 @@ def show_log_viewer(
         else:
             log_empty_label.place(relx=0.5, rely=0.52, anchor="center")
             log_empty_label.lift()
-        range_status.set(f"범위 {date_value.get()} {selected_hour:02d}:00 | 표시 {len(rows)}개")
+        range_status.set(f"범위 {selected_date} {selected_hour:02d}:00 | 표시 {len(rows)}개")
 
     def show_status_tab() -> None:
         selected_nav.set("상태")
@@ -3189,6 +3954,11 @@ def show_log_viewer(
         status_view.pack_forget()
         support_view.pack_forget()
         log_view.pack(fill="both", expand=True)
+        if should_initialize_log_filter(log_filter_state["logTabOpened"], log_filter_state["userTouched"]):
+            now = datetime.now(KST)
+            set_date_filter(now.strftime("%Y-%m-%d"))
+            hour_value.set(f"{now.hour:02d}:00")
+        log_filter_state["logTabOpened"] = True
         if not range_badge.winfo_ismapped():
             range_badge.pack(side="right")
         refresh_log()
@@ -3206,9 +3976,17 @@ def show_log_viewer(
 
     def set_current_hour() -> None:
         now = datetime.now(KST)
-        date_value.set(now.strftime("%Y-%m-%d"))
+        set_date_filter(now.strftime("%Y-%m-%d"))
         hour_value.set(f"{now.hour:02d}:00")
+        log_filter_state["userTouched"] = False
+        log_filter_state["logTabOpened"] = False
         refresh_log()
+
+    sync_day_values()
+    year_select.bind("<<ComboboxSelected>>", refresh_log_from_filter_change)
+    month_select.bind("<<ComboboxSelected>>", refresh_log_from_filter_change)
+    day_select.bind("<<ComboboxSelected>>", refresh_log_from_filter_change)
+    hour_select.bind("<<ComboboxSelected>>", refresh_log_from_filter_change)
 
     buttons = tk.Frame(log_view, background=colors["app_bg"], pady=8)
     buttons.pack(fill="x")
@@ -3564,7 +4342,7 @@ def is_issue_metric(row: dict) -> bool:
     event_type = str(row.get("eventType", "")).strip()
     if not event_type:
         return False
-    return event_type not in {"DEMO_METRIC", "INFO", "OK"}
+    return event_type not in {"DEMO_METRIC", "SYSTEM_METRIC", "INFO", "OK"}
 
 
 def should_show_issue_notification(row: dict, runtime: AgentRuntime, now: float | None = None) -> bool:
@@ -3921,11 +4699,17 @@ $timer.Start()
         webbrowser.open(support_url_text)
 
 
-def collect_background_loop(config_path: Path, runtime: AgentRuntime, interval_seconds: int) -> None:
+def collect_background_loop(
+    config_path: Path,
+    runtime: AgentRuntime,
+    interval_seconds: int,
+    collector: Any = None,
+) -> None:
+    metric_collector = collector if collector is not None else HardwareMetricCollector()
     while runtime.running:
         try:
             config = load_config(config_path)
-            _, row = append_metric_with_row(config, runtime.index)
+            _, row = append_metric_with_row(config, runtime.index, metric_collector)
             if should_show_issue_notification(row, runtime):
                 show_issue_notification(config_path, row)
             runtime.index += 1
@@ -4158,9 +4942,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     register = sub.add_parser("register", help="register this device and save the returned agent token")
     register.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
 
-    collect = sub.add_parser("collect", help="append demo metrics every 5 seconds")
+    collect = sub.add_parser("collect", help="append hardware metrics every 5 seconds")
     collect.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    collect.add_argument("--iterations", type=int, default=1, help="number of demo rows to append; use 0 for forever")
+    collect.add_argument("--iterations", type=int, default=1, help="number of hardware metric rows to append; use 0 for forever")
     collect.add_argument("--interval-seconds", type=int, default=5)
 
     upload = sub.add_parser("upload", help="gzip selected incident-window JSONL rows and upload to Agent AS API")

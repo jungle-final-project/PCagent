@@ -6,13 +6,52 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import buildgraph_agent as agent
 
 
+def missing_gpu_counter() -> tuple[None, str]:
+    return None, "GPU counter unavailable in test"
+
+
+class StaticMetricCollector:
+    def __init__(self, event_type: str = "SYSTEM_METRIC", message: str = "System metrics collected.") -> None:
+        self.event_type = event_type
+        self.message = message
+
+    def collect(self, ts: datetime, index: int) -> dict:
+        payload = {
+            "cpuUsage": 12.0,
+            "cpuUsagePercent": 12.0,
+            "memoryUsage": 34.0,
+            "ramUsage": 34.0,
+            "memoryUsedPercent": 34.0,
+            "diskUsage": 56.0,
+            "diskUsedPercent": 56.0,
+            "diskBusyEstimatePercent": 7.0,
+            "gpuUsage": None,
+            "gpuUsagePercent": None,
+            "vramUsage": None,
+            "vramUsagePercent": None,
+            "gpuTemp": None,
+            "gpuTempCelsius": None,
+            "cpuTemp": None,
+            "cpuTempCelsius": None,
+            "cpuTemperatureCelsius": None,
+            "eventType": self.event_type,
+            "message": self.message,
+            "osErrorEvent": None,
+            "topCpuProcess": "python.exe",
+            "topRamProcess": "python.exe",
+            "unavailableReason": {"gpuUsage": "nvidia-smi unavailable"},
+        }
+        return agent.build_metric_snapshot(ts, index, self.event_type, payload)
+
+
 class AgentGoal1112Test(unittest.TestCase):
-    def test_append_metric_writes_required_demo_jsonl_fields(self) -> None:
+    def test_append_metric_writes_required_system_jsonl_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = agent.AgentConfig(
                 api_base_url="http://localhost:8080",
@@ -25,7 +64,7 @@ class AgentGoal1112Test(unittest.TestCase):
                 policy_version="test-policy",
             )
 
-            log_path = agent.append_metric(config)
+            log_path = agent.append_metric(config, collector=StaticMetricCollector())
 
             row = json.loads(log_path.read_text(encoding="utf-8").strip())
             self.assertIn("timestamp", row)
@@ -37,38 +76,471 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertIn("collectedAt", row)
             self.assertEqual(row["agentId"], "fingerprint")
             self.assertEqual(row["sequence"], 0)
+            self.assertEqual(row["kind"], "SYSTEM_METRIC")
             self.assertEqual(row["kind"], row["eventType"])
             self.assertEqual(row["payload"]["eventType"], row["eventType"])
             self.assertEqual(row["privacyFlags"], {"containsRawPath": False, "masked": True})
 
-    def test_append_metric_with_row_returns_written_issue_event(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            config = agent.AgentConfig(
-                api_base_url="http://localhost:8080",
-                activation_token="activation-token",
-                device_fingerprint_hash="fingerprint",
-                os_version="Windows 11",
-                agent_token="token",
-                log_dir=Path(directory),
-                agent_version="test-agent",
-                policy_version="test-policy",
-            )
+    def test_sample_metric_log_row_keeps_demo_issue_event_for_samples(self) -> None:
+        row = agent.sample_metric_log_row(
+            datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST),
+            7,
+            agent.DEFAULT_SCHEMA_VERSION,
+            "sample-agent",
+        )
 
-            log_path, row = agent.append_metric_with_row(config, index=7)
+        self.assertEqual(row["agentId"], "sample-agent")
+        self.assertEqual(row["eventType"], "DISPLAY_DRIVER_WARNING")
+        self.assertEqual(row["message"], "Display driver warning observed.")
 
-            self.assertEqual(log_path, config.log_dir / "agent-metrics.jsonl")
-            self.assertEqual(row["eventType"], "DISPLAY_DRIVER_WARNING")
-            self.assertEqual(row["message"], "Display driver warning observed.")
+    def test_metric_collector_marks_unavailable_values_without_fake_gpu_or_temperature(self) -> None:
+        class FakePsutil:
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 11.2
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=22.3)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=33.4)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                return SimpleNamespace(read_bytes=1000, write_bytes=500, read_count=10, write_count=5, busy_time=100)
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        def missing_nvidia_smi() -> None:
+            raise FileNotFoundError("nvidia-smi")
+
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=missing_nvidia_smi,
+            gpu_counter_reader=missing_gpu_counter,
+            powershell_gpu_counter_reader=missing_gpu_counter,
+            time_fn=lambda: 100.0,
+        )
+
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+
+        self.assertEqual(row["eventType"], "SYSTEM_METRIC")
+        self.assertEqual(row["cpuUsage"], 11.2)
+        self.assertEqual(row["memoryUsage"], 22.3)
+        self.assertIsNone(row["gpuUsage"])
+        self.assertIsNone(row["vramUsage"])
+        self.assertIsNone(row["gpuTemp"])
+        self.assertIsNone(row["cpuTemp"])
+        self.assertIsNone(row["diskReadBytesPerSec"])
+        self.assertIn("gpuUsage", row["unavailableReason"])
+        self.assertIn("cpuTemp", row["unavailableReason"])
+        self.assertIn("diskReadBytesPerSec", row["unavailableReason"])
+
+    def test_metric_collector_uses_disk_io_delta(self) -> None:
+        class FakePsutil:
+            def __init__(self) -> None:
+                self.index = 0
+                self.counters = [
+                    SimpleNamespace(read_bytes=1000, write_bytes=500, read_count=10, write_count=5, busy_time=1000),
+                    SimpleNamespace(read_bytes=1500, write_bytes=750, read_count=20, write_count=10, busy_time=2000),
+                ]
+
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                value = self.counters[min(self.index, len(self.counters) - 1)]
+                self.index += 1
+                return value
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        times = iter([100.0, 105.0])
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=1, stdout=""),
+            gpu_counter_reader=missing_gpu_counter,
+            powershell_gpu_counter_reader=missing_gpu_counter,
+            time_fn=lambda: next(times),
+        )
+
+        collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, 5, tzinfo=agent.KST), 1)
+
+        self.assertEqual(row["diskReadBytesPerSec"], 100.0)
+        self.assertEqual(row["diskWriteBytesPerSec"], 50.0)
+        self.assertEqual(row["diskReadCountPerSec"], 2.0)
+        self.assertEqual(row["diskWriteCountPerSec"], 1.0)
+        self.assertEqual(row["diskBusyEstimatePercent"], 20.0)
+
+    def test_metric_collector_uses_read_write_time_when_busy_time_is_missing(self) -> None:
+        class FakePsutil:
+            def __init__(self) -> None:
+                self.index = 0
+                self.counters = [
+                    SimpleNamespace(
+                        read_bytes=1000,
+                        write_bytes=500,
+                        read_count=10,
+                        write_count=5,
+                        read_time=1000,
+                        write_time=500,
+                    ),
+                    SimpleNamespace(
+                        read_bytes=1500,
+                        write_bytes=750,
+                        read_count=20,
+                        write_count=10,
+                        read_time=1600,
+                        write_time=900,
+                    ),
+                ]
+
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                value = self.counters[min(self.index, len(self.counters) - 1)]
+                self.index += 1
+                return value
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        times = iter([100.0, 105.0])
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=1, stdout=""),
+            gpu_counter_reader=missing_gpu_counter,
+            powershell_gpu_counter_reader=missing_gpu_counter,
+            time_fn=lambda: next(times),
+        )
+
+        collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, 5, tzinfo=agent.KST), 1)
+
+        self.assertEqual(row["diskBusyEstimatePercent"], 20.0)
+
+    def test_read_windows_gpu_usage_percent_win32pdh_sums_counter_values(self) -> None:
+        class FakeWin32Pdh:
+            PDH_FMT_DOUBLE = 1
+            PERF_DETAIL_WIZARD = 400
+
+            def __init__(self) -> None:
+                self.paths: list[str] = []
+                self.closed = False
+
+            def EnumObjectItems(
+                self,
+                data_source: object,
+                machine: object,
+                object_name: str,
+                detail_level: int,
+            ) -> tuple[list[str], list[str]]:
+                return ["Utilization Percentage", "Running Time"], ["engine-3d", "engine-copy"]
+
+            def OpenQuery(self) -> str:
+                return "query"
+
+            def MakeCounterPath(self, parts: tuple[object, str, str, object, int, str]) -> str:
+                return f"{parts[1]}:{parts[2]}:{parts[5]}"
+
+            def AddCounter(self, query: str, path: str) -> str:
+                self.paths.append(path)
+                return path
+
+            def CollectQueryData(self, query: str) -> None:
+                return None
+
+            def GetFormattedCounterValue(self, handle: str, fmt: int) -> tuple[int, float]:
+                return 0, {
+                    "GPU Engine:engine-3d:Utilization Percentage": 12.5,
+                    "GPU Engine:engine-copy:Utilization Percentage": 33.0,
+                }[handle]
+
+            def CloseQuery(self, query: str) -> None:
+                self.closed = True
+
+        fake = FakeWin32Pdh()
+
+        value, reason = agent.read_windows_gpu_usage_percent_win32pdh(fake)
+
+        self.assertEqual(value, 45.5)
+        self.assertIsNone(reason)
+        self.assertEqual(fake.paths, [
+            "GPU Engine:engine-3d:Utilization Percentage",
+            "GPU Engine:engine-copy:Utilization Percentage",
+        ])
+        self.assertTrue(fake.closed)
+
+    def test_metric_collector_reads_nvidia_smi_values(self) -> None:
+        class FakePsutil:
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                return SimpleNamespace(read_bytes=1000, write_bytes=500, read_count=10, write_count=5, busy_time=1000)
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=0, stdout="42, 2048, 8192, 66\n"),
+            time_fn=lambda: 100.0,
+        )
+
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+
+        self.assertEqual(row["gpuUsage"], 42.0)
+        self.assertEqual(row["gpuUsagePercent"], 42.0)
+        self.assertEqual(row["vramUsage"], 25.0)
+        self.assertEqual(row["vramUsagePercent"], 25.0)
+        self.assertEqual(row["gpuTemp"], 66.0)
+        self.assertEqual(row["gpuTempCelsius"], 66.0)
+        self.assertEqual(row["gpuCollectorSource"], "nvidia-smi")
+
+    def test_metric_collector_uses_windows_gpu_counter_after_nvidia_failure(self) -> None:
+        class FakePsutil:
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                return SimpleNamespace(read_bytes=1000, write_bytes=500, read_count=10, write_count=5, busy_time=1000)
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=1, stdout=""),
+            gpu_counter_reader=lambda: (37.8, None),
+            powershell_gpu_counter_reader=missing_gpu_counter,
+            time_fn=lambda: 100.0,
+        )
+
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+
+        self.assertEqual(row["gpuUsage"], 37.8)
+        self.assertEqual(row["gpuUsagePercent"], 37.8)
+        self.assertIsNone(row["vramUsage"])
+        self.assertIsNone(row["gpuTemp"])
+        self.assertEqual(row["gpuCollectorSource"], "windows-performance-counter")
+        self.assertIn("vramUsage", row["unavailableReason"])
+
+    def test_metric_collector_uses_powershell_gpu_counter_as_secondary_fallback(self) -> None:
+        class FakePsutil:
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                return SimpleNamespace(read_bytes=1000, write_bytes=500, read_count=10, write_count=5, busy_time=1000)
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=1, stdout=""),
+            gpu_counter_reader=missing_gpu_counter,
+            powershell_gpu_counter_reader=lambda: (16.4, None),
+            time_fn=lambda: 100.0,
+        )
+
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+
+        self.assertEqual(row["gpuUsagePercent"], 16.4)
+        self.assertEqual(row["gpuCollectorSource"], "powershell-get-counter")
+
+    def test_metric_collector_marks_gpu_unavailable_when_all_sources_fail(self) -> None:
+        class FakePsutil:
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                return SimpleNamespace(read_bytes=1000, write_bytes=500, read_count=10, write_count=5, busy_time=1000)
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=1, stdout=""),
+            gpu_counter_reader=missing_gpu_counter,
+            powershell_gpu_counter_reader=missing_gpu_counter,
+            time_fn=lambda: 100.0,
+        )
+
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+
+        self.assertIsNone(row["gpuUsagePercent"])
+        self.assertIsNone(row["vramUsagePercent"])
+        self.assertIsNone(row["gpuTempCelsius"])
+        self.assertEqual(row["gpuCollectorSource"], "unavailable")
+        self.assertIn("gpuUsagePercent", row["unavailableReason"])
+
+    def test_metric_collector_stores_only_process_names(self) -> None:
+        class FakeProcess:
+            def __init__(self, pid: int, name: str, rss: int, user_time: float) -> None:
+                self.pid = pid
+                self.info = {
+                    "name": name,
+                    "memory_info": SimpleNamespace(rss=rss),
+                    "cpu_times": SimpleNamespace(user=user_time, system=0.0),
+                }
+
+        class FakePsutil:
+            def __init__(self) -> None:
+                self.index = 0
+
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                return SimpleNamespace(read_bytes=1000, write_bytes=500, read_count=10, write_count=5, busy_time=1000)
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def cpu_count(self) -> int:
+                return 4
+
+            def process_iter(self, attrs: list[str]) -> list[FakeProcess]:
+                self.index += 1
+                if self.index == 1:
+                    return [
+                        FakeProcess(1, "C:\\Users\\me\\heavy.exe", 500, 1.0),
+                        FakeProcess(2, "render.exe", 100, 1.0),
+                    ]
+                return [
+                    FakeProcess(1, "C:\\Users\\me\\heavy.exe", 600, 1.1),
+                    FakeProcess(2, "render.exe", 200, 3.0),
+                ]
+
+        times = iter([100.0, 105.0])
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=1, stdout=""),
+            gpu_counter_reader=missing_gpu_counter,
+            powershell_gpu_counter_reader=missing_gpu_counter,
+            time_fn=lambda: next(times),
+        )
+
+        collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, 5, tzinfo=agent.KST), 1)
+
+        self.assertEqual(row["topCpuProcess"], "render.exe")
+        self.assertEqual(row["topRamProcess"], "heavy.exe")
+        self.assertNotIn("\\", row["topRamProcess"])
+        self.assertNotIn("Users", row["topRamProcess"])
 
     def test_issue_notification_is_throttled(self) -> None:
         runtime = agent.AgentRuntime()
         warning = {"eventType": "DISPLAY_DRIVER_WARNING", "message": "Display driver warning observed."}
-        normal = {"eventType": "DEMO_METRIC", "message": "Demo metric collected."}
+        normal = {"eventType": "SYSTEM_METRIC", "message": "System metrics collected."}
 
         self.assertFalse(agent.should_show_issue_notification(normal, runtime, now=1000))
+        self.assertFalse(agent.should_show_issue_notification({"eventType": "DEMO_METRIC"}, runtime, now=1000))
         self.assertTrue(agent.should_show_issue_notification(warning, runtime, now=1000))
         self.assertFalse(agent.should_show_issue_notification(warning, runtime, now=1059))
         self.assertTrue(agent.should_show_issue_notification(warning, runtime, now=1060))
+
+    def test_background_loop_reuses_metric_collector_for_delta_metrics(self) -> None:
+        runtime = agent.AgentRuntime()
+        config = object()
+        collectors = []
+
+        def append_once(config_arg: object, index: int, collector: object = None) -> tuple[Path, dict]:
+            collectors.append(collector)
+            if len(collectors) == 2:
+                runtime.stop()
+            return Path("agent-metrics.jsonl"), {"eventType": "SYSTEM_METRIC", "message": "System metrics collected."}
+
+        with patch("buildgraph_agent.load_config", return_value=config), \
+            patch("buildgraph_agent.append_metric_with_row", side_effect=append_once), \
+            patch("buildgraph_agent.should_show_issue_notification", return_value=False), \
+            patch("buildgraph_agent.maybe_show_event_panel"):
+            agent.collect_background_loop(Path("agent-config.json"), runtime, interval_seconds=0)
+
+        self.assertEqual(len(collectors), 2)
+        self.assertIs(collectors[0], collectors[1])
+        self.assertIsInstance(collectors[0], agent.HardwareMetricCollector)
+
+    def test_background_metric_row_uses_system_metric_not_demo_metric(self) -> None:
+        row = agent.metric_log_row(
+            datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST),
+            0,
+            agent.DEFAULT_SCHEMA_VERSION,
+            "agent-1",
+            collector=StaticMetricCollector(),
+        )
+
+        self.assertEqual(row["kind"], "SYSTEM_METRIC")
+        self.assertEqual(row["eventType"], "SYSTEM_METRIC")
+        self.assertNotEqual(row["kind"], "DEMO_METRIC")
 
     def test_issue_macro_maps_display_driver_warning_to_remote_draft(self) -> None:
         macro = agent.issue_macro({"eventType": "DISPLAY_DRIVER_WARNING", "message": "Display driver warning observed."})
@@ -508,6 +980,40 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertNotIn("c:\\users", joined)
         self.assertNotIn("secret.exe", joined)
 
+    def test_display_log_values_use_disk_busy_without_disk_usage_fallback(self) -> None:
+        row = {
+            "timestamp": "2026-07-02T14:00:00+09:00",
+            "kind": "SYSTEM_METRIC",
+            "payload": {
+                "cpuUsagePercent": 20.0,
+                "memoryUsedPercent": 40.0,
+                "diskUsedPercent": 87.6,
+                "diskBusyEstimatePercent": 12.5,
+                "gpuUsagePercent": None,
+                "message": "System metrics collected.",
+            },
+        }
+        row_without_busy = {
+            "timestamp": "2026-07-02T14:00:00+09:00",
+            "kind": "SYSTEM_METRIC",
+            "payload": {
+                "cpuUsagePercent": 20.0,
+                "memoryUsedPercent": 40.0,
+                "diskUsedPercent": 87.6,
+                "message": "System metrics collected.",
+            },
+        }
+
+        self.assertEqual(agent.display_log_summary_values(row)[3], "12.5%")
+        self.assertEqual(agent.display_log_table_values(row)[4], "12.5%")
+        self.assertEqual(agent.display_log_summary_values(row_without_busy)[3], "-")
+        self.assertEqual(agent.display_log_table_values(row_without_busy)[4], "-")
+
+    def test_log_filter_initializes_only_before_user_selection(self) -> None:
+        self.assertTrue(agent.should_initialize_log_filter(log_tab_opened=False, user_touched_filter=False))
+        self.assertFalse(agent.should_initialize_log_filter(log_tab_opened=True, user_touched_filter=False))
+        self.assertFalse(agent.should_initialize_log_filter(log_tab_opened=False, user_touched_filter=True))
+
     def test_detect_recent_signals_uses_final_scenarios_without_simple_usage_noise(self) -> None:
         rows = [
             {
@@ -675,6 +1181,40 @@ class AgentGoal1112Test(unittest.TestCase):
 
             self.assertEqual(model["agentStatus"], "정상 실행 중")
             self.assertNotIn("raw-agent-token", json.dumps(model, ensure_ascii=False))
+
+    def test_status_home_model_builds_dynamic_status_cards(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            rows = [
+                {"timestamp": (now - timedelta(minutes=2)).isoformat(), "message": "heartbeat success"},
+                {"timestamp": (now - timedelta(minutes=1)).isoformat(), "message": "upload success"},
+            ]
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            startup_path = Path(directory) / f"{agent.APP_NAME}.cmd"
+            startup_path.write_text("@echo off\n", encoding="utf-8")
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory),
+                agent_version="1.2.3",
+                policy_version="test-policy",
+            )
+
+            with patch("buildgraph_agent.startup_dir", return_value=Path(directory)):
+                model = agent.status_home_model(config, path)
+
+            self.assertEqual(model["serverCard"]["value"], "● 연결됨")
+            self.assertEqual(model["serverCard"]["tone"], "ok")
+            self.assertEqual(model["uploadCard"]["detail"], "업로드 상태: 성공")
+            self.assertEqual(model["uploadCard"]["tone"], "ok")
+            self.assertEqual(model["startupCard"]["value"], "사용 중")
+            self.assertEqual(model["startupCard"]["tone"], "ok")
+            self.assertEqual(model["versionCard"]["value"], "1.2.3")
+            self.assertEqual(model["versionCard"]["detail"], "최신 버전")
 
     def test_powershell_string_escapes_single_quotes(self) -> None:
         self.assertEqual(agent.powershell_string("C:\\Users\\O'Brien"), "'C:\\Users\\O''Brien'")

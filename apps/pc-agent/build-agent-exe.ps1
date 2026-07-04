@@ -1,13 +1,33 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $Root)
 $Dist = Join-Path $Root "dist"
 $Work = Join-Path $Root "build"
-$Script = Join-Path $Root "buildgraph_agent.py"
 $Assets = Join-Path $Root "assets"
+$Script = Join-Path $Root "buildgraph_agent.py"
 $Icon = Join-Path $Assets "specup-agent.ico"
+$VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+$Python = "python"
+if (Test-Path $VenvPython) {
+  $Python = $VenvPython
+}
 
-python -m pip install -r (Join-Path $Root "requirements.txt") -r (Join-Path $Root "requirements-build.txt")
+function Invoke-Checked {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string] $Command,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]] $CommandArgs
+  )
+
+  & $Command @CommandArgs
+  if ($LASTEXITCODE -ne 0) {
+    throw "command failed with exit code ${LASTEXITCODE}: $Command $($CommandArgs -join ' ')"
+  }
+}
+
+Invoke-Checked $Python -m pip install -r (Join-Path $Root "requirements.txt") -r (Join-Path $Root "requirements-build.txt")
 
 function Build-AgentExecutable {
   param(
@@ -43,7 +63,7 @@ function Build-AgentExecutable {
   }
   $Args += $Script
 
-  python -m PyInstaller @Args
+  Invoke-Checked $Python -m PyInstaller @Args
 }
 
 Build-AgentExecutable -Name "agent" -Windowed

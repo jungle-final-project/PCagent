@@ -31,6 +31,8 @@ python buildgraph_agent.py upload --config ./agent-config.json --symptom "게임
 
 기본 수집 파일은 `logDir/agent-metrics.jsonl`입니다. `collect`는 기본 5초 간격이며, 검증용 기본값은 `--iterations 1`입니다. `--iterations 0`을 주면 계속 실행합니다.
 
+하드웨어 metric은 실제 수집 가능한 값만 기록합니다. 디스크 컬럼은 용량 사용률이 아니라 `psutil.disk_io_counters()` delta 기반의 활성 추정값을 우선 표시합니다. Windows에서 디스크 I/O counter가 `None`이거나 시간 counter가 비정상이라면 OS 성능 카운터가 꺼져 있을 수 있으며, 관리자 터미널에서 `diskperf -y`가 필요할 수 있습니다. Agent가 이 명령을 자동 실행하지는 않습니다.
+
 업로드 명령은 다음을 수행합니다.
 
 - 증상 유형에 맞는 IncidentWindow row 선택
@@ -63,7 +65,7 @@ build-agent-exe.cmd
 
 터미널 출력이 필요한 `status`, `doctor`, `register`, `collect`, `upload` 검증은 콘솔 실행 파일인 `agent-cli.exe`를 사용합니다.
 
-현재 로그 뷰어의 첫 화면은 상태 홈입니다. 상태 홈은 Agent 상태, 서버 연결 표시값, 마지막 업로드 표시값, 버전, 최근 감지 신호, 1시간 로그 테이블을 보여줍니다. 이번 1차 UI는 프론트 표시만 바꾸며 heartbeat 호출, 로그 업로드 마법사, 위험 모달, AS 접수 마법사는 추가하지 않습니다. `tkinter`가 없는 패키징 환경에서는 PowerShell fallback 창이 같은 개인정보 기준으로 표시됩니다.
+현재 로그 뷰어의 첫 화면은 상태 홈입니다. 상태 홈은 서버 연결, 마지막 업로드, 시작프로그램, 버전 카드와 최근 감지 신호, 로그 현황 테이블을 보여줍니다. 카드 상태는 로컬 config와 Agent 로그에 남은 heartbeat/upload/startup 정보를 기준으로 표시합니다. 이번 UI는 별도 동기 API 호출을 추가하지 않으며, heartbeat 호출, 로그 업로드 마법사, 위험 모달, AS 접수 마법사는 기존 흐름을 유지합니다. `tkinter`가 없는 패키징 환경에서는 PowerShell fallback 창이 같은 개인정보 기준으로 표시됩니다.
 
 백그라운드 수집 중 `detect_recent_signals()`가 드라이버/앱/네트워크 오류 반복, WHEA/BSOD, Kernel-Power, SMART, thermal 계열의 명확한 신호를 찾으면 오른쪽 아래 Blue/Teal 알림 패널을 띄웁니다. 이 패널은 진단 확정 UI가 아니라 AS 검토 시작 여부를 묻는 알림이며, raw log 원문, token, raw path, 전체 process list는 표시하지 않습니다. 사용자가 `로그 전송하고 AS 검토 요청`을 누르면 기존 IncidentWindow gzip 업로드 흐름으로 `/api/agent/log-uploads`에 전송하고 ticket 생성 결과를 엽니다. 등록, 동의, 서버 연결 문제로 전송할 수 없으면 사용자용 실패 문구만 표시합니다.
 
@@ -105,8 +107,8 @@ agentToken: present
 - IncidentWindow 기반 JSONL gzip 생성
 - Agent token 기반 `POST /api/agent/log-uploads` 업로드
 - 업로드 응답 `ticketId`로 `/support/{ticketId}` URL 생성
-- 더블클릭 시 시작프로그램 등록과 트레이 기반 백그라운드 demo metric 수집
-- 트레이 아이콘에서 상태 홈과 날짜/시간별 1시간 로그 뷰어 열기
+- 더블클릭 시 시작프로그램 등록과 트레이 기반 백그라운드 하드웨어 metric 수집
+- 트레이 아이콘에서 상태 홈과 날짜/시간별 전체 로그내용 뷰어 열기
 - 명확한 이벤트 감지 시 오른쪽 아래 알림 패널로 AS 검토 요청 연결
 - `viewer --config ...`로 같은 상태 홈을 개발 검증용으로 직접 열기
 

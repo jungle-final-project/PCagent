@@ -1,3 +1,124 @@
+# 2026-07-04 PC Agent 홈/로그 UI 카드 구조 보정
+
+## 현재 목표
+
+- 사용자가 제공한 이미지 기준으로 PC Agent 홈 상단 4카드와 로그 화면 문구/배치를 보정한다.
+- 서버/API/DB 계약과 업로드/AS 접수 동작은 바꾸지 않고, 표시 모델과 Tkinter UI만 최소 수정한다.
+
+## 완료한 일
+
+- 홈 상단 카드를 `서버 연결`, `마지막 업로드`, `시작프로그램`, `버전` 4개로 재구성했다.
+- 카드 텍스트 구조를 참고 이미지처럼 제목, 큰 상태값, 보조 설명, 오른쪽 아이콘 배치로 바꿨다.
+- 카드 상태값은 로컬 로그/config/startup 정보를 기반으로 `ok`, `warning`, `danger`, `muted` tone을 갖도록 모델을 확장했다.
+- 서버 연결은 heartbeat 로그, 마지막 업로드는 upload 로그, 시작프로그램은 startup cmd 존재 여부, 버전은 config agent version 기준으로 표시한다.
+- `1시간 로그 요약`을 `로그 현황`으로 바꾸고 홈 로그 행 표시 한도를 6개에서 8개로 늘렸다.
+- 로그 탭의 `1시간 로그`, `현재` 버튼을 제거하고 날짜/시간 컨트롤에 스타일과 자동 갱신 바인딩을 추가했다.
+- 로그 탭 표 제목을 `전체 로그내용`으로 변경했다.
+- PowerShell fallback 화면과 README 설명도 새 4카드/로그 문구에 맞춰 정리했다.
+
+## 마지막 검증 결과
+
+- `python -m py_compile apps\pc-agent\buildgraph_agent.py` 성공.
+- `apps/pc-agent`: `python -m unittest -q` 성공. 총 40개 테스트 통과.
+- `git diff --check -- apps/pc-agent/buildgraph_agent.py apps/pc-agent/test_buildgraph_agent.py apps/pc-agent/README.md` 성공.
+
+## 남은 리스크
+
+- 실제 Windows exe/Tkinter 렌더링 화면은 아직 육안 캡처로 확인하지 않았다.
+- 상태 카드는 현재 백엔드 직접 호출이 아니라 Agent 로그에 기록된 heartbeat/upload 결과를 읽어 갱신한다. 즉시 서버 조회형 상태가 필요하면 별도 비차단 heartbeat/check 호출 설계가 필요하다.
+
+## 2026-07-04 PC Agent exe 재빌드 및 재실행
+
+### 현재 목표
+
+- 기존 실행 중인 PC Agent exe를 종료하고, 방금 수정한 UI 소스를 반영한 exe를 다시 실행한다.
+
+### 완료한 일
+
+- 실행 중이던 기존 `BuildGraphAgent-*` 프로세스 2개를 종료했다.
+- bare `python` 기반 `build-agent-exe.cmd`는 Python 3.10 + PyInstaller 분석 단계에서 실패해 최신 빌드로 인정하지 않았다.
+- `C:\나만무\prototype\.venv\Scripts\python.exe` 기준 Python 3.11 환경에 빌드 의존성을 설치했다.
+- Python 3.11 + PyInstaller로 `apps\pc-agent\dist\agent.exe`를 새로 빌드했다.
+- 새 exe를 `viewer --config apps\pc-agent\agent-config.example.json` 모드로 실행했다.
+
+### 마지막 검증 결과
+
+- 새 exe 경로: `C:\나만무\prototype\apps\pc-agent\dist\agent.exe`
+- 새 exe 크기: `16091898` bytes
+- 새 exe 생성 시각: `2026-07-04 오전 3:07:42`
+- 현재 실행 중인 `agent` 프로세스는 workspace의 `dist\agent.exe` 경로를 가리킨다.
+
+### 남은 리스크
+
+- `apps\web\public\downloads\pc-agent\agent.exe`는 이번 단계에서 교체하지 않았다.
+- 실제 사용자 config가 아니라 `agent-config.example.json`으로 viewer 화면을 띄웠으므로, 서버 token/실제 로그 상태는 데모 config 기준으로 보일 수 있다.
+
+## 2026-07-04 PC Agent 수집 모드 재실행 및 UI 재보정
+
+### 현재 목표
+
+- viewer만 띄워 로그 수집이 안 되던 상태를 바로잡고, 실제 백그라운드 수집 모드로 exe를 실행한다.
+- 사용자가 지적한 아이콘 깨짐, 홈 상단 여백, 로그 탭 날짜 필터를 추가 보정한다.
+
+### 완료한 일
+
+- 기존 `agent`/`BuildGraphAgent-*` 프로세스를 종료했다.
+- 카드 아이콘을 테두리 박스형 깨진 선 아이콘에서 투명 PNG 라인 아이콘으로 다시 그리도록 수정했다.
+- 홈 상단 콘텐츠 padding과 상태 헤더 간격을 줄여 상단 여백을 더 줄였다.
+- 로그 탭 날짜 입력을 텍스트 박스에서 `년 / 월 / 일` 선택 콤보박스로 바꿨다.
+- 월 변경 시 일 선택 범위를 28~31일에 맞게 갱신하고, 날짜/시간 선택 시 해당 구간 로그를 바로 필터링하도록 연결했다.
+- 최신 소스로 `apps\pc-agent\dist\agent.exe`를 다시 빌드했다.
+- exe를 인자 없는 기본 실행 모드로 실행해 실제 백그라운드 로그 수집을 켰다.
+- 같은 기본 config로 viewer 창도 함께 열어 화면에서 수집 로그를 볼 수 있게 했다.
+
+### 마지막 검증 결과
+
+- `python -m py_compile apps\pc-agent\buildgraph_agent.py` 성공.
+- `apps/pc-agent`: `python -m unittest -q` 성공. 총 40개 테스트 통과.
+- `git diff --check -- apps/pc-agent/buildgraph_agent.py apps/pc-agent/test_buildgraph_agent.py apps/pc-agent/README.md status.md` 성공.
+- 새 exe 생성 시각: `2026-07-04 오전 3:18:46`, 크기 `16092827` bytes.
+- `%LOCALAPPDATA%\BuildGraphAgent\logs\agent-metrics.jsonl`가 `2026-07-04 오전 3:19:43`까지 갱신되는 것을 확인했다.
+- 현재 `agent` 프로세스는 workspace의 `C:\나만무\prototype\apps\pc-agent\dist\agent.exe`를 가리킨다.
+
+### 남은 리스크
+
+- 화면 육안 기준으로 아이콘이 완전히 원하는 형태인지 사용자가 직접 확인해야 한다.
+- 현재 로그는 demo metric 수집 기준이다. 실제 하드웨어/이벤트 수집 고도화는 별도 작업이다.
+
+## 2026-07-04 PC Agent 카드 PNG 아이콘 적용
+
+### 현재 목표
+
+- 사용자가 제공한 4개 PNG 아이콘을 홈 상단 카드에 정확히 적용한다.
+- 상태가 정상일 때 teal, 주의/실패일 때 amber/red 계열로 아이콘 색이 바뀌도록 한다.
+
+### 완료한 일
+
+- 다운로드 폴더의 아이콘 4개를 `apps\pc-agent\assets\icons`에 복사했다.
+  - `server-cloud.png`
+  - `upload-cloud.png`
+  - `startup-windows.png`
+  - `version-info.png`
+- 홈 상단 카드 아이콘을 임시 선 그리기 방식에서 PNG asset 로딩 방식으로 변경했다.
+- PNG alpha mask를 사용해 원본 검은 아이콘을 상태 tone 색상으로 tint 처리하도록 구현했다.
+- PyInstaller onefile exe에서도 아이콘을 찾을 수 있도록 `build-agent-exe.ps1`에 `--add-data assets;assets`를 추가했다.
+- 빌드 스크립트가 bare Python 3.10을 잡아 실패하던 문제를 줄이기 위해 repo `.venv\Scripts\python.exe`를 우선 사용하도록 수정했다.
+- 최신 exe를 다시 빌드하고, 기본 수집 모드와 viewer를 다시 실행했다.
+
+### 마지막 검증 결과
+
+- 아이콘 PNG 4개 모두 alpha 범위 `(0, 255)`라 배경 없이 아이콘 형태만 tint 처리 가능함을 확인했다.
+- `python -m py_compile apps\pc-agent\buildgraph_agent.py` 성공.
+- `apps/pc-agent`: `python -m unittest -q` 성공. 총 40개 테스트 통과.
+- `git diff --check -- apps/pc-agent/buildgraph_agent.py apps/pc-agent/build-agent-exe.ps1 apps/pc-agent/test_buildgraph_agent.py apps/pc-agent/README.md status.md` 성공.
+- 새 exe 생성 시각: `2026-07-04 오전 3:28:41`, 크기 `16130638` bytes.
+- `%LOCALAPPDATA%\BuildGraphAgent\logs\agent-metrics.jsonl`가 `2026-07-04 오전 3:29:19`까지 갱신되는 것을 확인했다.
+
+### 남은 리스크
+
+- 화면에서 아이콘 색과 크기가 원하는 수준인지 최종 육안 확인이 필요하다.
+- 현재 GPU/VRAM/온도/top process 값은 여전히 demo metric이다. 이번 작업은 아이콘 UI 반영만 수행했다.
+
 # 2026-07-03 PC Agent exe 이벤트 감지 모달 UI 적용
 
 ## 2026-07-03 이벤트 감지 모달 고정 액션 레이아웃
@@ -608,3 +729,34 @@ Updated: 2026-07-03
   - 사용자가 실행 중인 `%LOCALAPPDATA%\BuildGraphAgent\logs\agent-metrics.jsonl`을 확인한 결과, 최근 row에 `schemaVersion`, `collectedAt`, `agentId`, `sequence`, `kind`, `payload`, `privacyFlags`가 없어 이전 빌드 또는 이전 collector가 실행 중인 상태로 판단했다. 문서에 실행 중인 exe 최신 여부 확인 기준을 추가했다.
   - 웹 AS 화면 다운로드 URL `http://localhost:5173/downloads/pc-agent/agent.exe`를 직접 내려받아 repo 파일 `apps/web/public/downloads/pc-agent/agent.exe`와 SHA256을 비교했다. 둘 다 `44791862BD8A33869F7D33891078FDACAFC180AC11EC87F801EE0EE6EE198456`로 일치해, 현재 웹에서 내려받는 파일은 workspace 기준 최신 exe임을 확인했다.
   - 같은 `agent-metrics.jsonl` 안에 14:31 flat row와 15:41 이후 envelope row가 함께 있음을 확인했다. JSONL은 append 방식이라 이전 exe가 찍은 row가 파일 앞부분에 남아 있고, 최신 여부는 tail row 기준으로 확인해야 한다.
+
+# 2026-07-04 PC Agent 실제 metric 수집 보정
+
+## 현재 목표
+
+- PC Agent 백그라운드 수집에서 demo/random 값이 실제 metric처럼 보이지 않게 하고, Disk/GPU 표시를 실제 수집 가능한 값 중심으로 보정한다.
+- 기존 AS 접수, upload/gzip, IncidentWindow, 서버 API, DB, OpenAPI, 웹 화면은 변경하지 않는다.
+
+## 완료한 일
+
+- 디스크 busy 추정값을 `busy_time` delta 우선, 없으면 `read_time + write_time` delta 기반으로 계산하도록 보강했다.
+- 홈 `로그 현황`과 로그 탭 `전체 로그내용`의 디스크 컬럼이 용량 사용률(`diskUsage/diskUsedPercent`)로 fallback하지 않고 `diskBusyEstimatePercent`만 표시하도록 바꿨다.
+- NVIDIA는 기존 `nvidia-smi` 수집을 유지하고, 실패 시 Windows GPU Performance Counter(`win32pdh`)와 PowerShell `Get-Counter` fallback으로 GPU 사용률만 수집하도록 추가했다.
+- Intel/AMD fallback에서 VRAM percent와 GPU 온도는 가짜값 없이 `null + unavailableReason`으로 남기고, `gpuCollectorSource`를 기록하도록 했다.
+- 로그 탭 최초 진입 시 오늘 날짜/현재 시간으로 초기화하되, 사용자가 날짜/시간을 선택한 뒤에는 live refresh가 덮어쓰지 않도록 상태를 추가했다.
+- `requirements.txt`에 Windows 전용 `pywin32` 조건부 의존성을 추가했고, README에 `diskperf -y` 관련 짧은 안내를 남겼다.
+- 초기 구현에서 `win32pdh.ExpandWildCardPath`라는 존재하지 않는 API를 호출하던 원인을 확인했고, `EnumObjectItems` + `MakeCounterPath` + 두 번의 `CollectQueryData` 방식으로 실제 Windows GPU counter를 읽도록 수정했다.
+- `build-agent-exe.ps1`이 pip/PyInstaller 실패를 통과시키지 않도록 native command exit code 검사를 추가했다.
+
+## 마지막 검증 결과
+
+- `python -m py_compile apps\pc-agent\buildgraph_agent.py` 성공.
+- `apps/pc-agent`: `python -m unittest -q` 성공. 총 57개 테스트 통과.
+- `git diff --check -- apps/pc-agent/buildgraph_agent.py apps/pc-agent/test_buildgraph_agent.py apps/pc-agent/README.md apps/pc-agent/requirements.txt` 성공.
+- `.venv`에 `pywin32` 설치 후 `read_windows_gpu_usage_percent_win32pdh()`가 실제 값을 반환함을 확인했다.
+- 새 `agent-cli.exe collect --iterations 2` 실행 결과 tail row가 `SYSTEM_METRIC`, `diskBusyEstimatePercent`, `gpuUsagePercent`, `gpuCollectorSource=windows-performance-counter`를 기록함을 확인했다.
+- 최신 `apps\pc-agent\dist\agent.exe`를 `apps\web\public\downloads\pc-agent\agent.exe`로 교체했다. SHA256: `FF6E368224B141C0B76D39E75BFDA166503694569D4A08FEF9519B4EE009AB0D`.
+
+## 남은 리스크
+
+- Intel/AMD GPU 온도와 VRAM percent는 Windows Performance Counter만으로 안정 수집하지 않고, 설계대로 `null + unavailableReason`으로 남긴다.
