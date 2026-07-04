@@ -60,7 +60,7 @@ services:
       RECOMMENDATION_DB_USER: buildgraph
       RECOMMENDATION_DB_PASSWORD: buildgraph
     volumes:
-      - ./artifacts/recommendation/model:/models
+      - ${RECOMMENDATION_RERANKER_MODEL_VOLUME:-recommendation-models}:/models
     ports:
       - "8091:8091"
     healthcheck:
@@ -217,3 +217,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  recommendation-models:
