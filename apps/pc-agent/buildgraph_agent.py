@@ -94,6 +94,18 @@ CARD_ICON_FILES = {
     "startup": Path("assets/icons/startup-windows.png"),
     "version": Path("assets/icons/version-info.png"),
 }
+
+
+def subprocess_window_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
 EVENT_PANEL_SIGNAL_CODES = {
     "REMOTE_DRIVER_OS",
     "REMOTE_APP_LAUNCHER",
@@ -531,6 +543,7 @@ def restrict_file_to_current_user(path: Path) -> None:
                 check=False,
                 capture_output=True,
                 text=True,
+                **subprocess_window_kwargs(),
             )
         except Exception:
             return
@@ -550,6 +563,7 @@ def current_user_sid() -> str | None:
             check=False,
             capture_output=True,
             text=True,
+            **subprocess_window_kwargs(),
         )
     except Exception:
         return None
@@ -1011,6 +1025,7 @@ def read_windows_gpu_usage_percent_powershell(
             text=True,
             timeout=3,
             check=False,
+            **subprocess_window_kwargs(),
         )
     except FileNotFoundError:
         return None, "PowerShell unavailable"
@@ -1182,6 +1197,7 @@ class HardwareMetricCollector:
             text=True,
             timeout=2,
             check=False,
+            **subprocess_window_kwargs(),
         )
 
     def collect_nvidia_gpu(self, payload: dict[str, Any], reasons: dict[str, str]) -> tuple[bool, str | None]:
@@ -1397,6 +1413,9 @@ class HardwareMetricCollector:
 
 
 DEFAULT_METRIC_COLLECTOR = HardwareMetricCollector()
+DEMO_WARNING_INTERVAL = 7
+DEMO_WARNING_EVENT_TYPE = "DISPLAY_DRIVER_WARNING"
+DEMO_WARNING_MESSAGE = "Display driver warning observed."
 
 
 def metric_snapshot(ts: datetime, index: int, collector: Any = None) -> dict:
@@ -1457,6 +1476,11 @@ def metric_log_row(
 ) -> dict:
     snapshot = metric_snapshot(ts, index, collector)
     payload = metric_payload_from_snapshot(snapshot)
+    if should_inject_demo_warning(index):
+        payload = {**payload}
+        payload["eventType"] = DEMO_WARNING_EVENT_TYPE
+        payload["message"] = DEMO_WARNING_MESSAGE
+        payload["osErrorEvent"] = "Display driver warning"
     return {
         **payload,
         "schemaVersion": schema_version,
@@ -1471,6 +1495,10 @@ def metric_log_row(
             "masked": True,
         },
     }
+
+
+def should_inject_demo_warning(index: int) -> bool:
+    return index > 0 and index % DEMO_WARNING_INTERVAL == 0
 
 
 def sample_metric_log_row(ts: datetime, index: int, schema_version: int, agent_id: str) -> dict:
@@ -3882,11 +3910,9 @@ def show_log_viewer(
                 " / ".join(part for part in symptom_parts if part),
                 window,
             )
-            ticket_id = str(result["ticketId"])
+            ticket_id = str(result.get("ticketId") or "")
             reset_support_form()
-            support_status.set(
-                f"AS 접수 신청이 완료되었습니다. 관리자 AS 티켓 목록에서 확인할 수 있습니다. 티켓 {ticket_id}"
-            )
+            support_status.set(f"AS 접수가 완료되었습니다. 티켓 {ticket_id}")
             refresh_status()
             refresh_log()
         except Exception as exception:
@@ -4147,7 +4173,7 @@ def upload_event_panel_request(
         symptom,
         window,
     )
-    ticket_id = str(result["ticketId"])
+    ticket_id = str(result.get("ticketId") or "")
     return ticket_id, support_url(config.api_base_url, ticket_id, config.web_base_url)
 
 
@@ -4875,13 +4901,13 @@ def upload_recent(
     print(f"Idempotency-Key: {key}")
     print("Replay the same command with this Idempotency-Key to verify duplicate ticket prevention.")
     result = upload_gzip(config, gzip_path, key, symptom, window)
-    ticket_id = str(result["ticketId"])
+    ticket_id = str(result.get("ticketId"))
     url = support_url(config.api_base_url, ticket_id, config.web_base_url)
     print(f"ticketId: {ticket_id}")
     print(f"supportUrl: {url}")
     if open_browser:
         webbrowser.open(url)
-        print("opened support ticket in default browser")
+        print("opened support page in default browser")
 
 
 def open_issue_draft(config_path: Path, issue_file: Path, open_browser: bool = True) -> dict:
@@ -4974,13 +5000,13 @@ def submit_issue_ticket(
     print(f"window: {window.started_at.isoformat()} -> {window.ended_at.isoformat()}")
     print(f"Idempotency-Key: {key}")
     result = upload_gzip(config, gzip_path, key, symptom, window)
-    ticket_id = str(result["ticketId"])
+    ticket_id = str(result.get("ticketId"))
     url = support_url(config.api_base_url, ticket_id, config.web_base_url)
     print(f"ticketId: {ticket_id}")
     print(f"supportUrl: {url}")
     if open_browser:
         webbrowser.open(url)
-        print("opened support ticket in default browser")
+        print("opened support page in default browser")
     return result
 
 
@@ -5036,7 +5062,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     upload.add_argument("--consent-id", default=None)
     upload.add_argument("--system-detected", action="store_true")
     upload.add_argument("--idempotency-key", default=None)
-    upload.add_argument("--no-open", action="store_true", help="do not open /support/{ticketId} in the default browser")
+    upload.add_argument("--no-open", action="store_true", help="do not open the support page in the default browser")
 
     background = sub.add_parser("run-background", help="run as a startup-friendly background tray agent")
     background.add_argument("--config", type=Path, default=None)

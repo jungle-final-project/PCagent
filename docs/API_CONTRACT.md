@@ -433,6 +433,15 @@ Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버
 | `GET` | `/api/admin/as-tickets` | ADMIN | 4번 | `?page=0&size=20` | `{ "items": [{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "status": "OPEN", "symptom": "화면이 멈춤", "userId": "c6d75f0c-0f57-4d1c-a8b2-a4079dcd40fd", "assignedAdminId": null, "createdAt": "2026-06-29T10:42:00Z" }], "page": 0, "size": 20, "total": 1 }` | `as_tickets` |
 | `GET` | `/api/admin/as-tickets/{id}` | ADMIN | 4번 | - | `{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "status": "OPEN", "symptom": "화면이 멈춤", "logUploadId": "1b363bcb-42be-4428-b625-54a6b267d66f", "assignedAdminId": null, "causeCandidates": [], "upgradeCandidates": [], "adminNote": null }` | `as_tickets`, `agent_log_uploads` |
 | `PATCH` | `/api/admin/as-tickets/{id}` | ADMIN | 4번 | `{ "status": "IN_PROGRESS", "assignedAdminId": "c6d75f0c-0f57-4d1c-a8b2-a4079dcd40fd", "adminNote": "확인 중" }` | `{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "status": "IN_PROGRESS", "assignedAdminId": "c6d75f0c-0f57-4d1c-a8b2-a4079dcd40fd", "adminNote": "확인 중", "resolvedAt": null, "updatedAt": "2026-06-29T10:45:00Z" }` | `as_tickets`, `users`, `admin_audit_logs` |
+| `GET` | `/api/admin/customer-contacts` | ADMIN | 4번 | - | `{ "items": [{ "id": "00000000-0000-4000-8000-000000064001", "userName": "Demo User", "supportRequestType": "REMOTE", "lastMessagePreview": "오늘 저녁 8시 이후 괜찮습니다.", "adminUnreadCount": 2, "ticketId": null }] }` | `as_chat_sessions`, `as_chat_messages`, `users`, `as_tickets` |
+| `GET` | `/api/admin/customer-contacts/{id}` | ADMIN | 4번 | - | `{ "contact": {}, "messages": [{ "role": "USER", "content": "인터넷이 안 돼요." }], "ticketDraft": {} }` | `as_chat_sessions`, `as_chat_messages` |
+| `POST` | `/api/admin/customer-contacts/{id}/messages` | ADMIN | 4번 | `{ "content": "원격으로 확인 후 도와드리겠습니다." }` | `CustomerContactDetail` | `as_chat_messages`, `as_chat_sessions` |
+| `POST` | `/api/admin/customer-contacts/{id}/ticket` | ADMIN | 4번 | `{ "symptomType": "NETWORK_INTERNET", "symptomSummary": "인터넷 연결 불가", "supportRequestType": "REMOTE", "preferredScheduleAt": "2026-07-03T20:00:00+09:00", "adminNote": "원격 확인 예정" }` | `CustomerContactDetail` | `as_tickets`, `as_chat_sessions`, `admin_audit_logs` |
+| `PATCH` | `/api/admin/customer-contacts/{id}/archive` | ADMIN | 4번 | - | `{ "id": "00000000-0000-4000-8000-000000064001", "status": "ARCHIVED" }` | `as_chat_sessions`, `admin_audit_logs` |
+| `GET` | `/api/support/chat-sessions/current` | USER | 4번 | - | `{ "contact": { "id": "00000000-0000-4000-8000-000000064001", "status": "ACTIVE" }, "messages": [], "pollingIntervalMs": 5000 }` | `as_chat_sessions`, `as_chat_messages` |
+| `POST` | `/api/support/chat-sessions` | USER | 4번 | `{ "supportRequestType": "REMOTE", "message": "인터넷이 안 돼요." }` | `CustomerContactDetail` | `as_chat_sessions`, `as_chat_messages` |
+| `GET` | `/api/support/chat-sessions/{id}/messages` | USER | 4번 | - | `CustomerContactDetail` | `as_chat_sessions`, `as_chat_messages` |
+| `POST` | `/api/support/chat-sessions/{id}/messages` | USER | 4번 | `{ "content": "오늘 저녁 8시 이후 괜찮습니다." }` | `CustomerContactDetail` | `as_chat_messages`, `as_chat_sessions` |
 
 `POST /api/agent-logs/upload` multipart fields:
 
@@ -539,6 +548,8 @@ AS 접수 페이지 RAG 분석:
 ```
 
 사용자 `GET /api/as-tickets/{id}`와 관리자 `GET /api/admin/as-tickets/{id}` 응답은 `analysisStatus`, `reviewStatus`, `supportDecision`, `riskLevel`, `autoResponseAllowed`, `incidentWindow`, `logSummary`, `logSummaryText`, `supportRouting`, `safetyAdviceLevel`, `safetyNotices`, `feedbackRating`, `feedbackComment`, `feedbackCreatedAt`, `diagnosticAccuracy`, `aiDiagnosisRequest`, 예외 승인 필드, `adminNote`, `remoteSupportLink`, `remoteSupportStatus`, `visitSupportRequired`, `visitSupportStatus`, `visitPreferredDate`, `visitTimeSlot`을 포함할 수 있다.
+
+관리자 고객 연락 API는 상담방 선행 흐름을 위한 관리자 전용 계약이다. 사용자 측은 `GET /api/support/chat-sessions/current`와 `GET/POST /api/support/chat-sessions/{sessionId}/messages`를 fallback 조회/전송 경로로 유지한다. 실시간 채팅은 `GET /ws/support-chat?token={accessToken}&mode=user|admin&sessionId={chatSessionId}` WebSocket을 우선 사용한다. 브라우저 WebSocket은 Authorization header를 직접 보낼 수 없으므로 MVP에서는 query token으로 인증하되, 서버는 동일한 JWT 검증과 사용자/관리자 권한 검사를 적용한다. 저장/권한/조회 기준은 REST API와 동일하게 `as_chat_sessions`, `as_chat_messages`다.
 
 #### Agent AS 최종 지원 계약
 

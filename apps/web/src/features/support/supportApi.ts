@@ -1,5 +1,5 @@
 import { api } from '../../lib/api';
-import type { AgentActivationTokenDto, AgentLogUploadDto, AsRagAnalysisDto, AsTicketDraftDto, AsTicketDto } from './types';
+import type { AgentActivationTokenDto, AgentLogUploadDto, AsRagAnalysisDto, AsTicketDraftDto, AsTicketDto, SupportChatSessionDto } from './types';
 
 export type UploadAgentLogMetadata = {
   rangeStartedAt?: string;
@@ -83,5 +83,27 @@ export function submitSupportFeedback(ticketId: string, request: SupportFeedback
   return api<AsTicketDto>(`/api/as-tickets/${ticketId}/feedback`, {
     method: 'POST',
     body: JSON.stringify(request)
+  });
+}
+
+export function getCurrentSupportChat() {
+  return api<SupportChatSessionDto>('/api/support/chat-sessions/current');
+}
+
+export function createSupportChat(supportRequestType: 'REMOTE' | 'VISIT' | 'DIAGNOSIS_ONLY', message?: string) {
+  return api<SupportChatSessionDto>('/api/support/chat-sessions', {
+    method: 'POST',
+    body: JSON.stringify({ supportRequestType, message })
+  });
+}
+
+export function getSupportChatMessages(sessionId: string) {
+  return api<SupportChatSessionDto>(`/api/support/chat-sessions/${sessionId}/messages`);
+}
+
+export function postSupportChatMessage(sessionId: string, content: string) {
+  return api<SupportChatSessionDto>(`/api/support/chat-sessions/${sessionId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content })
   });
 }

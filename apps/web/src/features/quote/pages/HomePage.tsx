@@ -22,6 +22,7 @@ import { AUTH_CHANGED_EVENT } from '../../../lib/api';
 import { partImageUrl } from '../../parts/partDisplay';
 import { applyAiBuildToQuoteDraft, getPart, listParts } from '../../parts/partsApi';
 import type { PartRow } from '../../parts/types';
+import { SupportChatWidget } from '../../support/SupportChatWidget';
 import { AiBuildAssistant } from '../components/AiBuildAssistant';
 import {
   AI_ASSISTANT_SESSION_CHANGED_EVENT,
@@ -376,6 +377,7 @@ export function HomePage() {
           <WorkflowPanel />
         </section>
       </div>
+      <SupportChatWidget />
       <AiBuildAssistant surface="home" />
     </Screen>
   );

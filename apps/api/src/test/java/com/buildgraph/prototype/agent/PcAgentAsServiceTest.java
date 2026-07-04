@@ -568,7 +568,7 @@ class PcAgentAsServiceTest {
         )).thenReturn(MockData.map("log_bundle_id", "bundle-public-id"));
         when(jdbcTemplate.queryForMap(
                 contains("INSERT INTO as_tickets"),
-                any(String.class),
+                any(),
                 eq(20L),
                 eq(200L),
                 eq(symptom),
@@ -581,15 +581,26 @@ class PcAgentAsServiceTest {
                 any(String.class),
                 any(String.class),
                 any(String.class),
-                eq("NONE"),
                 any(String.class)
         )).thenReturn(MockData.map(
-                "ticket_id", "ticket-public-id",
-                "status", "OPEN",
-                "analysis_status", "RULE_READY",
-                "review_status", "REQUIRED",
-                "support_decision", "REMOTE_POSSIBLE",
-                "risk_level", "MEDIUM"
+                "ticket_internal_id", 300L,
+                "ticket_id", "ticket-public-id"
+        ));
+        when(jdbcTemplate.queryForList(
+                contains("FROM as_chat_sessions"),
+                eq(20L),
+                eq(300L)
+        )).thenReturn(List.of());
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO as_chat_sessions"),
+                eq(20L),
+                eq(300L),
+                any(String.class),
+                any(String.class),
+                eq("접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요."),
+                any(String.class)
+        )).thenReturn(MockData.map(
+                "chat_session_internal_id", 400L
         ));
 
         Map<String, Object> response = service.uploadLogs(
@@ -602,6 +613,7 @@ class PcAgentAsServiceTest {
         assertThat(response.get("uploadJobId")).isEqualTo("upload-job-public-id");
         assertThat(response.get("logUploadId")).isEqualTo("log-upload-public-id");
         assertThat(response.get("ticketId")).isEqualTo("ticket-public-id");
+        assertThat(response.get("status")).isEqualTo("OPEN");
         assertThat(response.get("analysisStatus")).isEqualTo("RULE_READY");
         assertThat(response.get("reviewStatus")).isEqualTo("REQUIRED");
         assertThat(response.get("supportDecision")).isEqualTo("REMOTE_POSSIBLE");
@@ -627,7 +639,7 @@ class PcAgentAsServiceTest {
         );
         verify(jdbcTemplate).queryForMap(
                 contains("INSERT INTO as_tickets"),
-                any(String.class),
+                any(),
                 eq(20L),
                 eq(200L),
                 eq(symptom),
@@ -640,7 +652,21 @@ class PcAgentAsServiceTest {
                 any(String.class),
                 any(String.class),
                 any(String.class),
-                eq("NONE"),
+                any(String.class)
+        );
+        verify(jdbcTemplate).queryForMap(
+                contains("INSERT INTO as_chat_sessions"),
+                eq(20L),
+                eq(300L),
+                any(String.class),
+                any(String.class),
+                eq("접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요."),
+                any(String.class)
+        );
+        verify(jdbcTemplate).update(
+                contains("INSERT INTO as_chat_messages"),
+                eq(400L),
+                eq("접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요."),
                 any(String.class)
         );
     }

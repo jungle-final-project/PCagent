@@ -110,3 +110,29 @@ export type AsTicketDto = {
   resolvedAt?: string | null;
   createdAt?: string;
 };
+
+export type SupportChatContact = {
+  id: string;
+  title?: string | null;
+  status: 'ACTIVE' | 'ADMIN_REVIEWING' | 'TICKET_CREATED' | 'ARCHIVED';
+  supportRequestType: 'REMOTE' | 'VISIT' | 'DIAGNOSIS_ONLY';
+  lastMessagePreview?: string | null;
+  lastMessageAt?: string | null;
+  adminUnreadCount?: number;
+  userUnreadCount?: number;
+  ticketId?: string | null;
+};
+
+export type SupportChatMessage = {
+  id: string;
+  role: 'USER' | 'ADMIN' | 'SYSTEM' | 'ASSISTANT';
+  content: string;
+  readAt?: string | null;
+  createdAt?: string;
+};
+
+export type SupportChatSessionDto = {
+  contact: SupportChatContact | null;
+  messages: SupportChatMessage[];
+  pollingIntervalMs?: number;
+};

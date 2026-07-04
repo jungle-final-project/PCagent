@@ -1,6 +1,6 @@
 import { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Activity, Bot, Cpu, Gauge, Home, LifeBuoy, RefreshCw, Search } from 'lucide-react';
+import { Activity, Bot, Cpu, Gauge, Home, LifeBuoy, MessageCircle, RefreshCw, Search } from 'lucide-react';
 
 export function AdminShell({ children, title }: { children: ReactNode; title: string }) {
   return (
@@ -43,6 +43,7 @@ function AdminSidebar() {
     { to: '/admin/rag-evidence/00000000-0000-4000-8000-000000004001', label: 'RAG 근거', Icon: Search, match: (path: string) => path.startsWith('/admin/rag-evidence') },
     { to: '/admin/parts', label: '부품/가격', Icon: Cpu, match: (path: string) => path === '/admin/parts' },
     { to: '/admin/as-tickets', label: 'AS 티켓', Icon: LifeBuoy, match: (path: string) => path.startsWith('/admin/as-tickets') },
+    { to: '/admin/customer-contacts', label: '고객 연락', Icon: MessageCircle, match: (path: string) => path.startsWith('/admin/customer-contacts') },
     { to: '/admin/price-jobs', label: '가격 Job', Icon: RefreshCw, match: (path: string) => path.startsWith('/admin/price-jobs') },
     { to: '/admin/load-tests', label: '부하 테스트', Icon: Gauge, match: (path: string) => path.startsWith('/admin/load-tests') }
   ];

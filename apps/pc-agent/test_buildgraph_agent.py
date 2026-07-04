@@ -542,6 +542,20 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertEqual(row["eventType"], "SYSTEM_METRIC")
         self.assertNotEqual(row["kind"], "DEMO_METRIC")
 
+    def test_background_metric_row_injects_display_warning_for_popup_demo(self) -> None:
+        row = agent.metric_log_row(
+            datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST),
+            agent.DEMO_WARNING_INTERVAL,
+            agent.DEFAULT_SCHEMA_VERSION,
+            "agent-1",
+            collector=StaticMetricCollector(),
+        )
+
+        self.assertEqual(row["kind"], "DISPLAY_DRIVER_WARNING")
+        self.assertEqual(row["eventType"], "DISPLAY_DRIVER_WARNING")
+        self.assertEqual(row["message"], "Display driver warning observed.")
+        self.assertTrue(agent.should_show_issue_notification(row, agent.AgentRuntime(), now=1000.0))
+
     def test_issue_macro_maps_display_driver_warning_to_remote_draft(self) -> None:
         macro = agent.issue_macro({"eventType": "DISPLAY_DRIVER_WARNING", "message": "Display driver warning observed."})
 

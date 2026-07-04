@@ -145,6 +145,52 @@ export type AdminAsTicketUpdateRequest = {
   visitTechnicianNote?: string | null;
 };
 
+export type CustomerContactSummary = {
+  id: string;
+  title?: string | null;
+  status: 'ACTIVE' | 'ADMIN_REVIEWING' | 'TICKET_CREATED' | 'ARCHIVED';
+  supportRequestType: 'REMOTE' | 'VISIT' | 'DIAGNOSIS_ONLY';
+  lastMessagePreview?: string | null;
+  lastMessageAt?: string | null;
+  adminUnreadCount?: number;
+  userUnreadCount?: number;
+  userId?: string;
+  userName?: string;
+  userEmail?: string;
+  assignedAdminId?: string | null;
+  ticketId?: string | null;
+  ticketDraft?: Record<string, unknown>;
+};
+
+export type CustomerContactMessage = {
+  id: string;
+  role: 'USER' | 'ADMIN' | 'SYSTEM' | 'ASSISTANT';
+  content: string;
+  attachmentMetadata?: Record<string, unknown>;
+  readAt?: string | null;
+  createdAt?: string;
+};
+
+export type CustomerContactDetail = {
+  contact: CustomerContactSummary;
+  messages: CustomerContactMessage[];
+  ticketDraft?: Record<string, unknown>;
+  userIntegration?: Record<string, unknown>;
+};
+
+export type CustomerContactsResponse = {
+  items: CustomerContactSummary[];
+  userIntegration?: Record<string, unknown>;
+};
+
+export type CustomerContactTicketRequest = {
+  symptomType: string;
+  symptomSummary: string;
+  supportRequestType: string;
+  preferredScheduleAt?: string;
+  adminNote?: string;
+};
+
 export function getAdminDashboard() {
   return api<AdminDashboard>('/api/admin/dashboard');
 }
@@ -182,4 +228,32 @@ export function updateAdminTicket(ticketId: string, request: AdminAsTicketUpdate
 
 export function runPriceJob() {
   return api('/api/admin/price-jobs/run', { method: 'POST' });
+}
+
+export function getCustomerContacts() {
+  return api<CustomerContactsResponse>('/api/admin/customer-contacts');
+}
+
+export function getCustomerContact(sessionId: string) {
+  return api<CustomerContactDetail>(`/api/admin/customer-contacts/${sessionId}`);
+}
+
+export function postCustomerContactMessage(sessionId: string, content: string) {
+  return api<CustomerContactDetail>(`/api/admin/customer-contacts/${sessionId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content })
+  });
+}
+
+export function createCustomerContactTicket(sessionId: string, request: CustomerContactTicketRequest) {
+  return api<CustomerContactDetail>(`/api/admin/customer-contacts/${sessionId}/ticket`, {
+    method: 'POST',
+    body: JSON.stringify(request)
+  });
+}
+
+export function archiveCustomerContact(sessionId: string) {
+  return api<{ id: string; status: string }>(`/api/admin/customer-contacts/${sessionId}/archive`, {
+    method: 'PATCH'
+  });
 }

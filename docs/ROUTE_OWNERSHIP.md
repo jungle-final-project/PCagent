@@ -114,11 +114,11 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 
 | 항목 | 내용 |
 |---|---|
-| 담당 화면 route | `/support/new`, `/support/:ticketId`, `/admin/as-tickets`, `/admin/as-tickets/:ticketId` |
+| 담당 화면 route | `/support/new`, `/support/:ticketId`, 홈 좌측 하단 상담 위젯, `/admin/as-tickets`, `/admin/as-tickets/:ticketId`, `/admin/customer-contacts` |
 | frontend files | `features/support/**`, `features/admin/as-tickets/**` |
 | backend packages | `log`, `ticket`, `support` |
 | DB tables | `agent_log_uploads`, `as_tickets`, `as_rag_evidence` |
-| API endpoints | PC Agent token: `POST /api/agent/devices/register`, `POST /api/agent/consents`, `POST /api/agent/heartbeat`, `POST /api/agent/log-uploads`, `POST /api/agent/log-uploads/as-rag-preview`; Web JWT/manual: `POST /api/agent-logs/upload`, `POST /api/agent-logs/as-rag-preview`, `GET /api/agent-logs/{id}`, `POST /api/as-tickets`, `GET /api/as-tickets/{id}`, `GET /api/admin/as-tickets`, `GET /api/admin/as-tickets/{id}`, `PATCH /api/admin/as-tickets/{id}` |
+| API endpoints | PC Agent token: `POST /api/agent/devices/register`, `POST /api/agent/consents`, `POST /api/agent/heartbeat`, `POST /api/agent/log-uploads`, `POST /api/agent/log-uploads/as-rag-preview`; Web JWT/manual: `POST /api/agent-logs/upload`, `POST /api/agent-logs/as-rag-preview`, `GET /api/agent-logs/{id}`, `POST /api/as-tickets`, `GET /api/as-tickets/{id}`, `GET/POST /api/support/chat-sessions/**`, `GET /api/admin/as-tickets`, `GET /api/admin/as-tickets/{id}`, `PATCH /api/admin/as-tickets/{id}`, `GET/POST/PATCH /api/admin/customer-contacts/**` |
 | 협업자 | Auth/guard는 5번, AS 원인 후보 Agent는 3번 |
 
 ### 5번: AdminShell/Auth Common/Infra
@@ -149,6 +149,7 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 | `/support/new` | 4번 | 5번 | `POST /api/agent-logs/upload`, `POST /api/as-tickets` |
 | `/support/ai-chat` | 3번 | 4번, 5번 | `GET /api/ai/as-chat`, `POST /api/ai/as-chat/stream`, `POST /api/ai/as-chat` |
 | `/support/:ticketId` | 4번 | - | `GET /api/as-tickets/{id}` |
+| 홈 좌측 하단 상담 위젯 | 4번 | 5번 | `GET /api/support/chat-sessions/current`, `GET/POST /api/support/chat-sessions/{id}/messages` |
 | `/admin` | 5번 | 2번, 3번, 4번 | `GET /api/admin/dashboard`, `GET /api/admin/audit-logs/recent` |
 | `/admin/parts` | 2번 | 5번, 3번 | `GET /api/parts`, `GET /api/parts/{id}/price-history`, `POST /api/admin/parts/catalog/refresh`, `POST /api/admin/parts/external-offers/refresh`, `POST /api/admin/parts/danawa-price-snapshots/refresh`, `POST /api/admin/parts/danawa-price-trends/refresh`, `GET/POST/PATCH /api/admin/manufacturer-sources`, `POST /api/admin/manufacturer-sources/{id}/scan`, `POST /api/admin/manufacturer-sources/scan`, `GET /api/admin/manufacturer-posts`, `GET /api/admin/part-catalog-candidates`, `POST /api/admin/part-catalog-candidates/{id}/approve|reject|refresh-offers` |
 | `/admin/price-jobs` | 2번 | 5번 | `GET /api/admin/price-jobs`, `POST /api/admin/price-jobs/run` |
@@ -158,6 +159,7 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 | `/admin/rag-evidence/:id` | 3번 | 5번 | `GET /api/admin/rag-evidence/{id}` |
 | `/admin/as-tickets` | 4번 | 5번 | `GET /api/admin/as-tickets` |
 | `/admin/as-tickets/:ticketId` | 4번 | 5번 | `GET /api/admin/as-tickets/{id}`, `PATCH /api/admin/as-tickets/{id}` |
+| `/admin/customer-contacts` | 4번 | 5번 | `GET /api/admin/customer-contacts`, `GET /api/admin/customer-contacts/{id}`, `POST /api/admin/customer-contacts/{id}/messages`, `POST /api/admin/customer-contacts/{id}/ticket`, `PATCH /api/admin/customer-contacts/{id}/archive` |
 
 관리자 상세 route는 AdminShell을 경유하지만 화면 내부의 주 owner는 각 도메인 owner다.
 
@@ -231,9 +233,18 @@ Auth 화면과 Auth/User API 구현 주 owner는 1번이다. 5번은 `apps/web/s
 | `GET /api/agent-logs/{id}` | 4번 | - |
 | `POST /api/as-tickets` | 4번 | 3번 |
 | `GET /api/as-tickets/{id}` | 4번 | - |
+| `GET /api/support/chat-sessions/current` | 4번 | 5번 |
+| `POST /api/support/chat-sessions` | 4번 | 5번 |
+| `GET /api/support/chat-sessions/{id}/messages` | 4번 | 5번 |
+| `POST /api/support/chat-sessions/{id}/messages` | 4번 | 5번 |
 | `GET /api/admin/as-tickets` | 4번 | 5번 |
 | `GET /api/admin/as-tickets/{id}` | 4번 | 5번 |
 | `PATCH /api/admin/as-tickets/{id}` | 4번 | 5번 |
+| `GET /api/admin/customer-contacts` | 4번 | 5번 |
+| `GET /api/admin/customer-contacts/{id}` | 4번 | 5번 |
+| `POST /api/admin/customer-contacts/{id}/messages` | 4번 | 5번 |
+| `POST /api/admin/customer-contacts/{id}/ticket` | 4번 | 5번 |
+| `PATCH /api/admin/customer-contacts/{id}/archive` | 4번 | 5번 |
 | `GET /api/admin/dashboard` | 5번 | 2번, 3번, 4번 |
 | `GET /api/admin/audit-logs/recent` | 5번 | - |
 | `GET /api/health` | 5번 | - |

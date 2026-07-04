@@ -1544,6 +1544,154 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AsTicketDto"
+  /api/admin/customer-contacts:
+    get:
+      summary: 관리자 고객 연락 상담방 목록
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 고객 연락 상담방 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerContactPage"
+  /api/admin/customer-contacts/{id}:
+    get:
+      summary: 관리자 고객 연락 상담방 상세
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 고객 연락 상담방 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerContactDetail"
+  /api/admin/customer-contacts/{id}/messages:
+    post:
+      summary: 관리자 상담 메시지 전송
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CustomerContactMessageCreateRequest"
+      responses:
+        "200":
+          description: 갱신된 상담방 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerContactDetail"
+  /api/admin/customer-contacts/{id}/ticket:
+    post:
+      summary: 상담 내용 기반 AS 티켓 생성
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CustomerContactTicketCreateRequest"
+      responses:
+        "201":
+          description: 티켓이 연결된 상담방 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerContactDetail"
+  /api/admin/customer-contacts/{id}/archive:
+    patch:
+      summary: 관리자 상담방 종료
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 종료된 상담방
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+  /api/support/chat-sessions/current:
+    get:
+      summary: 사용자 현재 AS 상담방 조회
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 현재 활성 AS 상담방. 없으면 contact는 null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerContactDetail"
+  /api/support/chat-sessions:
+    post:
+      summary: 사용자 AS 상담방 생성
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SupportChatCreateRequest"
+      responses:
+        "201":
+          description: 생성되었거나 기존 활성 상담방
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerContactDetail"
+  /api/support/chat-sessions/{id}/messages:
+    get:
+      summary: 사용자 AS 상담 메시지 조회
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      responses:
+        "200":
+          description: 상담 메시지 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerContactDetail"
+    post:
+      summary: 사용자 AS 상담 메시지 전송
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/PublicId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CustomerContactMessageCreateRequest"
+      responses:
+        "200":
+          description: 갱신된 상담방 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerContactDetail"
 components:
   securitySchemes:
     bearerAuth:
@@ -4283,6 +4431,126 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/AsTicketDto"
+    CustomerContactPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CustomerContactSummary"
+        userIntegration:
+          type: object
+          additionalProperties: true
+    CustomerContactSummary:
+      type: object
+      required: [id, status, supportRequestType]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, ADMIN_REVIEWING, TICKET_CREATED, ARCHIVED]
+        supportRequestType:
+          type: string
+          enum: [REMOTE, VISIT, DIAGNOSIS_ONLY]
+        lastMessagePreview:
+          type: string
+        lastMessageAt:
+          type: string
+          format: date-time
+        adminUnreadCount:
+          type: integer
+        userUnreadCount:
+          type: integer
+        userId:
+          type: string
+          format: uuid
+        userName:
+          type: string
+        userEmail:
+          type: string
+        assignedAdminId:
+          type: string
+          format: uuid
+          nullable: true
+        ticketId:
+          type: string
+          format: uuid
+          nullable: true
+        ticketDraft:
+          type: object
+          additionalProperties: true
+    CustomerContactDetail:
+      type: object
+      required: [contact, messages]
+      properties:
+        contact:
+          $ref: "#/components/schemas/CustomerContactSummary"
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/CustomerContactMessage"
+        ticketDraft:
+          type: object
+          additionalProperties: true
+        userIntegration:
+          type: object
+          additionalProperties: true
+    CustomerContactMessage:
+      type: object
+      required: [id, role, content]
+      properties:
+        id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [USER, ADMIN, SYSTEM, ASSISTANT]
+        content:
+          type: string
+        attachmentMetadata:
+          type: object
+          additionalProperties: true
+        readAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    CustomerContactMessageCreateRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+    CustomerContactTicketCreateRequest:
+      type: object
+      required: [symptomType, symptomSummary, supportRequestType]
+      properties:
+        symptomType:
+          type: string
+        symptomSummary:
+          type: string
+        supportRequestType:
+          type: string
+          enum: [REMOTE, VISIT, DIAGNOSIS_ONLY]
+        preferredScheduleAt:
+          type: string
+        adminNote:
+          type: string
+    SupportChatCreateRequest:
+      type: object
+      properties:
+        supportRequestType:
+          type: string
+          enum: [REMOTE, VISIT, DIAGNOSIS_ONLY]
+        message:
+          type: string
     AuditLogPage:
       type: object
       required: [items]

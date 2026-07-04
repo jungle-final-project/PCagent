@@ -753,7 +753,6 @@ public class PcAgentAsService {
                   auto_response_allowed,
                   cause_candidates,
                   upgrade_candidates,
-                  admin_note,
                   incident_window,
                   log_summary,
                   support_routing,
@@ -775,7 +774,6 @@ public class PcAgentAsService {
                   false,
                   ?::jsonb,
                   ?::jsonb,
-                  ?,
                   ?::jsonb,
                   ?::jsonb,
                   ?::jsonb,
@@ -784,12 +782,8 @@ public class PcAgentAsService {
                   ?::jsonb,
                   now()
                 )
-                RETURNING public_id::text AS ticket_id,
-                          status,
-                          analysis_status,
-                          review_status,
-                          support_decision,
-                          risk_level
+                RETURNING id AS ticket_internal_id,
+                          public_id::text AS ticket_id
                 """,
                 ticketPublicId,
                 principal.userInternalId(),
@@ -799,24 +793,30 @@ public class PcAgentAsService {
                 riskLevel,
                 toJson(causeCandidatesFrom(supportRouting)),
                 toJson(List.of()),
-                analysis.summaryText(),
-                incidentWindowJson,
+                toJson(incidentWindow.toMap()),
                 toJson(logSummary),
                 toJson(supportRouting),
                 toJson(aiDiagnosisRequest),
                 safetyAdviceLevel,
                 toJson(safetyNotices)
         );
+        ensureSupportChatSession(
+                principal.userInternalId(),
+                longValue(ticket, "ticket_internal_id"),
+                DbValueMapper.string(ticket, "ticket_id"),
+                symptom,
+                supportRouting
+        );
 
         return MockData.map(
                 "uploadJobId", DbValueMapper.string(uploadJob, "upload_job_id"),
                 "logUploadId", DbValueMapper.string(logUpload, "log_upload_id"),
                 "ticketId", DbValueMapper.string(ticket, "ticket_id"),
-                "status", DbValueMapper.string(ticket, "status"),
-                "analysisStatus", DbValueMapper.string(ticket, "analysis_status"),
-                "reviewStatus", DbValueMapper.string(ticket, "review_status"),
-                "supportDecision", DbValueMapper.string(ticket, "support_decision"),
-                "riskLevel", DbValueMapper.string(ticket, "risk_level"),
+                "status", "OPEN",
+                "analysisStatus", "RULE_READY",
+                "reviewStatus", "REQUIRED",
+                "supportDecision", recommendedDecision,
+                "riskLevel", riskLevel,
                 "safetyAdviceLevel", safetyAdviceLevel,
                 "safetyNotices", safetyNotices,
                 "rangeMinutes", rangeMinutes,
@@ -1074,6 +1074,8 @@ public class PcAgentAsService {
                        t.review_status,
                        t.support_decision,
                        t.risk_level,
+                       t.support_routing,
+                       t.log_summary,
                        lu.range_minutes,
                        lu.delete_after,
                        alb.schema_version,
@@ -1081,16 +1083,14 @@ public class PcAgentAsService {
                        t.symptom,
                        uj.range_started_at,
                        uj.range_ended_at,
-                       t.incident_window,
-                       t.log_summary,
-                       t.support_routing,
-                       t.ai_diagnosis_request
+                       lu.incident_window
                 FROM agent_upload_jobs uj
                 JOIN agent_log_uploads lu ON lu.upload_job_id = uj.id
                 JOIN agent_log_bundles alb ON alb.upload_job_id = uj.id
                 JOIN as_tickets t ON t.log_upload_id = lu.id
                 WHERE uj.device_id = ?
                   AND uj.idempotency_key = ?
+                  AND t.deleted_at IS NULL
                 ORDER BY uj.id DESC
                 LIMIT 1
                 """, principal.deviceInternalId(), idempotencyKey);
@@ -1124,6 +1124,214 @@ public class PcAgentAsService {
                 "rawSamplesCount", rawSamplesCount(DbValueMapper.json(row, "log_summary", Map.of())),
                 "deleteAfter", DbValueMapper.timestamp(row, "delete_after")
         );
+    }
+
+    private Map<String, Object> ensureSupportChatDraftSession(
+            Long userInternalId,
+            String symptom,
+            Map<String, Object> supportRouting,
+            Map<String, Object> ticketDraft
+    ) {
+        String logUploadId = string(ticketDraft, "logUploadId", null);
+        List<Map<String, Object>> existingRows = logUploadId == null ? List.of() : jdbcTemplate.queryForList("""
+                        SELECT id AS chat_session_internal_id,
+                               public_id::text AS chat_session_id
+                        FROM as_chat_sessions
+                        WHERE user_id = ?
+                          AND ticket_draft ->> 'logUploadId' = ?
+                          AND status IN ('ACTIVE', 'ADMIN_REVIEWING', 'TICKET_CREATED')
+                          AND deleted_at IS NULL
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                userInternalId,
+                logUploadId
+        );
+        if (existingRows != null && !existingRows.isEmpty()) {
+            return existingRows.get(0);
+        }
+
+        String supportRequestType = supportRequestTypeFor(supportRouting);
+        String message = "접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요.";
+        Map<String, Object> chatSession = jdbcTemplate.queryForMap("""
+                INSERT INTO as_chat_sessions (
+                  user_id,
+                  as_ticket_id,
+                  status,
+                  title,
+                  support_request_type,
+                  last_message_preview,
+                  last_message_at,
+                  admin_unread_count,
+                  user_unread_count,
+                  ticket_draft,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  ?,
+                  NULL,
+                  'ACTIVE',
+                  ?,
+                  ?,
+                  ?,
+                  now(),
+                  1,
+                  0,
+                  ?::jsonb,
+                  now(),
+                  now()
+                )
+                RETURNING id AS chat_session_internal_id,
+                          public_id::text AS chat_session_id
+                """,
+                userInternalId,
+                chatTitle(symptom),
+                supportRequestType,
+                message,
+                toJson(ticketDraft)
+        );
+        jdbcTemplate.update("""
+                INSERT INTO as_chat_messages (
+                  chat_session_id,
+                  role,
+                  content,
+                  structured_payload,
+                  created_at
+                )
+                VALUES (?, 'SYSTEM', ?, ?::jsonb, now())
+                """,
+                longValue(chatSession, "chat_session_internal_id"),
+                message,
+                toJson(MockData.map(
+                        "draftId", string(ticketDraft, "draftId", null),
+                        "logUploadId", logUploadId,
+                        "source", "PC_AGENT_LOG_UPLOAD"
+                ))
+        );
+        return chatSession;
+    }
+
+    private void ensureSupportChatSession(
+            Long userInternalId,
+            Long ticketInternalId,
+            String ticketPublicId,
+            String symptom,
+            Map<String, Object> supportRouting
+    ) {
+        List<Map<String, Object>> existingRows = jdbcTemplate.queryForList("""
+                        SELECT id
+                        FROM as_chat_sessions
+                        WHERE user_id = ?
+                          AND as_ticket_id = ?
+                          AND status IN ('ACTIVE', 'ADMIN_REVIEWING', 'TICKET_CREATED')
+                          AND deleted_at IS NULL
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                userInternalId,
+                ticketInternalId
+        );
+        if (existingRows != null && !existingRows.isEmpty()) {
+            return;
+        }
+
+        String supportRequestType = supportRequestTypeFor(supportRouting);
+        String message = "접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요.";
+        Map<String, Object> ticketDraft = MockData.map(
+                "source", "PC_AGENT_LOG_UPLOAD",
+                "ticketId", ticketPublicId,
+                "supportDecision", string(supportRouting, "recommendedDecision", "NEEDS_MORE_INFO"),
+                "recommendedService", string(supportRouting, "recommendedService", "DIAGNOSIS_ONLY")
+        );
+        Map<String, Object> chatSession = jdbcTemplate.queryForMap("""
+                INSERT INTO as_chat_sessions (
+                  user_id,
+                  as_ticket_id,
+                  status,
+                  title,
+                  support_request_type,
+                  last_message_preview,
+                  last_message_at,
+                  admin_unread_count,
+                  user_unread_count,
+                  ticket_draft,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  ?,
+                  ?,
+                  'ACTIVE',
+                  ?,
+                  ?,
+                  ?,
+                  now(),
+                  1,
+                  0,
+                  ?::jsonb,
+                  now(),
+                  now()
+                )
+                RETURNING id AS chat_session_internal_id
+                """,
+                userInternalId,
+                ticketInternalId,
+                chatTitle(symptom),
+                supportRequestType,
+                message,
+                toJson(ticketDraft)
+        );
+        jdbcTemplate.update("""
+                INSERT INTO as_chat_messages (
+                  chat_session_id,
+                  role,
+                  content,
+                  structured_payload,
+                  created_at
+                )
+                VALUES (?, 'SYSTEM', ?, ?::jsonb, now())
+                """,
+                longValue(chatSession, "chat_session_internal_id"),
+                message,
+                toJson(MockData.map("ticketId", ticketPublicId, "source", "PC_AGENT_LOG_UPLOAD"))
+        );
+    }
+
+    private static String supportRequestTypeFor(Map<String, Object> supportRouting) {
+        String recommendedService = string(supportRouting, "recommendedService", "DIAGNOSIS_ONLY");
+        if ("REMOTE_SUPPORT".equals(recommendedService)) {
+            return "REMOTE";
+        }
+        if ("VISIT_SUPPORT".equals(recommendedService)) {
+            return "VISIT";
+        }
+        return "DIAGNOSIS_ONLY";
+    }
+
+    private static String chatTitle(String symptom) {
+        if (symptom == null || symptom.isBlank()) {
+            return "PC Agent AS 접수";
+        }
+        String firstLine = symptom.lines()
+                .map(String::trim)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("PC Agent AS 접수");
+        String cleaned = firstLine.replace("[증상 제목]", "").trim();
+        if (cleaned.isBlank()) {
+            cleaned = "PC Agent AS 접수";
+        }
+        return cleaned.length() > 80 ? cleaned.substring(0, 80) : cleaned;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> jsonMap(Map<String, Object> row, String key) {
+        Object value = DbValueMapper.json(row, key, Map.of());
+        if (value instanceof Map<?, ?> map) {
+            return (Map<String, Object>) map;
+        }
+        return Map.of();
     }
 
     private static List<Map<String, Object>> causeCandidatesFrom(Map<String, Object> supportRouting) {
