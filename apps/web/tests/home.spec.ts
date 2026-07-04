@@ -2,6 +2,18 @@ import { expect, test, type Page } from '@playwright/test';
 
 type AiTier = 'budget' | 'balanced' | 'performance';
 type PartCategory = 'CPU' | 'MOTHERBOARD' | 'RAM' | 'GPU' | 'STORAGE' | 'PSU' | 'CASE' | 'COOLER';
+type MockQuoteDraftItem = {
+  id: string;
+  partId: string;
+  category: string;
+  name: string;
+  manufacturer: string;
+  quantity: number;
+  unitPriceAtAdd: number;
+  currentPrice: number;
+  lineTotal: number;
+  attributes: Record<string, never>;
+};
 
 const categories: PartCategory[] = ['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'CASE', 'COOLER'];
 const tierLabels: Record<AiTier, string> = {
@@ -564,7 +576,7 @@ async function openHomeAsUser(page: Page) {
 
 async function mockSelfQuoteApis(
   page: Page,
-  options: { staleGetAfterApply?: boolean; getDelayAfterApplyMs?: number } = {}
+  options: { staleGetAfterApply?: boolean; getDelayAfterApplyMs?: number; initialItems?: MockQuoteDraftItem[]; failApply?: boolean } = {}
 ) {
   const applyRequests: unknown[] = [];
   const draftPartNames: Record<string, string> = {
@@ -577,39 +589,35 @@ async function mockSelfQuoteApis(
     'home-case-frame': 'Home FRAME 4000D Case',
     'home-cooler-phantom': 'Home Phantom Spirit Cooler'
   };
-  const emptyDraft = {
-    id: 'draft-home-ai-test',
-    status: 'ACTIVE',
-    name: '셀프 견적',
-    items: [],
-    totalPrice: 0,
-    itemCount: 0
-  };
-  let draft: typeof emptyDraft | {
+  let draft: {
     id: string;
     status: string;
     name: string;
-    items: Array<{
-      id: string;
-      partId: string;
-      category: string;
-      name: string;
-      manufacturer: string;
-      quantity: number;
-      unitPriceAtAdd: number;
-      currentPrice: number;
-      lineTotal: number;
-      attributes: Record<string, never>;
-    }>;
+    items: MockQuoteDraftItem[];
     totalPrice: number;
     itemCount: number;
-  } = emptyDraft;
+  } = {
+    id: 'draft-home-ai-test',
+    status: 'ACTIVE',
+    name: '셀프 견적',
+    items: options.initialItems ?? [],
+    totalPrice: (options.initialItems ?? []).reduce((sum, next) => sum + next.lineTotal, 0),
+    itemCount: (options.initialItems ?? []).reduce((sum, next) => sum + next.quantity, 0)
+  };
 
   await page.route('**/api/quote-drafts/current**', async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/apply-ai-build')) {
       const body = JSON.parse(route.request().postData() ?? '{}') as { items?: Array<{ partId: string; category: string; quantity: number }> };
       applyRequests.push(body);
+      if (options.failApply) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'apply failed' })
+        });
+        return;
+      }
       const knownAiItems = [
         ...budgetBuilds(2_000_000),
         ...budgetBuilds(2_000_000, ['GPU']),
@@ -1586,6 +1594,121 @@ test('opens chatbot build details in a side drawer and saves in place', async ({
     return raw ? JSON.parse(raw).savedBuildIds?.[buildId] : null;
   }, latestBuilds[2].id);
   expect(savedMapping).toBe('saved-chat-build-inline');
+});
+
+test('applies a drawer graph part node build to self quote after replacement confirmation', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await mockBuildGraphApi(page);
+  const latestBuilds = budgetBuilds(2_000_000);
+  const existingDraftItem: MockQuoteDraftItem = {
+    id: 'existing-gpu',
+    partId: 'existing-gpu',
+    category: 'GPU',
+    name: '기존 장바구니 GPU',
+    manufacturer: '기존 제조사',
+    quantity: 1,
+    unitPriceAtAdd: 777_000,
+    currentPrice: 777_000,
+    lineTotal: 777_000,
+    attributes: {}
+  };
+  const { applyRequests } = await mockSelfQuoteApis(page, { initialItems: [existingDraftItem] });
+  await openHomeAsUser(page);
+  await page.evaluate(({ session }) => {
+    sessionStorage.setItem('buildgraph.ai.assistantSession:user-1004', JSON.stringify(session));
+  }, { session: storedAssistantSessionWithBuilds('200만원 PC 추천', latestBuilds) });
+  await page.getByRole('navigation').getByRole('link', { name: '추천 결과' }).click();
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+  const drawer = page.getByRole('dialog', { name: '추천 조합 상세' });
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole('button', { name: /GPU 노드 선택: RTX 5070/ }).click();
+
+  const confirmDialog = page.getByRole('dialog', { name: '셀프 견적 교체 확인' });
+  await expect(confirmDialog).toBeVisible();
+  await expect(confirmDialog).toContainText('현재 셀프 견적 장바구니를 이 추천 조합으로 교체할까요?');
+  await confirmDialog.getByRole('button', { name: '취소' }).click();
+  await expect(confirmDialog).toHaveCount(0);
+  expect(applyRequests).toHaveLength(0);
+
+  await drawer.getByRole('button', { name: /GPU 노드 선택: RTX 5070/ }).click();
+  await page.getByRole('dialog', { name: '셀프 견적 교체 확인' }).getByRole('button', { name: '교체하고 이동' }).click();
+
+  await expect.poll(() => applyRequests.length).toBe(1);
+  const request = applyRequests[0] as { buildId?: string; conflictPolicy?: string; items?: Array<{ partId: string; category: string; quantity: number }> };
+  expect(request.buildId).toBe(latestBuilds[0].id);
+  expect(request.conflictPolicy).toBe('REPLACE');
+  expect(request.items?.map((item) => item.category)).toEqual(['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'CASE', 'COOLER']);
+  expect(request.items).toContainEqual({ partId: latestBuilds[0].items.find((item) => item.category === 'GPU')?.partId, category: 'GPU', quantity: 1 });
+  await expect(page).toHaveURL('/self-quote?category=GPU');
+  await expect(page.getByTestId('ai-selected-build-panel')).toContainText(latestBuilds[0].title);
+  const cartPanel = page.getByRole('heading', { name: '견적 장바구니', exact: true }).locator('xpath=ancestor::section[1]');
+  await expect(cartPanel.getByText('서버 반영 RTX 5070 서버 GPU')).toBeVisible();
+});
+
+test('applies a drawer graph part node immediately when self quote cart is empty', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await mockBuildGraphApi(page);
+  const latestBuilds = budgetBuilds(2_000_000);
+  const { applyRequests } = await mockSelfQuoteApis(page);
+  await openHomeAsUser(page);
+  await page.evaluate(({ session }) => {
+    sessionStorage.setItem('buildgraph.ai.assistantSession:user-1004', JSON.stringify(session));
+  }, { session: storedAssistantSessionWithBuilds('200만원 PC 추천', latestBuilds) });
+  await page.getByRole('navigation').getByRole('link', { name: '추천 결과' }).click();
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+  const drawer = page.getByRole('dialog', { name: '추천 조합 상세' });
+  await drawer.getByRole('button', { name: /파워 노드 선택: 850W 파워/ }).click();
+
+  await expect(page.getByRole('dialog', { name: '셀프 견적 교체 확인' })).toHaveCount(0);
+  await expect.poll(() => applyRequests.length).toBe(1);
+  await expect(page).toHaveURL('/self-quote?category=PSU');
+  await expect(page.getByTestId('ai-selected-build-panel')).toContainText(latestBuilds[0].title);
+});
+
+test('keeps hover preview graph read-only and ignores non-part drawer graph nodes', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await mockBuildGraphApi(page);
+  const latestBuilds = budgetBuilds(2_000_000);
+  const { applyRequests } = await mockSelfQuoteApis(page);
+  await openHomeAsUser(page);
+  await page.evaluate(({ session }) => {
+    sessionStorage.setItem('buildgraph.ai.assistantSession:user-1004', JSON.stringify(session));
+  }, { session: storedAssistantSessionWithBuilds('200만원 PC 추천', latestBuilds) });
+  await page.getByRole('navigation').getByRole('link', { name: '추천 결과' }).click();
+
+  await page.getByRole('button', { name: /200만원 실속형/ }).hover();
+  const preview = page.getByTestId('latest-build-graph-preview');
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole('button', { name: /노드 선택/ })).toHaveCount(0);
+  expect(applyRequests).toHaveLength(0);
+  await expect(page).toHaveURL('/builds/latest');
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+  const drawer = page.getByRole('dialog', { name: '추천 조합 상세' });
+  await expect(drawer.getByRole('button', { name: /총액 노드 선택/ })).toHaveCount(0);
+  await expect(drawer.getByRole('button', { name: /GPU 노드 선택: RTX 5070/ })).toBeVisible();
+});
+
+test('shows an inline error when applying a drawer graph node to self quote fails', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await mockBuildGraphApi(page);
+  const latestBuilds = budgetBuilds(2_000_000);
+  const { applyRequests } = await mockSelfQuoteApis(page, { failApply: true });
+  await openHomeAsUser(page);
+  await page.evaluate(({ session }) => {
+    sessionStorage.setItem('buildgraph.ai.assistantSession:user-1004', JSON.stringify(session));
+  }, { session: storedAssistantSessionWithBuilds('200만원 PC 추천', latestBuilds) });
+  await page.getByRole('navigation').getByRole('link', { name: '추천 결과' }).click();
+
+  await page.getByRole('button', { name: '상세 보기' }).first().click();
+  const drawer = page.getByRole('dialog', { name: '추천 조합 상세' });
+  await drawer.getByRole('button', { name: /GPU 노드 선택: RTX 5070/ }).click();
+
+  await expect.poll(() => applyRequests.length).toBe(1);
+  await expect(page).toHaveURL('/builds/latest');
+  await expect(drawer).toContainText('추천 조합을 셀프 견적에 적용하지 못했습니다.');
 });
 
 test('opens the exact recommendation card details when temporary build ids are duplicated', async ({ page }) => {

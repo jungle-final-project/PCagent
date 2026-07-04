@@ -177,3 +177,31 @@ background:
   opacity: 0;
   pointer-events: none;
 }
+
+.compact-build-graph--interactive {
+  pointer-events: none;
+}
+
+.compact-build-graph--interactive .react-flow {
+  pointer-events: none;
+}
+
+.compact-build-graph--interactive .react-flow__pane {
+  pointer-events: none;
+}
+
+.compact-build-graph--interactive .react-flow__renderer {
+  pointer-events: none;
+}
+
+.compact-build-graph--interactive .react-flow__viewport {
+  pointer-events: none;
+}
+
+.compact-build-graph--interactive .react-flow__node {
+  pointer-events: auto;
+}
+
+.compact-build-graph--interactive .react-flow__node button {
+  pointer-events: auto;
+}
