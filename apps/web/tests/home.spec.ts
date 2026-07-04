@@ -952,6 +952,22 @@ test('chatbot uses build-chat API and updates latest home AI recommendations', a
   await expect(main.getByTestId('home-ai-recommendations')).not.toContainText('200만원 균형형');
 });
 
+test('toggles the desktop AI assistant drawer from the header button', async ({ page }) => {
+  await openHomeAsUser(page);
+  await expect(page.getByTestId('ai-chatbot-panel')).toHaveCount(0);
+
+  await openDesktopAiAssistant(page);
+  const assistantButton = page.getByRole('button', { name: 'AI에게 물어보기' });
+  await assistantButton.click();
+
+  await expect(page.getByTestId('ai-chatbot-panel')).toHaveCount(0);
+  await expect(page.getByTestId('ai-chatbot-launcher')).toHaveCount(0);
+  await expect.poll(async () => {
+    const shellMarginRight = await page.locator('.screen-shell').evaluate((element) => window.getComputedStyle(element).marginRight);
+    return Number.parseFloat(shellMarginRight);
+  }).toBeLessThan(1);
+});
+
 test('chatbot part questions show backend parts and apply them to home AI builds', async ({ page }) => {
   const buildGraphRequests = await mockBuildGraphApi(page);
   const buildChatRequests = await mockAiBuildChatApi(page);
