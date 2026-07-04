@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Cpu, FileText, LifeBuoy, LogIn, LogOut, Search, ShieldCheck, Sparkles, UserRound } from 'lucide-react';
 import { getCurrentUser, logout as logoutApi, type CurrentUser } from '../../features/auth/authApi';
 import { AUTH_CHANGED_EVENT, ApiError, clearToken, getCachedAuthUser, getRefreshToken, getToken } from '../../lib/api';
-import { AI_BUILD_ASSISTANT_OPEN_EVENT } from '../../lib/events';
+import { AI_BUILD_ASSISTANT_TOGGLE_EVENT } from '../../lib/events';
 import { PrimaryNav } from './PrimaryNav';
 
 export function AppHeader() {
@@ -113,7 +113,7 @@ export function AppHeader() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => window.dispatchEvent(new Event(AI_BUILD_ASSISTANT_OPEN_EVENT))}
+                  onClick={() => window.dispatchEvent(new Event(AI_BUILD_ASSISTANT_TOGGLE_EVENT))}
                   className="hidden h-9 items-center gap-1 rounded-md bg-brand-blue px-3 text-xs font-black text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-100 md:flex"
                 >
                   <Sparkles size={15} />

@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { BarChart3, Bot, CheckCircle2, Cpu, PackageCheck, Send, ShoppingCart, Sparkles, X, Zap } from 'lucide-react';
 import { AUTH_CHANGED_EVENT, ApiError, clearToken, getToken } from '../../../lib/api';
-import { AI_BUILD_ASSISTANT_OPEN_EVENT } from '../../../lib/events';
+import { AI_BUILD_ASSISTANT_OPEN_EVENT, AI_BUILD_ASSISTANT_TOGGLE_EVENT } from '../../../lib/events';
 import { applyAiBuildToQuoteDraft, deleteQuoteDraftItem, getCurrentQuoteDraft, patchQuoteDraftItem, putQuoteDraftItem } from '../../parts/partsApi';
 import {
   AI_ASSISTANT_SESSION_CHANGED_EVENT,
@@ -82,9 +82,12 @@ export function AiBuildAssistant({ surface = 'home' }: AiBuildAssistantProps) {
 
   useEffect(() => {
     const openAssistant = () => setOpen(true);
+    const toggleAssistant = () => setOpen((current) => !current);
     window.addEventListener(AI_BUILD_ASSISTANT_OPEN_EVENT, openAssistant);
+    window.addEventListener(AI_BUILD_ASSISTANT_TOGGLE_EVENT, toggleAssistant);
     return () => {
       window.removeEventListener(AI_BUILD_ASSISTANT_OPEN_EVENT, openAssistant);
+      window.removeEventListener(AI_BUILD_ASSISTANT_TOGGLE_EVENT, toggleAssistant);
     };
   }, []);
 
