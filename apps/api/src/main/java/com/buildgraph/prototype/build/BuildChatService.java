@@ -43,6 +43,11 @@ public class BuildChatService {
     private static final Pattern EXPLICIT_CPU_MODEL = Pattern.compile("(?i)\\b\\d{4,5}x3d\\b|\\b\\d{4,5}x\\b|\\bi[3579]-?\\d{4,5}\\b");
     private static final Pattern CAPACITY_GB_PATTERN = Pattern.compile("(\\d+)\\s*(?:gb|기가|기가바이트)", Pattern.CASE_INSENSITIVE);
     private static final Pattern WATT_PATTERN = Pattern.compile("(\\d{3,4})\\s*w", Pattern.CASE_INSENSITIVE);
+    // 팀 정책: 벤치마크 수치는 보장이 아니라 참고용이며, 제공 범위(내부 DB 등록 조합)를 함께 고지한다
+    static final String SIMULATION_DISCLAIMER =
+            "본 수치는 내부 벤치마크 DB 기준 참고용 추정치이며, 내부 DB에 등록된 부품·게임·해상도 조합에 한해 제공됩니다. "
+                    + "실제 성능은 게임 버전, 그래픽 옵션, 드라이버, 해상도, 냉각·전원 환경에 따라 달라질 수 있습니다.";
+
     private static final List<Tier> TIERS = List.of(
             new Tier("budget", "가성비", "가성비형"),
             new Tier("balanced", "균형", "균형형"),
@@ -743,7 +748,7 @@ public class BuildChatService {
         result.put("fpsComparisons", fpsComparisons);
         result.put("specComparisons", specComparisons);
         result.put("warnings", distinct(simulationWarnings));
-        result.put("disclaimer", "실제 FPS는 게임 버전, 옵션, 드라이버, 냉각 상태에 따라 달라질 수 있습니다.");
+        result.put("disclaimer", SIMULATION_DISCLAIMER);
         return result;
     }
 
@@ -764,7 +769,7 @@ public class BuildChatService {
             return null;
         }
         return MockData.map(
-                "label", "벤치마크 기반 점수",
+                "label", "내부 벤치마크 정규화 점수 (참고용)",
                 "currentScore", current,
                 "targetScore", target,
                 "delta", current == null || target == null ? null : target - current
