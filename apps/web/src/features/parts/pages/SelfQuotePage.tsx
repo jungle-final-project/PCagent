@@ -20,7 +20,7 @@ import { resolveBuildGraph, saveBuildFromChat } from '../../quote/quoteApi';
 import { SlotBoard } from '../components/slot-board/SlotBoard';
 import { SlotCandidatePanel } from '../components/slot-board/SlotCandidatePanel';
 import { SlotStatusBar } from '../components/slot-board/SlotStatusBar';
-import { isSlotCategory, slotConfigFor } from '../components/slot-board/slotBoardConfig';
+import { SLOT_CONFIGS, SLOT_COUNT, isSlotCategory, slotConfigFor } from '../components/slot-board/slotBoardConfig';
 import { deleteQuoteDraftItem, getCurrentQuoteDraft, patchQuoteDraftItem, putQuoteDraftItem } from '../partsApi';
 import type { PartRow, QuoteDraft, QuoteDraftItem } from '../types';
 
@@ -153,23 +153,34 @@ export function SelfQuotePage() {
   const isMutating = addMutation.isPending || deleteMutation.isPending || replaceMutation.isPending || quantityMutation.isPending;
   const hasCompatibilityFail = quoteHasCompatibilityFail(graphQuery.data, draftItems);
 
+  const filledCount = SLOT_CONFIGS.filter((slot) => draftItems.some((item) => item.category === slot.category)).length;
+  const warnCount = graphQuery.data
+    ? graphQuery.data.nodes.filter((node) => node.type === 'PART' && node.status === 'WARN').length
+    : 0;
+  const failCount = graphQuery.data
+    ? graphQuery.data.nodes.filter((node) => node.type === 'PART' && node.status === 'FAIL').length
+    : 0;
+
   return (
     <Screen>
-      <div className="space-y-5">
-        <section className="panel px-5 py-4">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-xs font-black text-brand-blue">
-                <LayoutGrid size={15} />
-                셀프 견적
-              </div>
-              <h1 className="mt-1 text-xl font-black tracking-tight text-commerce-ink sm:text-2xl">견적 슬롯 보드</h1>
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">
-                슬롯을 눌러 부품을 고르면 현재 견적 기준 호환 후보를 보여줍니다. 저장된 현재가 기준.
-              </p>
-            </div>
-          </div>
-        </section>
+      <div className="space-y-4">
+        {/* 페이지 헤더 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <LayoutGrid size={15} className="text-brand-blue" />
+          <h1 className="text-base font-black tracking-tight text-commerce-ink">셀프 견적 · 구성 관계도</h1>
+          <span className="text-xs text-slate-400">슬롯을 눌러 후보를 확인하고 교체하세요</span>
+        </div>
+
+        {/* 상단 요약 지표 바 */}
+        <QuoteSummaryBar
+          totalPrice={selectedTotal}
+          filledCount={filledCount}
+          slotCount={SLOT_COUNT}
+          warnCount={warnCount}
+          failCount={failCount}
+          storageItems={draftItems.filter((item) => item.category === 'STORAGE')}
+          graphLoading={graphQuery.isLoading}
+        />
 
         {aiBuild ? (
           <AiSelectedBuildPanel
@@ -183,7 +194,8 @@ export function SelfQuotePage() {
           />
         ) : null}
 
-        <div className={selectedSlot ? 'grid gap-5 lg:grid-cols-[minmax(0,1fr)_400px] lg:items-start' : ''}>
+        {/* 본문: 보드 + 우측 상세 패널 (우측 컬럼은 항상 유지) */}
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
           <SlotBoard
             items={draftItems}
             selectedCategory={selectedCategory}
@@ -204,9 +216,12 @@ export function SelfQuotePage() {
               onUpdateQuantity={updateQuantity}
               isMutating={isMutating}
             />
-          ) : null}
+          ) : (
+            <SlotDetailPlaceholder onPick={selectSlot} />
+          )}
         </div>
 
+        {/* 하단 상태바 */}
         <SlotStatusBar
           quoteDraft={quoteDraft}
           hasToken={hasToken}
@@ -454,4 +469,123 @@ function graphToolForCategory(category: PartCategory): BuildGraphFocus['tool'] {
   if (category === 'CASE' || category === 'COOLER') return 'size';
   if (category === 'CPU' || category === 'MOTHERBOARD' || category === 'RAM') return 'compatibility';
   return undefined;
+}
+
+// 슬롯 미선택 시 우측 컬럼을 채우는 상세 placeholder. 슬롯을 고르면 실제 후보 패널로 전환된다.
+function SlotDetailPlaceholder({ onPick }: { onPick: (category: PartCategory) => void }) {
+  return (
+    <section
+      data-testid="slot-detail-placeholder"
+      className="hidden rounded-lg border border-commerce-line bg-white lg:block"
+    >
+      <div className="border-b border-commerce-line px-4 py-3">
+        <h2 className="text-base font-black text-commerce-ink">구성 상세 · 교체 후보</h2>
+        <p className="mt-0.5 text-[11px] font-bold text-slate-500">슬롯을 선택하면 현재 견적 기준 교체 후보를 보여줍니다.</p>
+      </div>
+      <div className="space-y-3 p-4">
+        <div className="rounded-md border border-dashed border-slate-300 bg-slate-50/60 p-4 text-center">
+          <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-brand-blue">
+            <LayoutGrid size={18} />
+          </div>
+          <p className="text-xs font-black text-slate-600">왼쪽 보드에서 슬롯을 눌러보세요</p>
+          <p className="mt-1 text-[11px] font-bold text-slate-400">부품 관계를 확인하고 교체 후보를 비교할 수 있습니다.</p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {SLOT_CONFIGS.map((slot) => (
+            <button
+              key={slot.category}
+              type="button"
+              onClick={() => onPick(slot.category)}
+              className="inline-flex items-center gap-1 rounded-full border border-commerce-line bg-white px-2.5 py-1 text-[11px] font-black text-slate-600 hover:border-brand-blue hover:text-brand-blue"
+            >
+              <img src={slot.glyph} alt="" aria-hidden="true" className="h-3.5 w-3.5" />
+              {slot.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function QuoteSummaryBar({
+  totalPrice,
+  filledCount,
+  slotCount,
+  warnCount,
+  failCount,
+  storageItems,
+  graphLoading
+}: {
+  totalPrice: number;
+  filledCount: number;
+  slotCount: number;
+  warnCount: number;
+  failCount: number;
+  storageItems: QuoteDraftItem[];
+  graphLoading: boolean;
+}) {
+  const compatibilityText = graphLoading
+    ? '확인 중'
+    : failCount > 0
+      ? `안 맞음 ${failCount}개`
+      : warnCount > 0
+        ? `주의 ${warnCount}개`
+        : filledCount === 0
+          ? '부품 없음'
+          : '이상 없음';
+  const compatibilityColor = failCount > 0
+    ? 'text-red-600'
+    : warnCount > 0
+      ? 'text-amber-600'
+      : filledCount === 0
+        ? 'text-slate-400'
+        : 'text-emerald-600';
+  const storageCount = storageItems.reduce((sum, item) => sum + item.quantity, 0);
+
+  return (
+    <div data-testid="quote-summary-bar" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="panel flex items-center gap-3 px-4 py-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-xl font-black text-brand-blue">₩</span>
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold text-slate-500">총액</div>
+          <div className="truncate text-sm font-black text-commerce-ink">{totalPrice > 0 ? `${totalPrice.toLocaleString()}원` : '—'}</div>
+        </div>
+      </div>
+      <div className="panel flex items-center gap-3 px-4 py-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+          <svg viewBox="0 0 20 20" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="6" height="6" rx="1" /><rect x="11" y="3" width="6" height="6" rx="1" />
+            <rect x="3" y="11" width="6" height="6" rx="1" /><rect x="11" y="11" width="6" height="6" rx="1" />
+          </svg>
+        </span>
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold text-slate-500">장착 슬롯</div>
+          <div className="text-sm font-black text-commerce-ink">{filledCount} / {slotCount}</div>
+        </div>
+      </div>
+      <div className="panel flex items-center gap-3 px-4 py-3">
+        <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${failCount > 0 ? 'bg-red-50' : warnCount > 0 ? 'bg-amber-50' : 'bg-emerald-50'}`}>
+          <svg viewBox="0 0 20 20" className={`h-5 w-5 ${failCount > 0 ? 'text-red-500' : warnCount > 0 ? 'text-amber-500' : 'text-emerald-500'}`} fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M10 2a8 8 0 100 16A8 8 0 0010 2zm0 5v4m0 2.5v.5" strokeLinecap="round" />
+          </svg>
+        </span>
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold text-slate-500">호환 상태</div>
+          <div className={`text-sm font-black ${compatibilityColor}`}>{compatibilityText}</div>
+        </div>
+      </div>
+      <div className="panel flex items-center gap-3 px-4 py-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+          <svg viewBox="0 0 20 20" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="6" width="14" height="8" rx="1" /><path d="M7 10h6M10 8v4" strokeLinecap="round" />
+          </svg>
+        </span>
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold text-slate-500">스토리지</div>
+          <div className="text-sm font-black text-commerce-ink">{storageCount > 0 ? `SSD ${storageCount}개` : 'SSD 없음'}</div>
+        </div>
+      </div>
+    </div>
+  );
 }

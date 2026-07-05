@@ -216,7 +216,7 @@ test('renders 8 empty slots on the slot board without the legacy list workspace'
 
   await page.goto('/self-quote');
 
-  await expect(page.getByRole('heading', { name: '견적 슬롯 보드' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '셀프 견적 · 구성 관계도' })).toBeVisible();
   const board = page.getByTestId('slot-board');
   await expect(board).toBeVisible();
   for (const category of ['CPU', 'MOTHERBOARD', 'RAM', 'GPU', 'STORAGE', 'PSU', 'CASE', 'COOLER']) {
@@ -277,6 +277,96 @@ test('fills all 8 slots from the current quote draft and shows mini slot overflo
   await expect(statusBar.getByText(`${fullDraft.totalPrice.toLocaleString()}원`)).toBeVisible();
 });
 
+test('renders the slot board as a motherboard-style dependency diagram with mounted part media', async ({ page }) => {
+  await loginAsUser(page);
+  const visualDraftItems = [
+    {
+      ...draftItem('part-visual-cpu', 'CPU', 'AMD Ryzen 7 7800X3D', 420000),
+      attributes: { shortSpec: 'AM5 / 8코어' }
+    },
+    {
+      ...draftItem('part-visual-board', 'MOTHERBOARD', 'B650 메인보드', 250000),
+      attributes: { shortSpec: 'AM5 / DDR5 / PCIe 4.0' }
+    },
+    {
+      ...draftItem('part-visual-gpu', 'GPU', 'NVIDIA GeForce RTX 4070 Ti SUPER', 1229000),
+      attributes: { shortSpec: 'PCIe x16 4.0 / 16GB', interface: 'PCIe x16 4.0' },
+      externalOffer: {
+        imageUrl: 'https://example.test/visual-gpu.png',
+        supplierName: '그래픽테스트몰',
+        offerUrl: 'https://example.test/visual-gpu',
+        lowPrice: 1229000,
+        source: 'NAVER_SHOPPING_SEARCH'
+      }
+    },
+    {
+      ...draftItem('part-visual-psu', 'PSU', 'Classic II 750W', 120000),
+      attributes: { shortSpec: '750W / ATX 3.1' }
+    }
+  ];
+
+  await page.route('**/api/build-graphs/resolve', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...buildGraphResponse(),
+        edges: [
+          {
+            id: 'edge-gpu-board-pcie',
+            source: 'part-GPU',
+            target: 'part-MOTHERBOARD',
+            type: 'REQUIRES',
+            status: 'PASS',
+            label: 'PCIe x16 4.0',
+            summary: '그래픽카드를 PCIe x16 슬롯에 장착할 수 있습니다.'
+          },
+          {
+            id: 'edge-psu-board-power',
+            source: 'part-PSU',
+            target: 'part-MOTHERBOARD',
+            type: 'REQUIRES',
+            status: 'PASS',
+            label: '24핀 전원',
+            summary: '메인보드 주 전원 연결입니다.'
+          }
+        ]
+      })
+    });
+  });
+  await page.route('**/api/quote-drafts/current**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...emptyDraft,
+        items: visualDraftItems,
+        totalPrice: visualDraftItems.reduce((sum, item) => sum + item.lineTotal, 0),
+        itemCount: visualDraftItems.reduce((sum, item) => sum + item.quantity, 0)
+      })
+    });
+  });
+  await page.route('**/api/parts**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], page: 0, size: 20, total: 0 }) });
+  });
+
+  await page.goto('/self-quote');
+
+  const board = page.getByTestId('slot-board');
+  await expect(page.getByText('메인보드 구성도 (의존성 그래프)')).toBeVisible();
+  await expect(board).toHaveAttribute('data-visual-mode', 'motherboard');
+  await expect(page.getByTestId('slot-board-motherboard-art')).toBeVisible();
+
+  const gpuSlot = page.getByTestId('slot-GPU');
+  await expect(gpuSlot.getByTestId('slot-part-image')).toHaveAttribute('src', 'https://example.test/visual-gpu.png');
+  await expect(gpuSlot).toContainText('NVIDIA GeForce RTX 4070 Ti SUPER');
+  await expect(gpuSlot).toContainText('PCIe x16 4.0');
+
+  const edges = page.getByTestId('slot-board-edges');
+  await expect(edges.getByText('PCIe x16 4.0')).toBeVisible();
+  await expect(edges.getByText('24핀 전원')).toBeVisible();
+});
+
 test('applies saved admin slot positions from the graph response when they use slot-board percent coordinates', async ({ page }) => {
   await loginAsUser(page);
 
@@ -310,7 +400,7 @@ test('applies saved admin slot positions from the graph response when they use s
 
   await expect(page.getByTestId('slot-GPU')).toHaveAttribute('style', /--sx:\s*54%;\s*--sy:\s*8%/);
   await expect(page.getByTestId('slot-PSU')).toHaveAttribute('style', /--sx:\s*8%;\s*--sy:\s*64%/);
-  await expect(page.getByTestId('slot-CPU')).toHaveAttribute('style', /--sx:\s*3%;\s*--sy:\s*4%/);
+  await expect(page.getByTestId('slot-CPU')).toHaveAttribute('style', /--sx:\s*9%;\s*--sy:\s*6%/);
 });
 
 test('shows graph edge labels on the fallback topology relationships', async ({ page }) => {
@@ -1279,7 +1369,7 @@ test('opens cooler candidate panel from home category link', async ({ page }) =>
   await page.goto('/');
   await page.getByRole('link', { name: /전체 부품/ }).first().click();
   await expect(page).toHaveURL('/self-quote');
-  await page.getByRole('button', { name: '쿨러' }).click();
+  await page.getByRole('button', { name: '쿨러 슬롯 열기' }).click();
 
   await expect(page).toHaveURL('/self-quote?category=COOLER');
   const panel = page.getByTestId('slot-candidate-panel');
@@ -1426,7 +1516,7 @@ test('shows selected AI build separately from the slot board and marks duplicate
   await expect(aiPanel.getByText('최초 AI 조합: 1,310,000원')).toBeVisible();
   await expect(aiPanel.getByText('담김', { exact: true })).toBeVisible();
   await expect(aiPanel.getByText('미반영', { exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '견적 슬롯 보드' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '셀프 견적 · 구성 관계도' })).toBeVisible();
   await expect(page.getByText('견적 합계', { exact: true })).toBeVisible();
 });
 
