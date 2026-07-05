@@ -1279,7 +1279,7 @@ test('selects a home AI recommendation through batch API and shows applied cart 
   const main = page.getByRole('main');
 
   await page.goto('/self-quote');
-  await expect(page.getByText('왼쪽 목록에서 부품을 담으면 이곳에 내 견적이 쌓입니다.')).toBeVisible();
+  await expect(page.getByText('미장착 슬롯 8개가 있습니다')).toBeVisible();
   await page.goto('/');
 
   await openDesktopAiAssistant(page);
@@ -1301,7 +1301,7 @@ test('selects a home AI recommendation through batch API and shows applied cart 
   await expect(selectedBuildPanel.getByText(`${expectedTotal}원`)).toBeVisible();
   await expect(selectedBuildPanel.getByText('GPU 반영됨')).toBeVisible();
   await expect(page.getByText('서버 반영 RTX 5070 서버 GPU').first()).toBeVisible();
-  await expect(page.getByRole('heading', { name: '견적 장바구니', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '견적 슬롯 보드' })).toBeVisible();
 });
 
 test('selects a chatbot recommendation and shows the applied cart without a later remove action', async ({ page }) => {
@@ -1311,7 +1311,7 @@ test('selects a chatbot recommendation and shows the applied cart without a late
   await openHomeAsUser(page);
 
   await page.goto('/self-quote');
-  await expect(page.getByText('왼쪽 목록에서 부품을 담으면 이곳에 내 견적이 쌓입니다.')).toBeVisible();
+  await expect(page.getByText('미장착 슬롯 8개가 있습니다')).toBeVisible();
   await page.goto('/');
 
   await openDesktopAiAssistant(page);
@@ -1324,8 +1324,8 @@ test('selects a chatbot recommendation and shows the applied cart without a late
   expect((applyRequests[0] as { conflictPolicy?: string; items?: unknown[] }).conflictPolicy).toBe('REPLACE');
   expect((applyRequests[0] as { items?: unknown[] }).items).toHaveLength(8);
   await expect(page).toHaveURL('/self-quote');
-  await expect(page.getByRole('heading', { name: '견적 장바구니', exact: true })).toBeVisible();
-  await expect(page.getByText(`${expectedTotal}원`)).toHaveCount(3);
+  await expect(page.getByRole('heading', { name: '견적 슬롯 보드' })).toBeVisible();
+  await expect(page.getByTestId('slot-status-bar').getByText(`${expectedTotal}원`)).toBeVisible();
   await expect(page.getByText('서버 반영 RTX 5070 서버 GPU').first()).toBeVisible();
   await expect(page.getByRole('button', { name: /서버 반영 RTX 5070 서버 GPU 견적에서 제거/ })).toBeVisible();
 });
@@ -1668,8 +1668,7 @@ test('opens self quote from the drawer graph card without replacing the current 
   expect(applyRequests).toHaveLength(0);
   await expect(page).toHaveURL('/self-quote');
   await expect(page.getByTestId('ai-selected-build-panel')).toContainText(latestBuilds[0].title);
-  const cartPanel = page.getByRole('heading', { name: '견적 장바구니', exact: true }).locator('xpath=ancestor::section[1]');
-  await expect(cartPanel.getByText('기존 장바구니 GPU')).toBeVisible();
+  await expect(page.getByTestId('slot-GPU')).toContainText('기존 장바구니 GPU');
 });
 
 test('opens self quote from the drawer graph card when the current cart is empty', async ({ page }) => {

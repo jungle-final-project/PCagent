@@ -915,7 +915,7 @@ test('renders nine admin shell navigation entries for ADMIN role', async ({ page
   await expect(navigation.getByRole('link', { name: '부품/가격' })).toHaveAttribute('href', '/admin/parts');
   await expect(navigation.getByRole('link', { name: 'AS 티켓' })).toHaveAttribute('href', '/admin/as-tickets');
   await expect(navigation.getByRole('link', { name: '가격 작업' })).toHaveAttribute('href', '/admin/price-jobs');
-  await expect(navigation.getByRole('link', { name: '관계도 배치' })).toHaveAttribute('href', '/admin/build-graph-layouts');
+  await expect(navigation.getByRole('link', { name: '슬롯 보드 배치' })).toHaveAttribute('href', '/admin/build-graph-layouts');
   await expect(navigation.getByRole('link', { name: '부하 테스트' })).toHaveAttribute('href', '/admin/load-tests');
   await expect(navigation.getByRole('link', { name: '에이전트 세션' })).toHaveCSS('font-family', /Noto Sans KR/);
 
@@ -924,7 +924,7 @@ test('renders nine admin shell navigation entries for ADMIN role', async ({ page
   await expect(page.getByRole('button', { name: '작업 실행' })).toHaveCount(0);
 });
 
-test('admin can drag quote graph nodes and save the fixed layout', async ({ page }) => {
+test('admin can drag self quote slot cards and save the fixed board layout', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('buildgraph.token', 'jwt-admin-token');
   });
@@ -996,12 +996,15 @@ test('admin can drag quote graph nodes and save the fixed layout', async ({ page
 
   await page.goto('/admin/build-graph-layouts');
 
-  await expect(page.getByRole('heading', { name: '관계도 배치 고정' })).toBeVisible();
-  await expect(page.getByRole('link', { name: '관계도 배치' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('heading', { name: '견적 슬롯 보드 배치' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '슬롯 보드 배치' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByTestId('admin-slot-layout-board')).toBeVisible();
+  await expect(page.getByTestId('admin-slot-layout-card-GPU')).toContainText('GPU');
+  await expect(page.getByText('x 3 · y 37')).toBeVisible();
 
-  const gpuNode = page.getByTestId('admin-layout-node-GPU');
-  await expect(gpuNode).toBeVisible();
-  const before = await gpuNode.boundingBox();
+  const gpuSlot = page.getByTestId('admin-slot-layout-card-GPU');
+  await expect(gpuSlot).toBeVisible();
+  const before = await gpuSlot.boundingBox();
   expect(before).not.toBeNull();
   await page.mouse.move((before?.x ?? 0) + 40, (before?.y ?? 0) + 30);
   await page.mouse.down();
@@ -1010,12 +1013,16 @@ test('admin can drag quote graph nodes and save the fixed layout', async ({ page
 
   await expect(page.getByText('저장되지 않은 변경')).toBeVisible();
   await page.getByRole('button', { name: '고정하기' }).click();
-  await expect.poll(() => savedPayload?.positions?.GPU?.x ?? 0).toBeGreaterThan(300);
+  await expect.poll(() => savedPayload?.positions?.GPU?.x ?? 0).toBeGreaterThan(3);
+  await expect.poll(() => savedPayload?.positions?.GPU?.x ?? 999).toBeLessThanOrEqual(72);
+  await expect.poll(() => savedPayload?.positions?.GPU?.y ?? 0).toBeGreaterThan(37);
+  await expect.poll(() => savedPayload?.positions?.PRICE).toBeUndefined();
   await expect(page.getByText('저장 완료')).toBeVisible();
 
   await page.getByRole('button', { name: '기본값으로 초기화' }).click();
   await expect.poll(() => resetCalled).toBe(true);
   await expect(page.getByText('기본 배치로 초기화됨')).toBeVisible();
+  await expect(page.getByText('x 3 · y 37')).toBeVisible();
 });
 
 test('renders price job and load test admin menu pages for ADMIN role', async ({ page }) => {
