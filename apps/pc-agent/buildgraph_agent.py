@@ -2520,12 +2520,14 @@ def pc_status_card(
     detection: dict[str, Any] | None,
 ) -> dict[str, str]:
     if any(str(signal.get("level")) == "위험" for signal in signals):
-        return {"value": "문제 감지", "detail": "AS 접수 검토가 필요한 신호가 있습니다", "tone": "danger"}
+        return {"value": "점검 필요", "detail": "진단 또는 AS 접수가 필요합니다.", "tone": "danger"}
     if detection is not None:
-        return {"value": "주의", "detail": sanitize_display_text(detection.get("title"), 40), "tone": "warning"}
+        title = sanitize_display_text(detection.get("title"), 32)
+        detail = f"이상 징후: {title}" if title else "일부 항목에서 이상 징후가 감지되었습니다."
+        return {"value": "주의", "detail": detail, "tone": "warning"}
     if not rows:
-        return {"value": "정상", "detail": "최근 감지 신호 없음", "tone": "ok"}
-    return {"value": "정상", "detail": "최근 감지 신호 없음", "tone": "ok"}
+        return {"value": "정상", "detail": "최근 문제 신호 없음", "tone": "ok"}
+    return {"value": "정상", "detail": "최근 문제 신호 없음", "tone": "ok"}
 
 
 def event_panel_signals(signals: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2894,6 +2896,7 @@ $logDir = {powershell_string(str(config.log_dir.resolve()))}
 $supportUrl = {powershell_string(support_new_url(config))}
 $pcStatus = {powershell_string(str(model["pcStatusCard"]["value"]))}
 $pcDetail = {powershell_string(str(model["pcStatusCard"]["detail"]))}
+$pcTone = {powershell_string(str(model["pcStatusCard"].get("tone", "muted")))}
 $uploadStatus = {powershell_string(str(model["uploadCard"]["value"]))}
 $uploadDetail = {powershell_string(str(model["uploadCard"]["detail"]))}
 $startupStatus = {powershell_string(str(model["startupCard"]["value"]))}
@@ -2907,6 +2910,11 @@ $sidebarBg = [System.Drawing.ColorTranslator]::FromHtml("#e7f2ef")
 $cardBg = [System.Drawing.ColorTranslator]::FromHtml("#ffffff")
 $sectionBg = [System.Drawing.ColorTranslator]::FromHtml("#f8fbfb")
 $primaryBg = [System.Drawing.ColorTranslator]::FromHtml("#1f8a70")
+$warningColor = [System.Drawing.ColorTranslator]::FromHtml("#b7791f")
+$dangerColor = [System.Drawing.ColorTranslator]::FromHtml("#b42318")
+$okSoftBg = [System.Drawing.ColorTranslator]::FromHtml("#e8f7f4")
+$warningSoftBg = [System.Drawing.ColorTranslator]::FromHtml("#fff7e6")
+$dangerSoftBg = [System.Drawing.ColorTranslator]::FromHtml("#fff1f0")
 $borderColor = [System.Drawing.ColorTranslator]::FromHtml("#d7e0e3")
 $textColor = [System.Drawing.ColorTranslator]::FromHtml("#172b3a")
 $mutedColor = [System.Drawing.ColorTranslator]::FromHtml("#5c6b73")
@@ -2923,6 +2931,26 @@ foreach ($candidate in @("Segoe UI Variable", "Segoe UI", "Malgun Gothic")) {{
 function New-UIFont {{
   param([float]$Px, [System.Drawing.FontStyle]$Style = [System.Drawing.FontStyle]::Regular)
   return New-Object System.Drawing.Font($uiFontFamily, ($Px * 72.0 / 96.0), $Style, [System.Drawing.GraphicsUnit]::Point)
+}}
+
+function Get-ToneColor {{
+  param([string]$Tone)
+  switch ($Tone) {{
+    "ok" {{ return $primaryBg }}
+    "warning" {{ return $warningColor }}
+    "danger" {{ return $dangerColor }}
+    default {{ return $mutedColor }}
+  }}
+}}
+
+function Get-ToneBackColor {{
+  param([string]$Tone)
+  switch ($Tone) {{
+    "ok" {{ return $okSoftBg }}
+    "warning" {{ return $warningSoftBg }}
+    "danger" {{ return $dangerSoftBg }}
+    default {{ return $sectionBg }}
+  }}
 }}
 
 function Style-Button {{
@@ -3145,7 +3173,16 @@ $subtitle.Location = New-Object System.Drawing.Point(170, 82)
 $form.Controls.Add($subtitle)
 
 function Add-Card {{
-  param([int]$X, [string]$Icon, [string]$Title, [string]$Value, [string]$Detail)
+  param(
+    [int]$X,
+    [string]$Icon,
+    [string]$Title,
+    [string]$Value,
+    [string]$Detail,
+    [System.Drawing.Color]$ToneColor = $primaryBg,
+    [System.Drawing.Color]$ToneBackColor = $sectionBg,
+    [bool]$HighlightTitle = $false
+  )
   $card = New-Object System.Windows.Forms.Panel
   $card.Location = New-Object System.Drawing.Point($X, 114)
   $card.Size = New-Object System.Drawing.Size(185, 90)
@@ -3156,8 +3193,8 @@ function Add-Card {{
   $iconBox.Text = $Icon
   $iconBox.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
   $iconBox.Font = New-UIFont 14 ([System.Drawing.FontStyle]::Bold)
-  $iconBox.ForeColor = $primaryBg
-  $iconBox.BackColor = $sectionBg
+  $iconBox.ForeColor = $ToneColor
+  $iconBox.BackColor = $ToneBackColor
   $iconBox.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
   $iconBox.Location = New-Object System.Drawing.Point(144, 12)
   $iconBox.Size = New-Object System.Drawing.Size(28, 28)
@@ -3165,7 +3202,7 @@ function Add-Card {{
   $cardTitle = New-Object System.Windows.Forms.Label
   $cardTitle.Text = $Title
   $cardTitle.Font = New-UIFont 16 ([System.Drawing.FontStyle]::Bold)
-  $cardTitle.ForeColor = $textColor
+  if ($HighlightTitle) {{ $cardTitle.ForeColor = $ToneColor }} else {{ $cardTitle.ForeColor = $textColor }}
   $cardTitle.BackColor = $cardBg
   $cardTitle.Location = New-Object System.Drawing.Point(14, 14)
   $cardTitle.Size = New-Object System.Drawing.Size(124, 20)
@@ -3173,7 +3210,7 @@ function Add-Card {{
   $cardValue = New-Object System.Windows.Forms.Label
   $cardValue.Text = $Value
   $cardValue.Font = New-UIFont 14 ([System.Drawing.FontStyle]::Bold)
-  $cardValue.ForeColor = $primaryBg
+  $cardValue.ForeColor = $ToneColor
   $cardValue.BackColor = $cardBg
   $cardValue.Location = New-Object System.Drawing.Point(14, 38)
   $cardValue.Size = New-Object System.Drawing.Size(136, 24)
@@ -3187,7 +3224,9 @@ function Add-Card {{
   $card.Controls.Add($cardDetail)
 }}
 
-Add-Card 170 "PC" "PC 상태" $pcStatus $pcDetail
+$pcToneColor = Get-ToneColor $pcTone
+$pcToneBackColor = Get-ToneBackColor $pcTone
+Add-Card 170 "PC" "PC 상태" $pcStatus $pcDetail $pcToneColor $pcToneBackColor $true
 Add-Card 365 "UP" "마지막 업로드" $uploadStatus $uploadDetail
 Add-Card 560 "ST" "시작프로그램" $startupStatus $startupDetail
 Add-Card 755 "i" "버전" $versionText $versionDetail
@@ -3743,6 +3782,7 @@ def show_log_viewer(
         cards.columnconfigure(index, weight=1, uniform="status-card")
 
     card_icons: dict[str, tk.Label] = {}
+    card_title_labels: dict[str, tk.Label] = {}
     card_value_labels: dict[str, tk.Label] = {}
     tone_colors = {
         "ok": "#0f8f83",
@@ -3750,14 +3790,19 @@ def show_log_viewer(
         "danger": "#b42318",
         "muted": colors["muted"],
     }
+    tone_icon_styles = {
+        "ok": ("#e8f7f4", "#a9ddd5"),
+        "warning": ("#fff7e6", "#f6d18b"),
+        "danger": ("#fff1f0", "#f4b4ad"),
+        "muted": ("#f7fafb", colors["border"]),
+    }
 
     def card_tone_color(tone: str) -> str:
         return tone_colors.get(tone, tone_colors["muted"])
 
     def draw_card_icon(label: tk.Label, kind: str, tone: str) -> None:
         stroke_hex = card_tone_color(tone)
-        soft = "#eef8f5" if tone == "ok" else "#f7fafb"
-        line = "#cae6df" if tone == "ok" else colors["border"]
+        soft, line = tone_icon_styles.get(tone, tone_icon_styles["muted"])
         if Image is not None:
             try:
                 def color(value: str) -> tuple[int, int, int, int]:
@@ -3778,6 +3823,9 @@ def show_log_viewer(
                 resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.LANCZOS)
                 tinted.thumbnail((size, size), resampling)
                 image = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+                if ImageDraw is not None:
+                    draw = ImageDraw.Draw(image)
+                    draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=10, fill=color(soft), outline=color(line), width=1)
                 offset = ((size - tinted.width) // 2, (size - tinted.height) // 2)
                 image.alpha_composite(tinted, offset)
                 buffer = BytesIO()
@@ -3815,14 +3863,16 @@ def show_log_viewer(
         card_canvas.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
         card.columnconfigure(0, weight=1)
         card.columnconfigure(1, weight=0)
-        tk.Label(
+        title_label = tk.Label(
             card,
             text=title,
             font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
             foreground=colors["text"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew")
+        )
+        title_label.grid(row=0, column=0, sticky="ew")
+        card_title_labels[key] = title_label
         icon_label = tk.Label(card, background=colors["card_bg"], borderwidth=0, highlightthickness=0)
         icon_label.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(8, 0))
         draw_card_icon(icon_label, icon_kind, "muted")
@@ -4801,6 +4851,9 @@ def show_log_viewer(
         version_detail.set(str(cards_model["version"]["detail"]))
         for key, card in cards_model.items():
             tone = str(card.get("tone", "muted"))
+            if key in card_title_labels:
+                title_color = card_tone_color(tone) if key == "pc" else colors["text"]
+                card_title_labels[key].configure(foreground=title_color)
             if key in card_value_labels:
                 card_value_labels[key].configure(foreground=card_tone_color(tone))
             if key in card_icons:

@@ -1510,8 +1510,38 @@ class AgentGoal1112Test(unittest.TestCase):
             model = agent.status_home_model(config, path)
 
             self.assertEqual(model["pcStatusCard"]["value"], "주의")
+            self.assertEqual(model["pcStatusCard"]["detail"], "이상 징후: 메모리 사용량 높음")
             self.assertEqual(model["pcStatusCard"]["tone"], "warning")
             self.assertEqual(model["homeDetection"]["title"], "메모리 사용량 높음")
+
+    def test_status_home_model_marks_danger_signal_as_check_required(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            rows = [
+                {
+                    "timestamp": (now - timedelta(minutes=1)).isoformat(),
+                    "kind": "EVENT_LOG",
+                    "message": "Kernel-Power unexpected shutdown repeated.",
+                }
+            ]
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory),
+                agent_version="1.2.3",
+                policy_version="test-policy",
+            )
+
+            model = agent.status_home_model(config, path)
+
+            self.assertEqual(model["pcStatusCard"]["value"], "점검 필요")
+            self.assertEqual(model["pcStatusCard"]["detail"], "진단 또는 AS 접수가 필요합니다.")
+            self.assertEqual(model["pcStatusCard"]["tone"], "danger")
 
     def test_diagnosis_detail_model_empty_state_without_logs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
