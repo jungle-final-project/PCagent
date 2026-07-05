@@ -92,6 +92,7 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertEqual(row["agentId"], "sample-agent")
         self.assertEqual(row["eventType"], "DISPLAY_DRIVER_WARNING")
         self.assertEqual(row["message"], "Display driver warning observed.")
+        self.assertEqual(row["payload"]["metricKind"], "sample-demo")
 
     def test_metric_collector_marks_unavailable_values_without_fake_gpu_or_temperature(self) -> None:
         class FakePsutil:
@@ -127,6 +128,7 @@ class AgentGoal1112Test(unittest.TestCase):
         row = collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
 
         self.assertEqual(row["eventType"], "SYSTEM_METRIC")
+        self.assertEqual(row["metricKind"], "system")
         self.assertEqual(row["cpuUsage"], 11.2)
         self.assertEqual(row["memoryUsage"], 22.3)
         self.assertIsNone(row["gpuUsage"])
@@ -137,6 +139,10 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertIn("gpuUsage", row["unavailableReason"])
         self.assertIn("cpuTemp", row["unavailableReason"])
         self.assertIn("diskReadBytesPerSec", row["unavailableReason"])
+        self.assertEqual(row["diskCollectorSource"], "unavailable")
+        self.assertEqual(row["sensorStatus"]["vramUsagePercent"], "unsupported")
+        self.assertEqual(row["sensorStatus"]["cpuTempCelsius"], "unsupported")
+        self.assertEqual(row["sensorStatus"]["gpuTempCelsius"], "unsupported")
 
     def test_metric_collector_uses_disk_io_delta(self) -> None:
         class FakePsutil:
@@ -184,6 +190,7 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertEqual(row["diskReadCountPerSec"], 2.0)
         self.assertEqual(row["diskWriteCountPerSec"], 1.0)
         self.assertEqual(row["diskBusyEstimatePercent"], 20.0)
+        self.assertEqual(row["diskCollectorSource"], "psutil-busy-time")
 
     def test_metric_collector_uses_read_write_time_when_busy_time_is_missing(self) -> None:
         class FakePsutil:
@@ -241,6 +248,123 @@ class AgentGoal1112Test(unittest.TestCase):
         row = collector.collect(datetime(2026, 7, 2, 14, 0, 5, tzinfo=agent.KST), 1)
 
         self.assertEqual(row["diskBusyEstimatePercent"], 20.0)
+        self.assertEqual(row["diskCollectorSource"], "psutil-read-write-time")
+
+    def test_metric_collector_uses_windows_disk_counter_when_psutil_time_delta_is_zero(self) -> None:
+        class FakePsutil:
+            def __init__(self) -> None:
+                self.index = 0
+                self.counters = [
+                    SimpleNamespace(
+                        read_bytes=1000,
+                        write_bytes=500,
+                        read_count=10,
+                        write_count=5,
+                        read_time=0,
+                        write_time=0,
+                    ),
+                    SimpleNamespace(
+                        read_bytes=2500,
+                        write_bytes=1500,
+                        read_count=40,
+                        write_count=25,
+                        read_time=0,
+                        write_time=0,
+                    ),
+                ]
+
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                value = self.counters[min(self.index, len(self.counters) - 1)]
+                self.index += 1
+                return value
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        fallback_calls = 0
+
+        def disk_fallback() -> tuple[float, None]:
+            nonlocal fallback_calls
+            fallback_calls += 1
+            return 42.3, None
+
+        times = iter([100.0, 105.0])
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=1, stdout=""),
+            gpu_counter_reader=missing_gpu_counter,
+            powershell_gpu_counter_reader=missing_gpu_counter,
+            disk_busy_reader=disk_fallback,
+            time_fn=lambda: next(times),
+        )
+
+        collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, 5, tzinfo=agent.KST), 1)
+
+        self.assertEqual(row["diskReadBytesPerSec"], 300.0)
+        self.assertEqual(row["diskWriteBytesPerSec"], 200.0)
+        self.assertEqual(row["diskBusyEstimatePercent"], 42.3)
+        self.assertEqual(row["diskCollectorSource"], "windows-performance-counter")
+        self.assertEqual(row["metricKind"], "system")
+        self.assertEqual(fallback_calls, 1)
+
+    def test_metric_collector_marks_disk_busy_unavailable_when_windows_disk_counter_fails(self) -> None:
+        class FakePsutil:
+            def __init__(self) -> None:
+                self.index = 0
+                self.counters = [
+                    SimpleNamespace(read_bytes=1000, write_bytes=500, read_count=10, write_count=5, read_time=0, write_time=0),
+                    SimpleNamespace(read_bytes=1500, write_bytes=750, read_count=20, write_count=10, read_time=0, write_time=0),
+                ]
+
+            def cpu_percent(self, interval: float = 0.0) -> float:
+                return 10.0
+
+            def virtual_memory(self) -> SimpleNamespace:
+                return SimpleNamespace(percent=20.0)
+
+            def disk_usage(self, path: str) -> SimpleNamespace:
+                return SimpleNamespace(percent=30.0)
+
+            def disk_io_counters(self) -> SimpleNamespace:
+                value = self.counters[min(self.index, len(self.counters) - 1)]
+                self.index += 1
+                return value
+
+            def sensors_temperatures(self, fahrenheit: bool = False) -> dict:
+                return {}
+
+            def process_iter(self, attrs: list[str]) -> list:
+                return []
+
+        times = iter([100.0, 105.0])
+        collector = agent.HardwareMetricCollector(
+            psutil_module=FakePsutil(),
+            nvidia_smi_runner=lambda: SimpleNamespace(returncode=1, stdout=""),
+            gpu_counter_reader=missing_gpu_counter,
+            powershell_gpu_counter_reader=missing_gpu_counter,
+            disk_busy_reader=lambda: (None, "Windows disk counter unavailable"),
+            time_fn=lambda: next(times),
+        )
+
+        collector.collect(datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST), 0)
+        row = collector.collect(datetime(2026, 7, 2, 14, 0, 5, tzinfo=agent.KST), 1)
+
+        self.assertIsNone(row["diskBusyEstimatePercent"])
+        self.assertEqual(row["diskCollectorSource"], "unavailable")
+        self.assertIn("diskBusyEstimatePercent", row["unavailableReason"])
 
     def test_read_windows_gpu_usage_percent_win32pdh_sums_counter_values(self) -> None:
         class FakeWin32Pdh:
@@ -329,6 +453,11 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertEqual(row["gpuTemp"], 66.0)
         self.assertEqual(row["gpuTempCelsius"], 66.0)
         self.assertEqual(row["gpuCollectorSource"], "nvidia-smi")
+        self.assertEqual(row["sensorStatus"]["vramUsagePercent"], "collected")
+        self.assertEqual(row["sensorStatus"]["gpuTempCelsius"], "collected")
+        self.assertEqual(row["sensorStatus"]["cpuTempCelsius"], "unsupported")
+        self.assertEqual(agent.display_log_table_values(row)[6], "25.0%")
+        self.assertEqual(agent.display_log_table_values(row)[8], "66.0C")
 
     def test_metric_collector_uses_windows_gpu_counter_after_nvidia_failure(self) -> None:
         class FakePsutil:
@@ -366,6 +495,12 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertIsNone(row["gpuTemp"])
         self.assertEqual(row["gpuCollectorSource"], "windows-performance-counter")
         self.assertIn("vramUsage", row["unavailableReason"])
+        self.assertEqual(row["sensorStatus"]["vramUsagePercent"], "unsupported")
+        self.assertEqual(row["sensorStatus"]["gpuTempCelsius"], "unsupported")
+        self.assertEqual(agent.display_log_table_values(row)[5], "37.8%")
+        self.assertEqual(agent.display_log_table_values(row)[6], agent.OPTIONAL_SENSOR_UNSUPPORTED_TEXT)
+        self.assertEqual(agent.display_log_table_values(row)[7], agent.OPTIONAL_SENSOR_UNSUPPORTED_TEXT)
+        self.assertEqual(agent.display_log_table_values(row)[8], agent.OPTIONAL_SENSOR_UNSUPPORTED_TEXT)
 
     def test_metric_collector_uses_powershell_gpu_counter_as_secondary_fallback(self) -> None:
         class FakePsutil:
@@ -905,17 +1040,46 @@ class AgentGoal1112Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agent-metrics.jsonl"
             rows = [
-                {"timestamp": "2026-07-02T13:59:59+09:00", "message": "before"},
-                {"timestamp": "2026-07-02T14:00:00+09:00", "message": "start"},
-                {"timestamp": "2026-07-02T14:30:00+09:00", "message": "middle"},
-                {"timestamp": "2026-07-02T15:00:00+09:00", "message": "after"},
-                {"timestamp": "2026-07-03T14:30:00+09:00", "message": "other-day"},
+                {"timestamp": "2026-07-02T13:59:59+09:00", "kind": "SYSTEM_METRIC", "message": "before"},
+                {"timestamp": "2026-07-02T14:00:00+09:00", "kind": "SYSTEM_METRIC", "message": "start"},
+                {"timestamp": "2026-07-02T14:30:00+09:00", "kind": "SYSTEM_METRIC", "message": "middle"},
+                {"timestamp": "2026-07-02T15:00:00+09:00", "kind": "SYSTEM_METRIC", "message": "after"},
+                {"timestamp": "2026-07-03T14:30:00+09:00", "kind": "SYSTEM_METRIC", "message": "other-day"},
             ]
             path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
             selected = agent.read_log_hour(path, "2026-07-02", 14)
 
-            self.assertEqual([row["message"] for row in selected], ["start", "middle"])
+            self.assertEqual([row["message"] for row in selected], ["middle", "start"])
+
+    def test_default_metric_readers_exclude_demo_metric_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            rows = [
+                {
+                    "timestamp": (now - timedelta(minutes=5)).isoformat(),
+                    "kind": "DEMO_METRIC",
+                    "gpuUsagePercent": 98.0,
+                    "vramUsagePercent": 95.0,
+                    "gpuTempCelsius": 91.0,
+                    "message": "Demo metric collected.",
+                },
+                {
+                    "timestamp": (now - timedelta(minutes=4)).isoformat(),
+                    "kind": "SYSTEM_METRIC",
+                    "gpuUsagePercent": 12.0,
+                    "message": "System metrics collected.",
+                },
+            ]
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+            summary = agent.read_status_log_summary_rows(path, 6)
+            selected = agent.read_log_hour(path, now.strftime("%Y-%m-%d"), now.hour)
+
+            self.assertEqual([row["kind"] for row in summary], ["SYSTEM_METRIC"])
+            self.assertEqual([row["kind"] for row in selected], ["SYSTEM_METRIC"])
+            self.assertEqual(agent.display_log_summary_values(summary[0])[4], "12.0%")
 
     def test_read_log_hour_accepts_envelope_collected_at(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -943,14 +1107,67 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertEqual(agent.read_log_hour(path, "bad-date", 14), [])
             self.assertEqual(agent.read_log_hour(path, "2026-07-02", 24), [])
 
+    def test_default_log_filter_values_use_current_kst_date_and_hour(self) -> None:
+        date_text, hour = agent.default_log_filter_values(datetime(2026, 7, 4, 13, 42, tzinfo=agent.KST))
+
+        self.assertEqual(date_text, "2026-07-04")
+        self.assertEqual(hour, 13)
+
+    def test_read_log_day_latest_uses_today_system_metrics_latest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            rows = [
+                {
+                    "timestamp": "2026-07-04T03:00:00+09:00",
+                    "kind": "DEMO_METRIC",
+                    "gpuUsagePercent": 98.0,
+                    "message": "demo",
+                },
+                {
+                    "timestamp": "2026-07-04T11:00:00+09:00",
+                    "kind": "SYSTEM_METRIC",
+                    "message": "older",
+                },
+                {
+                    "timestamp": "2026-07-03T23:59:00+09:00",
+                    "kind": "SYSTEM_METRIC",
+                    "message": "yesterday",
+                },
+                {
+                    "timestamp": "2026-07-04T13:10:00+09:00",
+                    "kind": "SYSTEM_METRIC",
+                    "message": "latest",
+                },
+            ]
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+            selected = agent.read_log_day_latest(path, "2026-07-04", limit=10)
+
+            self.assertEqual([row["message"] for row in selected], ["latest", "older"])
+
+    def test_read_log_rows_for_filter_keeps_user_selected_hour(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            rows = [
+                {"timestamp": "2026-07-04T13:10:00+09:00", "kind": "SYSTEM_METRIC", "message": "default-latest"},
+                {"timestamp": "2026-07-04T11:20:00+09:00", "kind": "SYSTEM_METRIC", "message": "selected-hour"},
+            ]
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+            default_rows = agent.read_log_rows_for_filter(path, "2026-07-04", 11, False, limit=10)
+            selected_rows = agent.read_log_rows_for_filter(path, "2026-07-04", 11, True, limit=10)
+
+            self.assertEqual([row["message"] for row in default_rows], ["default-latest", "selected-hour"])
+            self.assertEqual([row["message"] for row in selected_rows], ["selected-hour"])
+
     def test_status_log_summary_uses_recent_rows_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agent-metrics.jsonl"
             now = datetime.now(agent.KST)
             rows = [
-                {"timestamp": (now - timedelta(hours=2)).isoformat(), "message": "old"},
-                {"timestamp": (now - timedelta(minutes=20)).isoformat(), "message": "recent-1"},
-                {"timestamp": (now - timedelta(minutes=10)).isoformat(), "message": "recent-2"},
+                {"timestamp": (now - timedelta(hours=2)).isoformat(), "kind": "SYSTEM_METRIC", "message": "old"},
+                {"timestamp": (now - timedelta(minutes=20)).isoformat(), "kind": "SYSTEM_METRIC", "message": "recent-1"},
+                {"timestamp": (now - timedelta(minutes=10)).isoformat(), "kind": "SYSTEM_METRIC", "message": "recent-2"},
             ]
             path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
@@ -1008,6 +1225,56 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertEqual(agent.display_log_table_values(row)[4], "12.5%")
         self.assertEqual(agent.display_log_summary_values(row_without_busy)[3], "-")
         self.assertEqual(agent.display_log_table_values(row_without_busy)[4], "-")
+
+    def test_summary_and_table_use_same_core_metric_display_values(self) -> None:
+        row = {
+            "timestamp": "2026-07-04T13:10:00+09:00",
+            "kind": "SYSTEM_METRIC",
+            "payload": {
+                "cpuUsagePercent": 21.5,
+                "memoryUsedPercent": 72.0,
+                "diskBusyEstimatePercent": 8.4,
+                "diskUsedPercent": 87.6,
+                "gpuUsagePercent": 13.2,
+                "message": "System metrics collected.",
+            },
+        }
+
+        summary = agent.display_log_summary_values(row)
+        table = agent.display_log_table_values(row)
+
+        self.assertEqual(summary[1:5], (table[2], table[3], table[4], table[5]))
+        self.assertEqual(summary[3], "8.4%")
+        self.assertEqual(table[4], "8.4%")
+
+    def test_optional_sensor_slots_show_unsupported_status_without_fake_numbers(self) -> None:
+        row = {
+            "timestamp": "2026-07-04T13:10:00+09:00",
+            "kind": "SYSTEM_METRIC",
+            "payload": {
+                "cpuUsagePercent": 21.5,
+                "memoryUsedPercent": 72.0,
+                "diskBusyEstimatePercent": 8.4,
+                "gpuUsagePercent": 13.2,
+                "vramUsagePercent": None,
+                "cpuTempCelsius": None,
+                "gpuTempCelsius": None,
+                "unavailableReason": {
+                    "vramUsagePercent": "VRAM utilization unavailable from windows-performance-counter",
+                    "cpuTempCelsius": "CPU temperature sensor unavailable",
+                    "gpuTempCelsius": "GPU temperature unavailable from windows-performance-counter",
+                },
+            },
+        }
+
+        table = agent.display_log_table_values(row)
+
+        self.assertEqual(table[6], agent.OPTIONAL_SENSOR_UNSUPPORTED_TEXT)
+        self.assertEqual(table[7], agent.OPTIONAL_SENSOR_UNSUPPORTED_TEXT)
+        self.assertEqual(table[8], agent.OPTIONAL_SENSOR_UNSUPPORTED_TEXT)
+        self.assertNotIn("95.0%", table)
+        self.assertNotIn("98.0%", table)
+        self.assertNotIn("0.0C", table)
 
     def test_log_filter_initializes_only_before_user_selection(self) -> None:
         self.assertTrue(agent.should_initialize_log_filter(log_tab_opened=False, user_touched_filter=False))

@@ -888,7 +888,11 @@ DISK_USAGE_FIELDS = ("diskUsage", "diskUsedPercent")
 GPU_USAGE_FIELDS = ("gpuUsage", "gpuUsagePercent")
 GPU_VRAM_FIELDS = ("vramUsage", "vramUsagePercent")
 GPU_TEMP_FIELDS = ("gpuTemp", "gpuTempCelsius")
+OPTIONAL_SENSOR_STATUS_FIELDS = ("vramUsagePercent", "cpuTempCelsius", "gpuTempCelsius")
 WINDOWS_GPU_ENGINE_COUNTER = r"\GPU Engine(*)\Utilization Percentage"
+WINDOWS_DISK_BUSY_COUNTER = r"\PhysicalDisk(_Total)\% Disk Time"
+SYSTEM_METRIC_KIND = "SYSTEM_METRIC"
+OPTIONAL_SENSOR_UNSUPPORTED_TEXT = "현재 수집기 미지원"
 
 
 def is_number(value: Any) -> bool:
@@ -957,18 +961,56 @@ def counter_delta(current: Any, previous: Any, field: str) -> float | None:
     return max(0.0, current_value - previous_value)
 
 
-def disk_busy_percent_from_counters(current: Any, previous: Any, elapsed: float) -> tuple[float | None, str | None]:
+def disk_busy_percent_from_counters(
+    current: Any,
+    previous: Any,
+    elapsed: float,
+) -> tuple[float | None, str | None, str | None]:
     if elapsed <= 0:
-        return None, "disk delta elapsed time unavailable"
+        return None, "disk delta elapsed time unavailable", None
     busy_delta_ms = counter_delta(current, previous, "busy_time")
     if busy_delta_ms is not None:
-        return round(max(0.0, min(100.0, busy_delta_ms / 1000.0 / elapsed * 100.0)), 1), None
+        return round(max(0.0, min(100.0, busy_delta_ms / 1000.0 / elapsed * 100.0)), 1), None, "psutil-busy-time"
     read_delta_ms = counter_delta(current, previous, "read_time")
     write_delta_ms = counter_delta(current, previous, "write_time")
     if read_delta_ms is not None and write_delta_ms is not None:
         io_delta_ms = read_delta_ms + write_delta_ms
-        return round(max(0.0, min(100.0, io_delta_ms / 1000.0 / elapsed * 100.0)), 1), None
-    return None, "disk busy_time/read_time/write_time unavailable"
+        return round(max(0.0, min(100.0, io_delta_ms / 1000.0 / elapsed * 100.0)), 1), None, "psutil-read-write-time"
+    return None, "disk busy_time/read_time/write_time unavailable", None
+
+
+def read_windows_disk_busy_percent_powershell(
+    runner: Any = subprocess.run,
+) -> tuple[float | None, str | None]:
+    if os.name != "nt":
+        return None, "Windows disk performance counters unavailable on this OS"
+    command = (
+        "(Get-Counter '\\PhysicalDisk(_Total)\\% Disk Time' -ErrorAction Stop)."
+        "CounterSamples | Select-Object -ExpandProperty CookedValue"
+    )
+    try:
+        result = runner(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None, "PowerShell unavailable"
+    except subprocess.TimeoutExpired:
+        return None, "PowerShell disk counter timed out"
+    except Exception:
+        return None, "PowerShell disk counter query failed"
+    if getattr(result, "returncode", 1) != 0:
+        return None, "PowerShell disk counter query failed"
+    lines = [line.strip() for line in str(getattr(result, "stdout", "")).splitlines() if line.strip()]
+    if not lines:
+        return None, "PowerShell disk counter returned no values"
+    value = clamp_percent(parse_float(lines[-1]))
+    if value is None:
+        return None, "PowerShell disk counter output parse failed"
+    return value, None
 
 
 def read_windows_gpu_usage_percent_win32pdh(win32pdh_module: Any = None) -> tuple[float | None, str | None]:
@@ -1071,6 +1113,15 @@ def should_initialize_log_filter(log_tab_opened: bool, user_touched_filter: bool
     return not log_tab_opened and not user_touched_filter
 
 
+def default_log_filter_values(now: datetime | None = None) -> tuple[str, int]:
+    current = now or datetime.now(KST)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=KST)
+    else:
+        current = current.astimezone(KST)
+    return current.strftime("%Y-%m-%d"), current.hour
+
+
 def build_metric_snapshot(ts: datetime, index: int, event_type: str, payload: dict[str, Any]) -> dict:
     collected_at = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     snapshot = {
@@ -1098,12 +1149,14 @@ class HardwareMetricCollector:
         nvidia_smi_runner: Any = None,
         gpu_counter_reader: Any = None,
         powershell_gpu_counter_reader: Any = None,
+        disk_busy_reader: Any = None,
         time_fn: Any = time.monotonic,
     ) -> None:
         self.psutil = psutil_module
         self.nvidia_smi_runner = nvidia_smi_runner or self.run_nvidia_smi
         self.gpu_counter_reader = gpu_counter_reader or read_windows_gpu_usage_percent_win32pdh
         self.powershell_gpu_counter_reader = powershell_gpu_counter_reader or read_windows_gpu_usage_percent_powershell
+        self.disk_busy_reader = disk_busy_reader or read_windows_disk_busy_percent_powershell
         self.time_fn = time_fn
         self._last_disk_io: Any = None
         self._last_disk_at: float | None = None
@@ -1113,6 +1166,7 @@ class HardwareMetricCollector:
     def collect(self, ts: datetime, index: int) -> dict:
         observed_at = float(self.time_fn())
         payload: dict[str, Any] = {
+            "metricKind": "system",
             "eventType": "SYSTEM_METRIC",
             "message": "System metrics collected.",
             "osErrorEvent": None,
@@ -1125,6 +1179,7 @@ class HardwareMetricCollector:
         self.collect_gpu(payload, reasons)
         self.collect_cpu_temperature(payload, reasons)
         self.collect_top_processes(payload, reasons, observed_at)
+        self.collect_sensor_status(payload, reasons)
 
         payload["unavailableReason"] = reasons
         return build_metric_snapshot(ts, index, "SYSTEM_METRIC", payload)
@@ -1167,6 +1222,7 @@ class HardwareMetricCollector:
     def collect_disk_io(self, payload: dict[str, Any], reasons: dict[str, str], observed_at: float) -> None:
         if self.psutil is None:
             mark_unavailable(payload, reasons, DISK_DELTA_FIELDS, "psutil unavailable")
+            payload["diskCollectorSource"] = "unavailable"
             return
         try:
             current = self.psutil.disk_io_counters()
@@ -1174,6 +1230,7 @@ class HardwareMetricCollector:
             current = None
         if current is None:
             mark_unavailable(payload, reasons, DISK_DELTA_FIELDS, "psutil disk_io_counters unavailable")
+            payload["diskCollectorSource"] = "unavailable"
             return
         previous = self._last_disk_io
         previous_at = self._last_disk_at
@@ -1181,10 +1238,12 @@ class HardwareMetricCollector:
         self._last_disk_at = observed_at
         if previous is None or previous_at is None:
             mark_unavailable(payload, reasons, DISK_DELTA_FIELDS, "disk delta requires previous sample")
+            payload["diskCollectorSource"] = "unavailable"
             return
         elapsed = observed_at - previous_at
         if elapsed <= 0:
             mark_unavailable(payload, reasons, DISK_DELTA_FIELDS, "disk delta elapsed time unavailable")
+            payload["diskCollectorSource"] = "unavailable"
             return
         payload["diskReadBytesPerSec"] = round(
             max(0.0, float(getattr(current, "read_bytes", 0) - getattr(previous, "read_bytes", 0))) / elapsed,
@@ -1202,12 +1261,29 @@ class HardwareMetricCollector:
             max(0.0, float(getattr(current, "write_count", 0) - getattr(previous, "write_count", 0))) / elapsed,
             1,
         )
-        disk_busy, disk_busy_reason = disk_busy_percent_from_counters(current, previous, elapsed)
-        if disk_busy is None:
+        disk_busy, disk_busy_reason, disk_source = disk_busy_percent_from_counters(current, previous, elapsed)
+        disk_bytes_per_sec = payload["diskReadBytesPerSec"] + payload["diskWriteBytesPerSec"]
+        needs_windows_fallback = disk_busy is None or (disk_busy == 0.0 and disk_bytes_per_sec > 0)
+        if needs_windows_fallback:
+            try:
+                fallback_busy, fallback_reason = self.disk_busy_reader()
+            except Exception:
+                fallback_busy, fallback_reason = None, "Windows disk counter query failed"
+            fallback_busy = clamp_percent(fallback_busy)
+            if fallback_busy is not None:
+                payload["diskBusyEstimatePercent"] = fallback_busy
+                payload["diskCollectorSource"] = "windows-performance-counter"
+                return
             payload["diskBusyEstimatePercent"] = None
-            reasons["diskBusyEstimatePercent"] = disk_busy_reason or "disk busy counter unavailable"
+            payload["diskCollectorSource"] = "unavailable"
+            reasons["diskBusyEstimatePercent"] = (
+                fallback_reason
+                or disk_busy_reason
+                or "disk busy counter unavailable"
+            )
         else:
             payload["diskBusyEstimatePercent"] = disk_busy
+            payload["diskCollectorSource"] = disk_source or "psutil"
 
     def run_nvidia_smi(self) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -1355,6 +1431,21 @@ class HardwareMetricCollector:
         else:
             set_metric_aliases(payload, CPU_TEMP_FIELDS, cpu_temp)
 
+    def collect_sensor_status(self, payload: dict[str, Any], reasons: dict[str, str]) -> None:
+        status: dict[str, str] = {}
+        default_reasons = {
+            "vramUsagePercent": "VRAM sensor currently unsupported by this collector",
+            "cpuTempCelsius": "CPU temperature sensor currently unsupported by this collector",
+            "gpuTempCelsius": "GPU temperature sensor currently unsupported by this collector",
+        }
+        for field in OPTIONAL_SENSOR_STATUS_FIELDS:
+            if payload.get(field) is None:
+                status[field] = "unsupported"
+                reasons.setdefault(field, default_reasons[field])
+            else:
+                status[field] = "collected"
+        payload["sensorStatus"] = status
+
     def collect_top_processes(self, payload: dict[str, Any], reasons: dict[str, str], observed_at: float) -> None:
         if self.psutil is None:
             payload["topCpuProcess"] = None
@@ -1460,6 +1551,7 @@ def sample_metric_snapshot(ts: datetime, index: int) -> dict:
     gpu_temp = round(min(91, 70 + index * 1.8 + random.random() * 3), 1)
     cpu_temp = round(min(86, 62 + index * 1.2 + random.random() * 2), 1)
     payload = {
+        "metricKind": "sample-demo",
         "cpuUsage": cpu_usage,
         "cpuUsagePercent": cpu_usage,
         "memoryUsage": memory_usage,
@@ -2094,6 +2186,15 @@ def log_payload(row: dict[str, Any]) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def normalized_log_kind(row: dict[str, Any]) -> str:
+    value = log_value(row, "kind", "eventType")
+    return str(value).strip().upper() if value is not None else ""
+
+
+def is_system_metric_row(row: dict[str, Any]) -> bool:
+    return normalized_log_kind(row) == SYSTEM_METRIC_KIND
+
+
 def log_value(row: dict[str, Any], *fields: str) -> Any:
     payload = log_payload(row)
     for field in fields:
@@ -2140,9 +2241,48 @@ def read_log_hour(path: Path, date_text: str, hour: int, limit: int = 500) -> li
             if not isinstance(row, dict):
                 continue
             timestamp = parse_log_timestamp(row)
-            if timestamp and timestamp.date() == selected_date and timestamp.hour == hour:
+            if timestamp and timestamp.date() == selected_date and timestamp.hour == hour and is_system_metric_row(row):
                 rows.append(row)
-    return rows[-limit:]
+    rows.sort(key=lambda row: parse_log_timestamp(row) or datetime.min.replace(tzinfo=KST), reverse=True)
+    return rows[:limit]
+
+
+def read_log_day_latest(path: Path, date_text: str, limit: int = LOG_TABLE_LIMIT) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        selected_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+    except ValueError:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict) or not is_system_metric_row(row):
+                continue
+            timestamp = parse_log_timestamp(row)
+            if timestamp and timestamp.date() == selected_date:
+                rows.append(row)
+    rows.sort(key=lambda row: parse_log_timestamp(row) or datetime.min.replace(tzinfo=KST), reverse=True)
+    return rows[:limit]
+
+
+def read_log_rows_for_filter(
+    path: Path,
+    date_text: str,
+    hour: int,
+    user_touched_filter: bool,
+    limit: int = LOG_TABLE_LIMIT,
+) -> list[dict[str, Any]]:
+    if user_touched_filter:
+        return read_log_hour(path, date_text, hour, limit)
+    return read_log_day_latest(path, date_text, limit)
 
 
 def format_percent(value: Any) -> str:
@@ -2154,6 +2294,24 @@ def format_percent(value: Any) -> str:
 def format_temperature(value: Any) -> str:
     if isinstance(value, int | float):
         return f"{value:.1f}C"
+    return "-"
+
+
+def format_optional_sensor_percent(row: dict[str, Any], *fields: str) -> str:
+    value = log_value(row, *fields)
+    if isinstance(value, int | float):
+        return f"{value:.1f}%"
+    if is_system_metric_row(row):
+        return OPTIONAL_SENSOR_UNSUPPORTED_TEXT
+    return "-"
+
+
+def format_optional_sensor_temperature(row: dict[str, Any], *fields: str) -> str:
+    value = log_value(row, *fields)
+    if isinstance(value, int | float):
+        return f"{value:.1f}C"
+    if is_system_metric_row(row):
+        return OPTIONAL_SENSOR_UNSUPPORTED_TEXT
     return "-"
 
 
@@ -2199,28 +2357,39 @@ def display_log_event_summary(row: dict[str, Any]) -> str:
     return sanitize_display_text(display_log_message(row), 80)
 
 
-def display_log_table_values(row: dict[str, Any]) -> tuple[str, ...]:
+def display_core_metric_values(row: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
-        format_log_time(row),
-        display_log_kind(row),
         format_percent(log_value(row, "cpuUsage", "cpuUsagePercent")),
         format_percent(log_value(row, "memoryUsage", "ramUsage", "memoryUsedPercent")),
         format_percent(log_value(row, "diskBusyEstimatePercent")),
         format_percent(log_value(row, "gpuUsage", "gpuUsagePercent")),
-        format_percent(log_value(row, "vramUsage", "vramUsagePercent")),
-        format_temperature(log_value(row, "cpuTemp", "cpuTempCelsius", "cpuTemperatureCelsius")),
-        format_temperature(log_value(row, "gpuTemp", "gpuTempCelsius", "gpuTemperatureCelsius")),
+    )
+
+
+def display_log_table_values(row: dict[str, Any]) -> tuple[str, ...]:
+    cpu, memory, disk, gpu = display_core_metric_values(row)
+    return (
+        format_log_time(row),
+        display_log_kind(row),
+        cpu,
+        memory,
+        disk,
+        gpu,
+        format_optional_sensor_percent(row, "vramUsage", "vramUsagePercent"),
+        format_optional_sensor_temperature(row, "cpuTemp", "cpuTempCelsius", "cpuTemperatureCelsius"),
+        format_optional_sensor_temperature(row, "gpuTemp", "gpuTempCelsius", "gpuTemperatureCelsius"),
         display_log_message(row),
     )
 
 
 def display_log_summary_values(row: dict[str, Any]) -> tuple[str, ...]:
+    cpu, memory, disk, gpu = display_core_metric_values(row)
     return (
         format_log_time(row),
-        format_percent(log_value(row, "cpuUsage", "cpuUsagePercent")),
-        format_percent(log_value(row, "memoryUsage", "ramUsage", "memoryUsedPercent")),
-        format_percent(log_value(row, "diskBusyEstimatePercent")),
-        format_percent(log_value(row, "gpuUsage", "gpuUsagePercent")),
+        cpu,
+        memory,
+        disk,
+        gpu,
         display_log_event_summary(row),
     )
 
@@ -2234,7 +2403,7 @@ def read_status_log_summary_rows(path: Path, limit: int = STATUS_LOG_SUMMARY_LIM
             continue
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=KST)
-        if timestamp >= cutoff:
+        if timestamp >= cutoff and is_system_metric_row(row):
             rows.append(row)
     return rows[-limit:]
 
@@ -4641,12 +4810,22 @@ def show_log_viewer(
         refresh_log_summary()
 
     def refresh_log() -> None:
+        if not log_filter_state["userTouched"]:
+            current_date, current_hour = default_log_filter_values()
+            set_date_filter(current_date)
+            hour_value.set(f"{current_hour:02d}:00")
         try:
             selected_hour = int(hour_value.get().split(":", 1)[0])
         except ValueError:
             selected_hour = datetime.now(KST).hour
         selected_date = selected_date_text()
-        rows = read_log_hour(path, selected_date, selected_hour, LOG_TABLE_LIMIT)
+        rows = read_log_rows_for_filter(
+            path,
+            selected_date,
+            selected_hour,
+            log_filter_state["userTouched"],
+            LOG_TABLE_LIMIT,
+        )
         tree.delete(*tree.get_children())
         for index, row in enumerate(rows):
             tree.insert("", "end", values=display_log_table_values(row), tags=("odd" if index % 2 else "even",))
@@ -4655,7 +4834,12 @@ def show_log_viewer(
         else:
             log_empty_label.place(relx=0.5, rely=0.52, anchor="center")
             log_empty_label.lift()
-        range_status.set(f"범위 {selected_date} {selected_hour:02d}:00 | 표시 {len(rows)}개")
+        range_label = (
+            f"{selected_date} {selected_hour:02d}:00"
+            if log_filter_state["userTouched"]
+            else f"{selected_date} 최신"
+        )
+        range_status.set(f"범위 {range_label} | 표시 {len(rows)}개")
 
     def refresh_diagnosis_detail() -> None:
         model = diagnosis_detail_model(config, path)
@@ -4723,9 +4907,9 @@ def show_log_viewer(
         support_view.pack_forget()
         log_view.pack(fill="both", expand=True)
         if should_initialize_log_filter(log_filter_state["logTabOpened"], log_filter_state["userTouched"]):
-            now = datetime.now(KST)
-            set_date_filter(now.strftime("%Y-%m-%d"))
-            hour_value.set(f"{now.hour:02d}:00")
+            current_date, current_hour = default_log_filter_values()
+            set_date_filter(current_date)
+            hour_value.set(f"{current_hour:02d}:00")
         log_filter_state["logTabOpened"] = True
         if not range_badge.winfo_ismapped():
             range_badge.pack(side="right")
@@ -4743,9 +4927,9 @@ def show_log_viewer(
         refresh_diagnosis_detail()
 
     def set_current_hour() -> None:
-        now = datetime.now(KST)
-        set_date_filter(now.strftime("%Y-%m-%d"))
-        hour_value.set(f"{now.hour:02d}:00")
+        current_date, current_hour = default_log_filter_values()
+        set_date_filter(current_date)
+        hour_value.set(f"{current_hour:02d}:00")
         log_filter_state["userTouched"] = False
         log_filter_state["logTabOpened"] = False
         refresh_log()
