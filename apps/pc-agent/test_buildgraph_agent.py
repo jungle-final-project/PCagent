@@ -51,6 +51,19 @@ class StaticMetricCollector:
 
 
 class AgentGoal1112Test(unittest.TestCase):
+    def make_config(self, directory: str, agent_token: str | None = "raw-agent-token") -> agent.AgentConfig:
+        return agent.AgentConfig(
+            api_base_url="http://localhost:8080",
+            activation_token="activation-token",
+            device_fingerprint_hash="fingerprint",
+            os_version="Windows 11",
+            agent_token=agent_token,
+            log_dir=Path(directory),
+            agent_version="1.2.3",
+            policy_version="test-policy",
+            web_base_url="http://localhost:5173",
+        )
+
     def test_append_metric_writes_required_system_jsonl_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = agent.AgentConfig(
@@ -1512,6 +1525,187 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertEqual(model["pcStatusCard"]["value"], "주의")
             self.assertEqual(model["pcStatusCard"]["tone"], "warning")
             self.assertEqual(model["homeDetection"]["title"], "메모리 사용량 높음")
+
+    def test_local_diagnosis_model_reports_no_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            config = self.make_config(directory)
+
+            diagnosis = agent.local_diagnosis_model(config, path)
+
+            self.assertEqual(diagnosis["statusKey"], "no_logs")
+            self.assertEqual(diagnosis["tone"], "muted")
+            self.assertFalse(diagnosis["issueDetected"])
+            self.assertFalse(diagnosis["asReady"])
+            self.assertIn("로그", diagnosis["summary"])
+
+    def test_local_diagnosis_model_reports_normal_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": now.isoformat(),
+                        "kind": "SYSTEM_METRIC",
+                        "cpuUsagePercent": 18.0,
+                        "memoryUsedPercent": 40.0,
+                        "message": "System metrics collected.",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(directory)
+
+            diagnosis = agent.local_diagnosis_model(config, path)
+
+            self.assertEqual(diagnosis["statusKey"], "normal")
+            self.assertEqual(diagnosis["tone"], "ok")
+            self.assertFalse(diagnosis["issueDetected"])
+            self.assertFalse(diagnosis["asReady"])
+
+    def test_local_diagnosis_model_reports_warning_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": (now - timedelta(minutes=1)).isoformat(),
+                        "kind": "SYSTEM_METRIC",
+                        "memoryUsedPercent": 88.0,
+                        "message": "System metrics collected.",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(directory)
+
+            diagnosis = agent.local_diagnosis_model(config, path)
+
+            self.assertEqual(diagnosis["statusKey"], "warning")
+            self.assertEqual(diagnosis["tone"], "warning")
+            self.assertTrue(diagnosis["issueDetected"])
+            self.assertTrue(diagnosis["asReady"])
+
+    def test_local_diagnosis_model_reports_danger_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": now.isoformat(),
+                        "kind": "EVENT_LOG",
+                        "message": "Kernel-Power unexpected shutdown repeated.",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(directory)
+
+            diagnosis = agent.local_diagnosis_model(config, path)
+
+            self.assertEqual(diagnosis["statusKey"], "danger")
+            self.assertEqual(diagnosis["tone"], "danger")
+            self.assertTrue(diagnosis["issueDetected"])
+            self.assertTrue(diagnosis["asReady"])
+
+    def test_local_diagnosis_model_allows_local_result_when_agent_is_unregistered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": (now - timedelta(minutes=1)).isoformat(),
+                        "kind": "SYSTEM_METRIC",
+                        "memoryUsedPercent": 90.0,
+                        "message": "System metrics collected.",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(directory, agent_token=None)
+
+            diagnosis = agent.local_diagnosis_model(config, path)
+
+            self.assertEqual(diagnosis["statusKey"], "warning")
+            self.assertTrue(diagnosis["issueDetected"])
+            self.assertFalse(diagnosis["agentRegistered"])
+            self.assertFalse(diagnosis["asReady"])
+            self.assertIn("/support/new", diagnosis["registrationMessage"])
+
+    def test_diagnosis_history_is_visible_and_prunes_rows_older_than_30_days(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            config = self.make_config(directory)
+            now = datetime(2026, 7, 6, 10, 0, tzinfo=agent.KST)
+            old_row = agent.diagnosis_history_row(
+                config,
+                {
+                    "statusLabel": "주의",
+                    "tone": "warning",
+                    "summary": "old diagnosis",
+                    "issueDetected": True,
+                    "asReady": True,
+                    "agentRegistered": True,
+                },
+                now - timedelta(days=31),
+            )
+            metric_row = {
+                "timestamp": (now - timedelta(days=31)).isoformat(),
+                "kind": "SYSTEM_METRIC",
+                "message": "old metric should stay",
+            }
+            path.write_text(
+                json.dumps(old_row, ensure_ascii=False)
+                + "\n"
+                + json.dumps(metric_row, ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+
+            agent.append_diagnosis_history(
+                config,
+                path,
+                {
+                    "statusLabel": "정상",
+                    "tone": "ok",
+                    "summary": "new diagnosis",
+                    "issueDetected": False,
+                    "asReady": False,
+                    "agentRegistered": True,
+                },
+                now,
+            )
+
+            rows = agent.read_log_tail(path, 10)
+            self.assertEqual([row["message"] for row in rows], ["old metric should stay", "new diagnosis"])
+            latest_rows = agent.read_log_day_latest(path, "2026-07-06", limit=10)
+            self.assertEqual(latest_rows[0]["kind"], agent.DIAGNOSIS_HISTORY_KIND)
+            self.assertEqual(agent.display_log_event_summary(latest_rows[0]), "진단 이력")
+
+    def test_diagnosis_history_rows_do_not_create_pc_status_signals(self) -> None:
+        now = datetime.now(agent.KST)
+        rows = [
+            {
+                "timestamp": now.isoformat(),
+                "kind": agent.DIAGNOSIS_HISTORY_KIND,
+                "message": "Kernel-Power unexpected shutdown repeated.",
+            }
+        ]
+
+        self.assertEqual(agent.detect_recent_signals(rows), [])
+
+    def test_home_support_request_requires_prior_diagnosis(self) -> None:
+        message = agent.home_support_request_block_message(None)
+
+        self.assertEqual(message, "먼저 PC 진단하기를 실행해 주세요.")
 
     def test_diagnosis_detail_model_empty_state_without_logs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

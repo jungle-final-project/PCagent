@@ -94,6 +94,8 @@ HOME_MEMORY_WARNING_THRESHOLD = 85.0
 DIAGNOSIS_DETAIL_EVENT_LIMIT = 5
 DIAGNOSIS_DETAIL_WARNING_THRESHOLD = HOME_MEMORY_WARNING_THRESHOLD
 DIAGNOSIS_DETAIL_DANGER_THRESHOLD = 95.0
+DIAGNOSIS_HISTORY_KIND = "DIAGNOSIS_RUN"
+DIAGNOSIS_HISTORY_RETENTION_DAYS = 30
 HOME_USAGE_LOOKBACK_MINUTES = 5
 UI_FONT_CANDIDATES = ("Segoe UI Variable", "Segoe UI", "Malgun Gothic")
 FONT_BODY_PX = 14
@@ -2195,6 +2197,14 @@ def is_system_metric_row(row: dict[str, Any]) -> bool:
     return normalized_log_kind(row) == SYSTEM_METRIC_KIND
 
 
+def is_diagnosis_history_row(row: dict[str, Any]) -> bool:
+    return normalized_log_kind(row) == DIAGNOSIS_HISTORY_KIND
+
+
+def is_visible_log_row(row: dict[str, Any]) -> bool:
+    return is_system_metric_row(row) or is_diagnosis_history_row(row)
+
+
 def log_value(row: dict[str, Any], *fields: str) -> Any:
     payload = log_payload(row)
     for field in fields:
@@ -2241,7 +2251,7 @@ def read_log_hour(path: Path, date_text: str, hour: int, limit: int = 500) -> li
             if not isinstance(row, dict):
                 continue
             timestamp = parse_log_timestamp(row)
-            if timestamp and timestamp.date() == selected_date and timestamp.hour == hour and is_system_metric_row(row):
+            if timestamp and timestamp.date() == selected_date and timestamp.hour == hour and is_visible_log_row(row):
                 rows.append(row)
     rows.sort(key=lambda row: parse_log_timestamp(row) or datetime.min.replace(tzinfo=KST), reverse=True)
     return rows[:limit]
@@ -2264,7 +2274,7 @@ def read_log_day_latest(path: Path, date_text: str, limit: int = LOG_TABLE_LIMIT
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(row, dict) or not is_system_metric_row(row):
+            if not isinstance(row, dict) or not is_visible_log_row(row):
                 continue
             timestamp = parse_log_timestamp(row)
             if timestamp and timestamp.date() == selected_date:
@@ -2348,6 +2358,7 @@ def display_log_event_summary(row: dict[str, Any]) -> str:
     labels = {
         "DEMO_METRIC": "상태 수집",
         "SYSTEM_METRIC": "상태 수집",
+        "DIAGNOSIS_RUN": "진단 이력",
         "DISPLAY_DRIVER_WARNING": "드라이버 경고",
         "EVENT_LOG": "시스템 이벤트",
         "AGENT_HEALTH": "Agent 상태",
@@ -2403,7 +2414,7 @@ def read_status_log_summary_rows(path: Path, limit: int = STATUS_LOG_SUMMARY_LIM
             continue
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=KST)
-        if timestamp >= cutoff and is_system_metric_row(row):
+        if timestamp >= cutoff and is_visible_log_row(row):
             rows.append(row)
     return rows[-limit:]
 
@@ -2461,6 +2472,8 @@ def detect_recent_signals(rows: Sequence[dict[str, Any]], limit: int = STATUS_HO
     signals: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in reversed(list(rows)):
+        if is_diagnosis_history_row(row):
+            continue
         signal = detect_signal(row)
         if signal is None or signal["code"] in seen:
             continue
@@ -2605,7 +2618,7 @@ def event_panel_symptom(signals: Sequence[dict[str, Any]]) -> str:
 def event_panel_failure_message(exception: Exception) -> str:
     text = str(exception).lower()
     if "agenttoken is missing" in text or "http 401" in text or "http 403" in text:
-        return "Agent 등록 상태를 확인해야 전송할 수 있습니다."
+        return "PC Agent 재등록이 필요합니다. 재등록이 어렵다면 웹 /support/new 에서 AS를 접수해 주세요."
     if "consent" in text or "consentaccepted" in text:
         return "서버 업로드 동의가 필요해 전송할 수 없습니다."
     if "no log rows" in text or "log file does not exist" in text:
@@ -2618,9 +2631,9 @@ def event_panel_failure_message(exception: Exception) -> str:
 def as_rag_preview_failure_message(exception: Exception) -> str:
     text = str(exception).lower()
     if "agenttoken is missing" in text or "http 401" in text or "http 403" in text:
-        return "Agent 등록 상태를 확인해야 AI 추천을 받을 수 있습니다."
+        return "PC Agent 재등록이 필요합니다. 재등록이 어렵다면 웹 /support/new 에서 AS를 접수해 주세요."
     if "consent" in text or "consentaccepted" in text:
-        return "서버 업로드 동의가 필요해 AI 추천을 받을 수 없습니다."
+        return "서버 업로드 동의가 필요해 서버 추천을 받을 수 없습니다."
     if "no log rows" in text or "log file does not exist" in text:
         return "분석할 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요."
     if (
@@ -2631,8 +2644,8 @@ def as_rag_preview_failure_message(exception: Exception) -> str:
         or "unreachable" in text
         or "연결" in text
     ):
-        return "서버 연결을 확인할 수 없어 AI 추천을 받지 못했습니다."
-    return "AI 추천을 받지 못했습니다. 등록, 동의, 서버 연결 상태를 확인해 주세요."
+        return "서버 연결을 확인할 수 없어 서버 추천을 받지 못했습니다."
+    return "서버 추천을 받지 못했습니다. 등록, 동의, 서버 연결 상태를 확인해 주세요."
 
 
 def latest_upload_status(rows: Sequence[dict[str, Any]]) -> str:
@@ -2686,7 +2699,7 @@ def startup_card_status() -> dict[str, str]:
 
 
 def status_home_model(config: AgentConfig, path: Path) -> dict[str, Any]:
-    rows = read_log_tail(path, LOG_TABLE_LIMIT)
+    rows = [row for row in read_log_tail(path, LOG_TABLE_LIMIT) if not is_diagnosis_history_row(row)]
     signals = detect_recent_signals(rows)
     home_detection = status_home_detection(rows, signals)
     pc_card = pc_status_card(rows, signals, home_detection)
@@ -2704,6 +2717,138 @@ def status_home_model(config: AgentConfig, path: Path) -> dict[str, Any]:
         "signals": signals,
         "homeDetection": home_detection,
     }
+
+
+def local_diagnosis_model(config: AgentConfig, path: Path) -> dict[str, Any]:
+    rows = [row for row in read_log_tail(path, LOG_TABLE_LIMIT) if not is_diagnosis_history_row(row)]
+    home_model = status_home_model(config, path)
+    pc_card = home_model["pcStatusCard"]
+    tone = str(pc_card.get("tone", "muted"))
+    detection = home_model.get("homeDetection")
+    detail = sanitize_display_text(pc_card.get("detail"), 120)
+
+    if not rows:
+        status_key = "no_logs"
+        status_label = "로그 없음"
+        tone = "muted"
+        issue_detected = False
+        summary = "분석할 로컬 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요."
+    elif tone == "danger":
+        status_key = "danger"
+        status_label = "위험"
+        issue_detected = True
+        summary = f"위험: {detail}"
+    elif tone == "warning":
+        status_key = "warning"
+        status_label = "주의"
+        issue_detected = True
+        summary = f"주의: {detail}"
+    else:
+        status_key = "normal"
+        status_label = "정상"
+        issue_detected = False
+        summary = "최근 로컬 로그 기준 정상입니다. AS 접수가 필요한 이상 신호는 없습니다."
+
+    agent_registered = bool(config.agent_token)
+    as_ready = issue_detected and agent_registered
+    registration_message = (
+        ""
+        if agent_registered
+        else f"PC Agent 재등록이 필요합니다. 재등록이 어렵다면 웹 {support_new_url(config)} 에서 AS를 접수해 주세요."
+    )
+    detected_title = ""
+    if isinstance(detection, dict):
+        detected_title = sanitize_display_text(detection.get("title"), 80)
+
+    return {
+        "statusKey": status_key,
+        "statusLabel": status_label,
+        "tone": tone,
+        "summary": summary,
+        "issueDetected": issue_detected,
+        "asReady": as_ready,
+        "agentRegistered": agent_registered,
+        "registrationMessage": registration_message,
+        "detectedTitle": detected_title,
+    }
+
+
+def diagnosis_history_row(config: AgentConfig, diagnosis: dict[str, Any], observed_at: datetime | None = None) -> dict[str, Any]:
+    observed = observed_at or datetime.now(KST)
+    payload = {
+        "diagnosisStatus": diagnosis.get("statusLabel"),
+        "diagnosisTone": diagnosis.get("tone"),
+        "summary": diagnosis.get("summary"),
+        "issueDetected": bool(diagnosis.get("issueDetected")),
+        "asReady": bool(diagnosis.get("asReady")),
+        "agentRegistered": bool(diagnosis.get("agentRegistered")),
+        "supportUrl": support_new_url(config),
+    }
+    return {
+        "schemaVersion": config.schema_version,
+        "timestamp": observed.isoformat(),
+        "collectedAt": observed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "kind": DIAGNOSIS_HISTORY_KIND,
+        "eventType": DIAGNOSIS_HISTORY_KIND,
+        "message": sanitize_display_text(diagnosis.get("summary"), 180),
+        "status": diagnosis.get("statusLabel"),
+        "summary": diagnosis.get("summary"),
+        "agentId": config.device_fingerprint_hash,
+        "payload": payload,
+        "privacyFlags": {
+            "containsRawPath": False,
+            "masked": True,
+        },
+    }
+
+
+def prune_diagnosis_history(path: Path, now: datetime | None = None) -> None:
+    if not path.exists():
+        return
+    observed_now = now or datetime.now(KST)
+    cutoff = observed_now - timedelta(days=DIAGNOSIS_HISTORY_RETENTION_DAYS)
+    changed = False
+    kept_lines: list[str] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            raw_line = line.rstrip("\n")
+            if not raw_line.strip():
+                continue
+            try:
+                row = json.loads(raw_line)
+            except json.JSONDecodeError:
+                kept_lines.append(raw_line)
+                continue
+            if not isinstance(row, dict) or not is_diagnosis_history_row(row):
+                kept_lines.append(raw_line)
+                continue
+            timestamp = parse_log_timestamp(row)
+            if timestamp is not None and timestamp < cutoff:
+                changed = True
+                continue
+            kept_lines.append(raw_line)
+    if changed:
+        path.write_text(("\n".join(kept_lines) + "\n") if kept_lines else "", encoding="utf-8")
+
+
+def append_diagnosis_history(config: AgentConfig, path: Path, diagnosis: dict[str, Any], now: datetime | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = diagnosis_history_row(config, diagnosis, now)
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(row, ensure_ascii=False) + "\n")
+    prune_diagnosis_history(path, now)
+
+
+def home_support_request_block_message(diagnosis: Any) -> str | None:
+    if not isinstance(diagnosis, dict):
+        return "먼저 PC 진단하기를 실행해 주세요."
+    if diagnosis.get("statusKey") == "no_logs":
+        return "분석할 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요."
+    if not diagnosis.get("issueDetected"):
+        return "최근 로컬 진단은 정상입니다. AS 접수를 만들지 않습니다."
+    if not diagnosis.get("agentRegistered"):
+        return str(diagnosis.get("registrationMessage") or "PC Agent 재등록이 필요합니다. 재등록이 어렵다면 웹 /support/new 에서 AS를 접수해 주세요.")
+    return None
 
 
 def diagnosis_tone_label(tone: str) -> str:
@@ -2813,7 +2958,7 @@ def diagnosis_detail_event_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str
 
 
 def diagnosis_detail_model(config: AgentConfig, path: Path) -> dict[str, Any]:
-    rows = read_log_tail(path, LOG_TABLE_LIMIT)
+    rows = [row for row in read_log_tail(path, LOG_TABLE_LIMIT) if not is_diagnosis_history_row(row)]
     home_model = status_home_model(config, path)
     latest_row = rows[-1] if rows else None
     metric_row = latest_diagnosis_metric_row(rows)
@@ -2862,10 +3007,10 @@ def diagnosis_detail_model(config: AgentConfig, path: Path) -> dict[str, Any]:
         "events": diagnosis_detail_event_rows(summary_rows),
         "aiAnalysis": {
             "available": False,
-            "summary": "AI 분석 결과 없음",
+            "summary": "서버 진단 요약 없음",
             "suspectedCauses": [],
             "recommendedActions": [],
-            "adminReview": "AI 분석 결과가 저장되어 있지 않습니다.",
+            "adminReview": "서버 진단 요약이 저장되어 있지 않습니다.",
         },
     }
 
@@ -3466,6 +3611,8 @@ def show_log_viewer(
             canvas.delete("rounded-bg")
             width = max(2, event.width)
             actual_height = max(2, event.height)
+            fill_color = getattr(canvas, "_agent_fill", colors["card_bg"])
+            outline_color = getattr(canvas, "_agent_outline", colors["border"])
             create_round_rect(
                 canvas,
                 1,
@@ -3473,8 +3620,8 @@ def show_log_viewer(
                 width - 1,
                 actual_height - 1,
                 radius,
-                fill=colors["card_bg"],
-                outline=colors["border"],
+                fill=fill_color,
+                outline=outline_color,
                 tags="rounded-bg",
             )
             canvas.tag_lower("rounded-bg")
@@ -3623,13 +3770,14 @@ def show_log_viewer(
     version_detail = tk.StringVar(value="-")
     selected_nav = tk.StringVar(value="상태")
     home_ai_summary = tk.StringVar(
-        value="PC 진단하기를 누르면 최근 로그를 기준으로 AI 추천을 확인합니다."
+        value="PC 진단하기를 누르면 최근 로컬 로그 기준 진단 결과를 확인합니다."
     )
     home_detection_title = tk.StringVar(value="최근 감지 신호 없음")
     home_detection_detail = tk.StringVar(value="최근 로그에서 AS 접수가 필요한 신호는 아직 없습니다.")
     home_support_status = tk.StringVar(value="")
     home_consent = tk.BooleanVar(value=False)
     home_detection_value: dict[str, Any] = {"signal": None}
+    home_last_diagnosis: dict[str, Any] = {"model": None}
 
     shell = tk.Frame(root, background=colors["app_bg"])
     shell.pack(fill="both", expand=True)
@@ -3744,6 +3892,9 @@ def show_log_viewer(
 
     card_icons: dict[str, tk.Label] = {}
     card_value_labels: dict[str, tk.Label] = {}
+    card_canvases: dict[str, tk.Canvas] = {}
+    card_frames: dict[str, tk.Frame] = {}
+    card_background_widgets: dict[str, list[tk.Widget]] = {}
     tone_colors = {
         "ok": "#0f8f83",
         "warning": "#b7791f",
@@ -3754,8 +3905,25 @@ def show_log_viewer(
     def card_tone_color(tone: str) -> str:
         return tone_colors.get(tone, tone_colors["muted"])
 
-    def draw_card_icon(label: tk.Label, kind: str, tone: str) -> None:
+    def card_tone_background(tone: str) -> str:
+        return {
+            "ok": "#eef8f5",
+            "warning": "#fff7e6",
+            "danger": "#fdeaea",
+            "muted": colors["card_bg"],
+        }.get(tone, colors["card_bg"])
+
+    def card_tone_outline(tone: str) -> str:
+        return {
+            "ok": "#b9dfd8",
+            "warning": "#f0d49a",
+            "danger": "#f0b8b3",
+            "muted": colors["border"],
+        }.get(tone, colors["border"])
+
+    def draw_card_icon(label: tk.Label, kind: str, tone: str, background: str | None = None) -> None:
         stroke_hex = card_tone_color(tone)
+        icon_background = background or colors["card_bg"]
         soft = "#eef8f5" if tone == "ok" else "#f7fafb"
         line = "#cae6df" if tone == "ok" else colors["border"]
         if Image is not None:
@@ -3783,7 +3951,7 @@ def show_log_viewer(
                 buffer = BytesIO()
                 image.save(buffer, format="PNG")
                 photo = tk.PhotoImage(data=base64.b64encode(buffer.getvalue()).decode("ascii"))
-                label.configure(image=photo, text="", background=colors["card_bg"], borderwidth=0, highlightthickness=0)
+                label.configure(image=photo, text="", background=icon_background, borderwidth=0, highlightthickness=0)
                 label._agent_card_photo = photo  # type: ignore[attr-defined]
                 return
             except Exception:
@@ -3813,19 +3981,25 @@ def show_log_viewer(
     ) -> None:
         card_canvas, card = rounded_container(parent, 88, padding=(14, 12), radius=12)
         card_canvas.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
+        card_canvases[key] = card_canvas
+        card_frames[key] = card
+        card_background_widgets[key] = [card]
         card.columnconfigure(0, weight=1)
         card.columnconfigure(1, weight=0)
-        tk.Label(
+        title_label = tk.Label(
             card,
             text=title,
             font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
             foreground=colors["text"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew")
+        )
+        title_label.grid(row=0, column=0, sticky="ew")
+        card_background_widgets[key].append(title_label)
         icon_label = tk.Label(card, background=colors["card_bg"], borderwidth=0, highlightthickness=0)
         icon_label.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(8, 0))
         draw_card_icon(icon_label, icon_kind, "muted")
+        card_background_widgets[key].append(icon_label)
         card_icons[key] = icon_label
         value_label = tk.Label(
             card,
@@ -3837,19 +4011,37 @@ def show_log_viewer(
         )
         value_label.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         card_value_labels[key] = value_label
-        tk.Label(
+        card_background_widgets[key].append(value_label)
+        detail_label = tk.Label(
             card,
             textvariable=detail,
             font=ui_font(FONT_SECONDARY_PX),
             foreground=colors["subtle"],
             background=colors["card_bg"],
             anchor="w",
-        ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        )
+        detail_label.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        card_background_widgets[key].append(detail_label)
 
     add_card(cards, "pc", 0, "PC 상태", pc_status, pc_detail, "pc")
     add_card(cards, "upload", 1, "마지막 업로드", upload_status, upload_detail, "upload")
     add_card(cards, "startup", 2, "시작프로그램", startup_status, startup_detail, "startup")
     add_card(cards, "version", 3, "버전", version_status, version_detail, "version")
+
+    def paint_card_tone(key: str, tone: str) -> str:
+        background = card_tone_background(tone) if key == "pc" else colors["card_bg"]
+        outline = card_tone_outline(tone) if key == "pc" else colors["border"]
+        canvas = card_canvases.get(key)
+        if canvas is not None:
+            canvas._agent_fill = background  # type: ignore[attr-defined]
+            canvas._agent_outline = outline  # type: ignore[attr-defined]
+            canvas.itemconfigure("rounded-bg", fill=background, outline=outline)
+        frame = card_frames.get(key)
+        if frame is not None:
+            frame.configure(background=background)
+        for widget in card_background_widgets.get(key, []):
+            widget.configure(background=background)
+        return background
 
     diagnosis_section, diagnosis_inner = rounded_container(status_view, 224, padding=(14, 12), radius=16)
     diagnosis_section.pack(fill="x", pady=(0, 10))
@@ -4202,10 +4394,10 @@ def show_log_viewer(
     diagnosis_summary_time = tk.StringVar(value="-")
     diagnosis_summary_text = tk.StringVar(value="-")
     diagnosis_empty_text = tk.StringVar(value="")
-    diagnosis_ai_summary = tk.StringVar(value="AI 분석 결과 없음")
+    diagnosis_ai_summary = tk.StringVar(value="서버 진단 요약 없음")
     diagnosis_ai_cause = tk.StringVar(value="-")
     diagnosis_ai_action = tk.StringVar(value="-")
-    diagnosis_ai_admin = tk.StringVar(value="AI 분석 결과가 저장되어 있지 않습니다.")
+    diagnosis_ai_admin = tk.StringVar(value="서버 진단 요약이 저장되어 있지 않습니다.")
 
     diagnosis_summary_card, diagnosis_summary_inner = rounded_container(
         support_view,
@@ -4372,7 +4564,7 @@ def show_log_viewer(
     diagnosis_ai_card.pack(fill="x", pady=(0, 8))
     tk.Label(
         diagnosis_ai_inner,
-        text="AI 분석 요약",
+        text="서버 진단 요약",
         font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["card_bg"],
@@ -4436,7 +4628,7 @@ def show_log_viewer(
     ).pack(fill="x")
     tk.Label(
         support_inner,
-        text="AI 로그 요약과 AS 접수에 필요한 상세 정보를 확인합니다.",
+        text="로그 요약과 AS 접수에 필요한 상세 정보를 확인합니다.",
         font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["muted"],
         background=colors["card_bg"],
@@ -4446,9 +4638,9 @@ def show_log_viewer(
     symptom_title = tk.StringVar(value="")
     symptom_type = tk.StringVar(value="REMOTE_DRIVER_OS")
     symptom_time = tk.StringVar(value="")
-    rag_preview_status = tk.StringVar(value="AI 추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
+    rag_preview_status = tk.StringVar(value="추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
     support_mode = tk.StringVar(value="우선 진단만 받기")
-    rag_preview_status = tk.StringVar(value="AI 추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
+    rag_preview_status = tk.StringVar(value="추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
     support_status = tk.StringVar(value="")
     incident_window_value = tk.StringVar(value="전송 로그 범위는 증상 유형과 발생 시각 기준으로 계산됩니다.")
     support_signal_value: dict[str, Any] | None = None
@@ -4628,7 +4820,7 @@ def show_log_viewer(
         symptom_time.set("")
         symptom_detail.delete("1.0", "end")
         support_mode.set(support_mode_label_for_service("DIAGNOSIS_ONLY"))
-        rag_preview_status.set("AI 추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
+        rag_preview_status.set("추천 확인을 누르면 PC Agent가 선택 구간 로그를 분석해 지원 방식을 제안합니다.")
         incident_window_value.set("문제 발생 전후 로그 범위는 증상 유형과 발생 시각 기준으로 계산합니다.")
 
     def fill_support_from_signal(signal: dict[str, Any] | None) -> None:
@@ -4724,7 +4916,7 @@ def show_log_viewer(
                 window = default_incident_window(selected_type, detected_at=detected_at, trigger_type="USER_REQUEST")
                 gzip_path = config.log_dir.parent / "previews" / f"{window.incident_id}.jsonl.gz"
                 gzip_window(path, gzip_path, window)
-                root.after(0, lambda: set_preview_text("서버에서 AI 추천을 확인하고 있습니다."))
+                root.after(0, lambda: set_preview_text("서버에서 진단 추천을 확인하고 있습니다."))
                 result = preview_as_rag(
                     config,
                     gzip_path,
@@ -4745,11 +4937,31 @@ def show_log_viewer(
             set_support_detail("PC Agent가 최근 30분 로그를 기준으로 상태를 진단합니다.")
 
     def run_home_diagnosis() -> None:
+        diagnosis = local_diagnosis_model(config, path)
+        home_last_diagnosis["model"] = diagnosis
+        append_diagnosis_history(config, path, diagnosis)
+        home_ai_summary.set(str(diagnosis["summary"]))
+        refresh_log_summary()
+
+        if diagnosis["statusKey"] == "no_logs":
+            home_support_status.set("분석할 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요.")
+            return
+        if not diagnosis["issueDetected"]:
+            home_support_status.set("최근 로컬 진단은 정상입니다. AS 접수가 필요한 이상 신호는 없습니다.")
+            return
+        if not diagnosis["agentRegistered"]:
+            home_support_status.set(str(diagnosis["registrationMessage"]))
+            return
+
         prepare_home_support_context()
-        home_support_status.set("")
+        home_support_status.set("이상 신호가 확인되었습니다. 서버 추천을 확인한 뒤 AS 접수를 신청할 수 있습니다.")
         preview_support_recommendation(home_ai_summary)
 
     def submit_home_support_request() -> None:
+        block_message = home_support_request_block_message(home_last_diagnosis.get("model"))
+        if block_message:
+            home_support_status.set(block_message)
+            return
         if not home_consent.get():
             home_support_status.set("최근 30분 진단 로그 전송에 동의하면 AS 접수를 신청할 수 있습니다.")
             return
@@ -4801,11 +5013,12 @@ def show_log_viewer(
         version_detail.set(str(cards_model["version"]["detail"]))
         for key, card in cards_model.items():
             tone = str(card.get("tone", "muted"))
+            icon_background = paint_card_tone(key, tone)
             if key in card_value_labels:
                 card_value_labels[key].configure(foreground=card_tone_color(tone))
             if key in card_icons:
                 icon_kind = "startup" if key == "startup" else key
-                draw_card_icon(card_icons[key], icon_kind, tone)
+                draw_card_icon(card_icons[key], icon_kind, tone, icon_background)
         refresh_home_detection(model["homeDetection"])
         refresh_log_summary()
 
@@ -4956,7 +5169,7 @@ def show_log_viewer(
 
     rounded_button(
         support_actions,
-        "AI 추천 확인",
+        "추천 확인",
         preview_support_recommendation,
         "secondary",
         width=132,
