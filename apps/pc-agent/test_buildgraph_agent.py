@@ -94,6 +94,33 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertEqual(row["message"], "Display driver warning observed.")
         self.assertEqual(row["payload"]["metricKind"], "sample-demo")
 
+    def test_hidden_subprocess_kwargs_hides_windows_console(self) -> None:
+        with patch("buildgraph_agent.os.name", "nt"), \
+            patch.object(agent.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            kwargs = agent.hidden_subprocess_kwargs()
+
+        self.assertEqual(kwargs, {"creationflags": 0x08000000})
+
+    def test_windows_counter_powershell_runs_without_console_window(self) -> None:
+        run = MagicMock(return_value=SimpleNamespace(returncode=0, stdout="12.5\n"))
+        with patch("buildgraph_agent.os.name", "nt"), \
+            patch.object(agent.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \
+            patch("buildgraph_agent.subprocess.run", run):
+            value, reason = agent.read_windows_disk_busy_percent_powershell(runner=agent.subprocess.run)
+
+        self.assertEqual(value, 12.5)
+        self.assertIsNone(reason)
+        self.assertEqual(run.call_args.kwargs["creationflags"], 0x08000000)
+
+    def test_nvidia_smi_runs_without_console_window(self) -> None:
+        run = MagicMock(return_value=SimpleNamespace(returncode=1, stdout=""))
+        with patch("buildgraph_agent.os.name", "nt"), \
+            patch.object(agent.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \
+            patch("buildgraph_agent.subprocess.run", run):
+            agent.HardwareMetricCollector().run_nvidia_smi()
+
+        self.assertEqual(run.call_args.kwargs["creationflags"], 0x08000000)
+
     def test_metric_collector_marks_unavailable_values_without_fake_gpu_or_temperature(self) -> None:
         class FakePsutil:
             def cpu_percent(self, interval: float = 0.0) -> float:

@@ -550,6 +550,13 @@ def support_draft_url(config: AgentConfig, draft_id: str) -> str:
     return f"{support_new_url(config)}?draftId={quote(draft_id)}"
 
 
+def hidden_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return {"creationflags": flag} if flag else {}
+
+
 def restrict_file_to_current_user(path: Path) -> None:
     if os.name == "nt":
         user_sid = current_user_sid()
@@ -569,6 +576,7 @@ def restrict_file_to_current_user(path: Path) -> None:
                 check=False,
                 capture_output=True,
                 text=True,
+                **hidden_subprocess_kwargs(),
             )
         except Exception:
             return
@@ -588,6 +596,7 @@ def current_user_sid() -> str | None:
             check=False,
             capture_output=True,
             text=True,
+            **hidden_subprocess_kwargs(),
         )
     except Exception:
         return None
@@ -995,6 +1004,7 @@ def read_windows_disk_busy_percent_powershell(
             text=True,
             timeout=3,
             check=False,
+            **(hidden_subprocess_kwargs() if runner is subprocess.run else {}),
         )
     except FileNotFoundError:
         return None, "PowerShell unavailable"
@@ -1091,6 +1101,7 @@ def read_windows_gpu_usage_percent_powershell(
             text=True,
             timeout=3,
             check=False,
+            **(hidden_subprocess_kwargs() if runner is subprocess.run else {}),
         )
     except FileNotFoundError:
         return None, "PowerShell unavailable"
@@ -1296,6 +1307,7 @@ class HardwareMetricCollector:
             text=True,
             timeout=2,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
 
     def collect_nvidia_gpu(self, payload: dict[str, Any], reasons: dict[str, str]) -> tuple[bool, str | None]:
