@@ -3866,6 +3866,7 @@ def show_log_viewer(
     home_support_status = tk.StringVar(value="")
     home_consent = tk.BooleanVar(value=False)
     home_detection_value: dict[str, Any] = {"signal": None}
+    home_diagnosis_ready = {"ready": False}
 
     shell = tk.Frame(root, background=colors["app_bg"])
     shell.pack(fill="both", expand=True)
@@ -5172,6 +5173,7 @@ def show_log_viewer(
                 record = diagnosis_history_record(result, window)
                 append_diagnosis_history(current_config, record)
                 refresh_diagnosis_history_list()
+                home_diagnosis_ready["ready"] = True
                 home_support_status.set("진단 결과를 기록 탭에 저장했습니다.")
                 target_text = compact_home_diagnosis_text(record)
             set_preview_text(full_text, target_text if compact_target else None)
@@ -5216,6 +5218,9 @@ def show_log_viewer(
     def submit_home_support_request() -> None:
         if not home_consent.get():
             home_support_status.set("최근 30분 진단 로그 전송에 동의하면 AS 접수를 신청할 수 있습니다.")
+            return
+        if not home_diagnosis_ready["ready"]:
+            home_support_status.set("AS 접수 전 PC 진단받기를 먼저 진행해 주세요.")
             return
         prepare_home_support_context()
         submit_support_request(home_support_status)
