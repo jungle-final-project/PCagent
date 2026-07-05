@@ -989,6 +989,80 @@ class AgentGoal1112Test(unittest.TestCase):
         self.assertIn("HIGH", text)
         self.assertIn("Kernel-Power", text)
 
+    def test_diagnosis_history_record_is_compact_and_masks_sensitive_values(self) -> None:
+        window = agent.default_incident_window(
+            "REMOTE_DRIVER_OS",
+            detected_at=datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST),
+            trigger_type="USER_REQUEST",
+        )
+
+        record = agent.diagnosis_history_record(
+            {
+                "recommendedService": "REMOTE_SUPPORT",
+                "recommendedServiceLabel": "원격지원 신청",
+                "supportDecision": "REMOTE_POSSIBLE",
+                "confidence": "HIGH",
+                "recommendationMessage": "원격지원으로 점검하는 것이 좋습니다. token=secret",
+                "summaryText": "드라이버 오류가 반복되었습니다. C:\\Users\\me\\raw.log",
+                "supportRouting": {
+                    "reasonCodes": ["DRIVER_ERROR_REPEAT"],
+                    "remoteActions": ["DRIVER_ROLLBACK"],
+                },
+                "evidence": [
+                    {
+                        "title": "드라이버 오류",
+                        "summary": "Display driver reset 반복",
+                        "reasonCode": "DRIVER_ERROR_REPEAT",
+                    }
+                ],
+            },
+            window,
+            created_at=datetime(2026, 7, 2, 15, 0, tzinfo=agent.KST),
+        )
+
+        serialized = json.dumps(record, ensure_ascii=False).lower()
+        self.assertEqual(record["recommendedServiceLabel"], "원격지원 신청")
+        self.assertEqual(record["tone"], "warning")
+        self.assertIn("DRIVER_ERROR_REPEAT", record["reasonCodes"])
+        self.assertNotIn("token=secret", serialized)
+        self.assertNotIn("c:\\users", serialized)
+
+    def test_diagnosis_history_round_trip_returns_newest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory) / "logs",
+                agent_version="test-agent",
+                policy_version="test-policy",
+            )
+            window = agent.default_incident_window(
+                "REMOTE_DRIVER_OS",
+                detected_at=datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST),
+                trigger_type="USER_REQUEST",
+            )
+            first = agent.diagnosis_history_record(
+                {"recommendedService": "DIAGNOSIS_ONLY", "summaryText": "첫 번째 진단"},
+                window,
+                created_at=datetime(2026, 7, 2, 14, 0, tzinfo=agent.KST),
+            )
+            second = agent.diagnosis_history_record(
+                {"recommendedService": "VISIT_SUPPORT", "summaryText": "두 번째 진단"},
+                window,
+                created_at=datetime(2026, 7, 2, 15, 0, tzinfo=agent.KST),
+            )
+
+            agent.append_diagnosis_history(config, first)
+            agent.append_diagnosis_history(config, second)
+
+            rows = agent.read_diagnosis_history(config)
+            self.assertEqual(rows[0]["summaryText"], "두 번째 진단")
+            self.assertEqual(rows[1]["summaryText"], "첫 번째 진단")
+            self.assertIn("최근 진단:", agent.compact_home_diagnosis_text(rows[0]))
+
     def test_ensure_default_config_creates_background_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agent-config.json"
@@ -1083,9 +1157,11 @@ class AgentGoal1112Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agent-metrics.jsonl"
             now = datetime.now(agent.KST)
+            demo_at = now - timedelta(minutes=5)
+            system_at = now - timedelta(minutes=4)
             rows = [
                 {
-                    "timestamp": (now - timedelta(minutes=5)).isoformat(),
+                    "timestamp": demo_at.isoformat(),
                     "kind": "DEMO_METRIC",
                     "gpuUsagePercent": 98.0,
                     "vramUsagePercent": 95.0,
@@ -1093,7 +1169,7 @@ class AgentGoal1112Test(unittest.TestCase):
                     "message": "Demo metric collected.",
                 },
                 {
-                    "timestamp": (now - timedelta(minutes=4)).isoformat(),
+                    "timestamp": system_at.isoformat(),
                     "kind": "SYSTEM_METRIC",
                     "gpuUsagePercent": 12.0,
                     "message": "System metrics collected.",
@@ -1102,7 +1178,7 @@ class AgentGoal1112Test(unittest.TestCase):
             path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
             summary = agent.read_status_log_summary_rows(path, 6)
-            selected = agent.read_log_hour(path, now.strftime("%Y-%m-%d"), now.hour)
+            selected = agent.read_log_hour(path, system_at.strftime("%Y-%m-%d"), system_at.hour)
 
             self.assertEqual([row["kind"] for row in summary], ["SYSTEM_METRIC"])
             self.assertEqual([row["kind"] for row in selected], ["SYSTEM_METRIC"])

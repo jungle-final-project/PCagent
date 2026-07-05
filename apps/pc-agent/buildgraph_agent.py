@@ -89,7 +89,9 @@ DEFAULT_POLICY_VERSION = "policy-v1"
 STATUS_HOME_SIGNAL_LIMIT = 3
 LOG_TABLE_LIMIT = 500
 EVENT_PANEL_SIGNAL_LIMIT = 3
-STATUS_LOG_SUMMARY_LIMIT = 8
+STATUS_LOG_SUMMARY_LIMIT = 6
+DIAGNOSIS_HISTORY_FILE = "diagnosis-history.jsonl"
+DIAGNOSIS_HISTORY_LIMIT = 100
 HOME_MEMORY_WARNING_THRESHOLD = 85.0
 DIAGNOSIS_DETAIL_EVENT_LIMIT = 5
 DIAGNOSIS_DETAIL_WARNING_THRESHOLD = HOME_MEMORY_WARNING_THRESHOLD
@@ -1868,6 +1870,182 @@ def format_as_rag_preview(result: dict[str, Any]) -> str:
     return f"추천: {label} / 신뢰도: {confidence}\n{message}"
 
 
+def diagnosis_history_path(config: AgentConfig) -> Path:
+    return config.log_dir.parent / DIAGNOSIS_HISTORY_FILE
+
+
+def string_list(value: Any, limit: int = 6) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        text = sanitize_display_text(item, 80)
+        if text != "-":
+            items.append(text)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def diagnosis_record_tone(recommended_service: str, support_decision: str) -> str:
+    if support_decision in {"VISIT_REQUIRED", "REPAIR_OR_REPLACE"} or recommended_service == "VISIT_SUPPORT":
+        return "danger"
+    if support_decision in {"REMOTE_POSSIBLE", "NEEDS_MORE_INFO"} or recommended_service == "REMOTE_SUPPORT":
+        return "warning"
+    return "ok"
+
+
+def diagnosis_history_record(
+    result: dict[str, Any],
+    window: IncidentWindow,
+    created_at: datetime | None = None,
+) -> dict[str, Any]:
+    created = created_at or datetime.now(KST)
+    routing = result.get("supportRouting") if isinstance(result.get("supportRouting"), dict) else {}
+    recommended_service = str(result.get("recommendedService") or routing.get("recommendedService") or "DIAGNOSIS_ONLY")
+    service_label = str(result.get("recommendedServiceLabel") or routing.get("recommendedServiceLabel") or support_mode_label_for_service(recommended_service))
+    support_decision = str(result.get("supportDecision") or routing.get("recommendedDecision") or "NEEDS_MORE_INFO")
+    evidence_items: list[dict[str, str]] = []
+    evidence = result.get("evidence")
+    if isinstance(evidence, list):
+        for item in evidence[:6]:
+            if not isinstance(item, dict):
+                continue
+            evidence_items.append(
+                {
+                    "title": sanitize_display_text(item.get("title") or item.get("sourceId"), 80),
+                    "summary": sanitize_display_text(item.get("summary"), 140),
+                    "reasonCode": sanitize_display_text(item.get("reasonCode"), 80),
+                }
+            )
+    return {
+        "id": f"diagnosis-{uuid.uuid4()}",
+        "createdAt": created.isoformat(),
+        "recommendedService": recommended_service,
+        "recommendedServiceLabel": service_label,
+        "supportDecision": support_decision,
+        "supportDecisionLabel": sanitize_display_text(result.get("supportDecisionLabel"), 80),
+        "confidence": sanitize_display_text(result.get("confidence") or routing.get("confidence") or "LOW", 20),
+        "recommendationMessage": sanitize_display_text(result.get("recommendationMessage"), 260),
+        "summaryText": sanitize_display_text(result.get("summaryText") or result.get("recommendationMessage"), 420),
+        "reasonCodes": string_list(routing.get("reasonCodes")),
+        "remoteActions": string_list(routing.get("remoteActions")),
+        "visitReasons": string_list(routing.get("visitReasons")),
+        "blockingFactors": string_list(routing.get("blockingFactors")),
+        "evidence": evidence_items,
+        "incidentWindow": window.metadata(),
+        "tone": diagnosis_record_tone(recommended_service, support_decision),
+    }
+
+
+def normalize_diagnosis_history_record(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    recommended_service = str(value.get("recommendedService") or "DIAGNOSIS_ONLY")
+    support_decision = str(value.get("supportDecision") or "NEEDS_MORE_INFO")
+    return {
+        "id": sanitize_display_text(value.get("id") or f"diagnosis-{uuid.uuid4()}", 80),
+        "createdAt": sanitize_display_text(value.get("createdAt"), 40),
+        "recommendedService": recommended_service,
+        "recommendedServiceLabel": sanitize_display_text(
+            value.get("recommendedServiceLabel") or support_mode_label_for_service(recommended_service),
+            80,
+        ),
+        "supportDecision": support_decision,
+        "supportDecisionLabel": sanitize_display_text(value.get("supportDecisionLabel"), 80),
+        "confidence": sanitize_display_text(value.get("confidence") or "LOW", 20),
+        "recommendationMessage": sanitize_display_text(value.get("recommendationMessage"), 260),
+        "summaryText": sanitize_display_text(value.get("summaryText") or value.get("recommendationMessage"), 420),
+        "reasonCodes": string_list(value.get("reasonCodes")),
+        "remoteActions": string_list(value.get("remoteActions")),
+        "visitReasons": string_list(value.get("visitReasons")),
+        "blockingFactors": string_list(value.get("blockingFactors")),
+        "evidence": [
+            {
+                "title": sanitize_display_text(item.get("title"), 80),
+                "summary": sanitize_display_text(item.get("summary"), 140),
+                "reasonCode": sanitize_display_text(item.get("reasonCode"), 80),
+            }
+            for item in value.get("evidence", [])
+            if isinstance(item, dict)
+        ][:6],
+        "incidentWindow": value.get("incidentWindow") if isinstance(value.get("incidentWindow"), dict) else {},
+        "tone": str(value.get("tone") or diagnosis_record_tone(recommended_service, support_decision)),
+    }
+
+
+def append_diagnosis_history(config: AgentConfig, record: dict[str, Any]) -> Path:
+    path = diagnosis_history_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return path
+
+
+def read_diagnosis_history(config: AgentConfig, limit: int = DIAGNOSIS_HISTORY_LIMIT) -> list[dict[str, Any]]:
+    path = diagnosis_history_path(config)
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            record = normalize_diagnosis_history_record(value)
+            if record is not None:
+                rows.append(record)
+    return list(reversed(rows[-limit:]))
+
+
+def format_diagnosis_history_time(value: Any) -> str:
+    parsed = parse_iso_datetime(value)
+    if parsed is None:
+        return "-"
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def compact_home_diagnosis_text(record: dict[str, Any]) -> str:
+    label = sanitize_display_text(record.get("recommendedServiceLabel"), 40)
+    summary = sanitize_display_text(record.get("summaryText") or record.get("recommendationMessage"), 130)
+    return f"최근 진단: {label}\n{summary}"
+
+
+def diagnosis_history_detail_text(record: dict[str, Any]) -> str:
+    lines = [
+        f"진단 시간: {format_diagnosis_history_time(record.get('createdAt'))}",
+        f"추천 서비스: {sanitize_display_text(record.get('recommendedServiceLabel'), 80)}",
+        f"신뢰도: {sanitize_display_text(record.get('confidence'), 20)}",
+        "",
+        "요약",
+        sanitize_display_text(record.get("summaryText"), 420),
+        "",
+        "추천 문구",
+        sanitize_display_text(record.get("recommendationMessage"), 260),
+    ]
+    for title, key in (
+        ("근거 코드", "reasonCodes"),
+        ("원격 조치 후보", "remoteActions"),
+        ("방문 판단 근거", "visitReasons"),
+        ("차단 요인", "blockingFactors"),
+    ):
+        items = record.get(key)
+        if isinstance(items, list) and items:
+            lines.extend(["", title, "- " + "\n- ".join(sanitize_display_text(item, 100) for item in items)])
+    evidence = record.get("evidence")
+    if isinstance(evidence, list) and evidence:
+        lines.extend(["", "근거 요약"])
+        for item in evidence[:6]:
+            if isinstance(item, dict):
+                title = sanitize_display_text(item.get("title"), 80)
+                summary = sanitize_display_text(item.get("summary"), 140)
+                lines.append(f"- {title}: {summary}")
+    return "\n".join(lines)
+
+
 def build_multipart(fields: dict[str, str], file_field: str, file_path: Path) -> tuple[bytes, str]:
     boundary = f"----buildgraph-agent-{uuid.uuid4().hex}"
     parts: list[bytes] = []
@@ -3430,12 +3608,19 @@ def show_log_viewer(
     config.log_dir.mkdir(parents=True, exist_ok=True)
     path = log_file(config)
 
+    def reload_viewer_config() -> AgentConfig:
+        nonlocal config, path
+        config = load_config(config_path)
+        config.log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_file(config)
+        return config
+
     root = tk.Tk()
     root.title("PC Agent")
     apply_agent_window_icon(root)
-    root.geometry("1000x720")
-    root.minsize(1000, 720)
-    root.maxsize(1000, 720)
+    root.geometry("1000x740")
+    root.minsize(1000, 740)
+    root.maxsize(1000, 740)
     root.resizable(False, False)
     colors = {
         "app_bg": "#f5f7f8",
@@ -3674,7 +3859,7 @@ def show_log_viewer(
     version_detail = tk.StringVar(value="-")
     selected_nav = tk.StringVar(value="상태")
     home_ai_summary = tk.StringVar(
-        value="PC 진단하기를 누르면 최근 로그를 기준으로 AI 추천을 확인합니다."
+        value="최근 진단 결과 없음\nPC 진단받기 후 기록 탭에 저장됩니다."
     )
     home_detection_title = tk.StringVar(value="최근 감지 신호 없음")
     home_detection_detail = tk.StringVar(value="최근 로그에서 AS 접수가 필요한 신호는 아직 없습니다.")
@@ -3913,15 +4098,17 @@ def show_log_viewer(
     add_card(cards, "startup", 2, "시작프로그램", startup_status, startup_detail, "startup")
     add_card(cards, "version", 3, "버전", version_status, version_detail, "version")
 
-    diagnosis_section, diagnosis_inner = rounded_container(status_view, 224, padding=(14, 12), radius=16)
+    diagnosis_section, diagnosis_inner = rounded_container(status_view, 286, padding=(14, 12), radius=16)
     diagnosis_section.pack(fill="x", pady=(0, 10))
     diagnosis_inner.columnconfigure(0, weight=1)
+    diagnosis_inner.rowconfigure(0, weight=1, uniform="diagnosis_halves")
+    diagnosis_inner.rowconfigure(2, weight=1, uniform="diagnosis_halves")
     ai_summary_row = tk.Frame(diagnosis_inner, background=colors["card_bg"])
-    ai_summary_row.grid(row=0, column=0, sticky="ew")
+    ai_summary_row.grid(row=0, column=0, sticky="nsew")
     ai_summary_row.columnconfigure(0, weight=1)
-    ai_summary_row.rowconfigure(0, minsize=54)
+    ai_summary_row.rowconfigure(0, minsize=76, weight=1)
     ai_text = tk.Frame(ai_summary_row, background=colors["card_bg"])
-    ai_text.grid(row=0, column=0, sticky="ew", padx=(0, 16))
+    ai_text.grid(row=0, column=0, sticky="sw", padx=(0, 16), pady=(0, 20))
     ai_text.columnconfigure(0, weight=1)
     tk.Label(
         ai_text,
@@ -3939,19 +4126,24 @@ def show_log_viewer(
         background=colors["card_bg"],
         justify="left",
         anchor="w",
-        wraplength=610,
+        wraplength=640,
+        height=3,
     ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
     rounded_button(
         ai_summary_row,
-        "PC 진단하기",
+        "PC 진단받기",
         lambda: run_home_diagnosis(),
         "primary",
         width=118,
         height=32,
-    ).grid(row=0, column=1, sticky="e")
-    tk.Frame(diagnosis_inner, height=1, background=colors["border"]).grid(row=1, column=0, sticky="ew", pady=(12, 10))
-    detection_row = tk.Frame(diagnosis_inner, background=colors["card_bg"])
-    detection_row.grid(row=2, column=0, sticky="ew")
+    ).grid(row=0, column=1, sticky="se", pady=(0, 20))
+    tk.Frame(diagnosis_inner, height=1, background=colors["border"]).grid(row=1, column=0, sticky="ew", pady=(8, 8))
+    detection_block = tk.Frame(diagnosis_inner, background=colors["card_bg"])
+    detection_block.grid(row=2, column=0, sticky="nsew")
+    detection_block.columnconfigure(0, weight=1)
+    detection_block.rowconfigure(0, weight=1)
+    detection_row = tk.Frame(detection_block, background=colors["card_bg"])
+    detection_row.grid(row=0, column=0, sticky="nsew")
     detection_row.columnconfigure(0, weight=1)
     tk.Label(
         detection_row,
@@ -3978,8 +4170,8 @@ def show_log_viewer(
         anchor="w",
         wraplength=540,
     ).grid(row=2, column=0, sticky="ew", pady=(3, 0))
-    action_row = tk.Frame(diagnosis_inner, background=colors["card_bg"])
-    action_row.grid(row=3, column=0, sticky="ew", pady=(12, 4))
+    action_row = tk.Frame(detection_block, background=colors["card_bg"])
+    action_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
     action_row.columnconfigure(1, weight=1)
     consent_row = tk.Frame(
         action_row,
@@ -3996,7 +4188,7 @@ def show_log_viewer(
         borderwidth=0,
         cursor="hand2",
     )
-    consent_marker.pack(side="left", padx=(0, 8), pady=4)
+    consent_marker.pack(side="left", padx=(0, 8), pady=2)
     consent_text = tk.Label(
         consent_row,
         text="최근 30분 진단 로그 전송 동의",
@@ -4005,7 +4197,7 @@ def show_log_viewer(
         font=ui_font(FONT_BODY_PX),
         cursor="hand2",
     )
-    consent_text.pack(side="left", padx=(0, 10), pady=4)
+    consent_text.pack(side="left", padx=(0, 10), pady=2)
 
     def paint_home_consent() -> None:
         selected = bool(home_consent.get())
@@ -4106,8 +4298,69 @@ def show_log_viewer(
         background=colors["card_bg"],
     ).pack()
 
+    log_mode = tk.StringVar(value="diagnosis")
+    log_mode_bar = tk.Frame(log_view, background=colors["app_bg"])
+    log_mode_bar.pack(fill="x", pady=(0, 8))
+    rounded_button(log_mode_bar, "진단 기록", lambda: set_log_mode("diagnosis"), "primary", width=104, height=32).pack(
+        side="left",
+    )
+    rounded_button(log_mode_bar, "원본 로그", lambda: set_log_mode("raw"), "secondary", width=104, height=32).pack(
+        side="left",
+        padx=(8, 0),
+    )
+
+    diagnosis_history_records: dict[str, dict[str, Any]] = {}
+    diagnosis_history_frame = tk.Frame(
+        log_view,
+        background=colors["section_bg"],
+        highlightthickness=1,
+        highlightbackground=colors["border"],
+    )
+    diagnosis_history_frame.columnconfigure(0, weight=1)
+    diagnosis_history_frame.rowconfigure(1, weight=1)
+    tk.Label(
+        diagnosis_history_frame,
+        text="진단 기록",
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
+        foreground=colors["text"],
+        background=colors["section_bg"],
+        anchor="w",
+    ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(10, 6))
+    diagnosis_history_columns = ("time", "service", "summary", "confidence")
+    diagnosis_history_tree = ttk.Treeview(
+        diagnosis_history_frame,
+        columns=diagnosis_history_columns,
+        show="headings",
+        height=12,
+        style="Agent.Treeview",
+    )
+    diagnosis_history_tree.heading("time", text="시간")
+    diagnosis_history_tree.heading("service", text="추천")
+    diagnosis_history_tree.heading("summary", text="간단 문제")
+    diagnosis_history_tree.heading("confidence", text="신뢰도")
+    diagnosis_history_tree.column("time", width=128, minwidth=112, anchor="w", stretch=False)
+    diagnosis_history_tree.column("service", width=128, minwidth=112, anchor="w", stretch=False)
+    diagnosis_history_tree.column("summary", width=470, minwidth=300, anchor="w")
+    diagnosis_history_tree.column("confidence", width=76, minwidth=64, anchor="center", stretch=False)
+    diagnosis_history_tree.tag_configure("odd", background=colors["row_alt"])
+    diagnosis_history_tree.tag_configure("even", background=colors["section_bg"])
+    diagnosis_history_scroll = ttk.Scrollbar(
+        diagnosis_history_frame,
+        orient="vertical",
+        command=diagnosis_history_tree.yview,
+    )
+    diagnosis_history_tree.configure(yscrollcommand=diagnosis_history_scroll.set)
+    diagnosis_history_tree.grid(row=1, column=0, sticky="nsew", padx=(12, 0), pady=(0, 12))
+    diagnosis_history_scroll.grid(row=1, column=1, sticky="ns", padx=(0, 12), pady=(0, 12))
+    diagnosis_history_empty = tk.Label(
+        diagnosis_history_frame,
+        text="아직 저장된 진단 기록이 없습니다. 상태 탭에서 PC 진단받기를 실행해 주세요.",
+        font=ui_font(FONT_BODY_PX),
+        foreground=colors["subtle"],
+        background=colors["section_bg"],
+    )
+
     filters = tk.Frame(log_view, background=colors["app_bg"])
-    filters.pack(fill="x", pady=(0, 8))
     tk.Label(
         filters,
         text="날짜",
@@ -4192,7 +4445,6 @@ def show_log_viewer(
         highlightthickness=1,
         highlightbackground=colors["border"],
     )
-    table_frame.pack(fill="both", expand=True)
     tk.Label(
         table_frame,
         text="전체 로그내용",
@@ -4642,6 +4894,120 @@ def show_log_viewer(
         day_value.set(f"{parsed.day:02d}")
         sync_day_values()
 
+    def pack_log_body(widget: tk.Widget, **options: Any) -> None:
+        try:
+            widget.pack(**options, before=buttons)
+        except NameError:
+            widget.pack(**options)
+
+    def refresh_diagnosis_history_list() -> None:
+        reload_viewer_config()
+        records = read_diagnosis_history(config)
+        diagnosis_history_records.clear()
+        diagnosis_history_tree.delete(*diagnosis_history_tree.get_children())
+        if not records:
+            diagnosis_history_tree.grid_remove()
+            diagnosis_history_scroll.grid_remove()
+            diagnosis_history_empty.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=12, pady=(36, 12))
+            return
+        diagnosis_history_empty.grid_remove()
+        diagnosis_history_tree.grid(row=1, column=0, sticky="nsew", padx=(12, 0), pady=(0, 12))
+        diagnosis_history_scroll.grid(row=1, column=1, sticky="ns", padx=(0, 12), pady=(0, 12))
+        for index, record in enumerate(records):
+            item_id = f"diagnosis-{index}-{record['id']}"
+            diagnosis_history_records[item_id] = record
+            diagnosis_history_tree.insert(
+                "",
+                "end",
+                iid=item_id,
+                values=(
+                    format_diagnosis_history_time(record.get("createdAt")),
+                    sanitize_display_text(record.get("recommendedServiceLabel"), 40),
+                    sanitize_display_text(record.get("summaryText") or record.get("recommendationMessage"), 96),
+                    sanitize_display_text(record.get("confidence"), 20),
+                ),
+                tags=("odd" if index % 2 else "even",),
+            )
+
+    def show_diagnosis_history_detail(record: dict[str, Any]) -> None:
+        panel = tk.Toplevel(root)
+        panel.title("진단 상세")
+        panel.geometry("560x420")
+        panel.minsize(520, 380)
+        panel.configure(background=colors["app_bg"])
+        apply_agent_window_icon(panel)
+        panel.transient(root)
+        container = tk.Frame(panel, background=colors["card_bg"], padx=18, pady=16)
+        container.pack(fill="both", expand=True, padx=14, pady=14)
+        tk.Label(
+            container,
+            text=sanitize_display_text(record.get("recommendedServiceLabel"), 80),
+            font=ui_font(FONT_PAGE_TITLE_PX, "semibold"),
+            foreground=card_tone_color(str(record.get("tone", "muted"))),
+            background=colors["card_bg"],
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            container,
+            text=f"{format_diagnosis_history_time(record.get('createdAt'))} · 신뢰도 {sanitize_display_text(record.get('confidence'), 20)}",
+            font=ui_font(FONT_SECONDARY_PX),
+            foreground=colors["muted"],
+            background=colors["card_bg"],
+            anchor="w",
+        ).pack(fill="x", pady=(4, 10))
+        detail_frame = tk.Frame(container, background=colors["card_bg"])
+        detail_frame.pack(fill="both", expand=True)
+        detail_text = tk.Text(
+            detail_frame,
+            wrap="word",
+            height=12,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+            padx=10,
+            pady=10,
+            font=ui_font(FONT_SECONDARY_PX),
+            foreground=colors["text"],
+            background="#f8fbfb",
+        )
+        detail_scroll = ttk.Scrollbar(detail_frame, orient="vertical", command=detail_text.yview)
+        detail_text.configure(yscrollcommand=detail_scroll.set)
+        detail_text.pack(side="left", fill="both", expand=True)
+        detail_scroll.pack(side="right", fill="y")
+        detail_text.insert("1.0", diagnosis_history_detail_text(record))
+        detail_text.configure(state="disabled")
+        rounded_button(container, "닫기", panel.destroy, "primary", width=96, height=32).pack(side="right", pady=(12, 0))
+        panel.grab_set()
+        panel.focus_set()
+
+    def open_selected_diagnosis_history(event: object = None) -> None:
+        selected = diagnosis_history_tree.selection()
+        if not selected:
+            return
+        record = diagnosis_history_records.get(selected[0])
+        if record is not None:
+            show_diagnosis_history_detail(record)
+
+    diagnosis_history_tree.bind("<Double-1>", open_selected_diagnosis_history)
+    diagnosis_history_tree.bind("<Return>", open_selected_diagnosis_history)
+
+    def set_log_mode(mode: str) -> None:
+        log_mode.set(mode)
+        if mode == "raw":
+            diagnosis_history_frame.pack_forget()
+            if not range_badge.winfo_ismapped():
+                range_badge.pack(side="right")
+            pack_log_body(filters, fill="x", pady=(0, 8))
+            pack_log_body(table_frame, fill="both", expand=True)
+            refresh_log()
+            return
+        range_badge.pack_forget()
+        range_status.set("")
+        filters.pack_forget()
+        table_frame.pack_forget()
+        pack_log_body(diagnosis_history_frame, fill="both", expand=True)
+        refresh_diagnosis_history_list()
+
     def sync_day_values() -> None:
         try:
             year = int(year_value.get())
@@ -4663,6 +5029,7 @@ def show_log_viewer(
         set_date_filter(str(signal["date"]))
         hour_value.set(f"{int(signal['hour']):02d}:00")
         log_filter_state["userTouched"] = True
+        log_mode.set("raw")
         show_log_tab()
 
     def refresh_home_detection(detection: dict[str, Any] | None) -> None:
@@ -4674,6 +5041,15 @@ def show_log_viewer(
         home_detection_title.set(sanitize_display_text(detection.get("title"), 72))
         detail = str(detection.get("detail") or event_panel_signal_summary(detection))
         home_detection_detail.set(sanitize_display_text(detail, 120))
+
+    def refresh_home_diagnosis_summary() -> None:
+        if preview_running["active"]:
+            return
+        records = read_diagnosis_history(config, limit=1)
+        if not records:
+            home_ai_summary.set("최근 진단 결과 없음\nPC 진단받기 후 기록 탭에 저장됩니다.")
+            return
+        home_ai_summary.set(compact_home_diagnosis_text(records[0]))
 
     def support_detail_text() -> str:
         return symptom_detail.get("1.0", "end").strip()
@@ -4725,18 +5101,20 @@ def show_log_viewer(
                 status_target.set(text)
 
         try:
+            current_config = reload_viewer_config()
+            current_path = path
             detected_at = parse_datetime(symptom_time.get(), "symptomTime") if symptom_time.get().strip() else datetime.now(KST)
             selected_type = symptom_type.get() or "REMOTE_DRIVER_OS"
             window = default_incident_window(selected_type, detected_at=detected_at, trigger_type="USER_REQUEST")
-            gzip_path = config.log_dir.parent / "uploads" / f"{window.incident_id}.jsonl.gz"
-            gzip_window(path, gzip_path, window)
+            gzip_path = current_config.log_dir.parent / "uploads" / f"{window.incident_id}.jsonl.gz"
+            gzip_window(current_path, gzip_path, window)
             symptom_parts = [
                 symptom_title.get().strip() or "PC Agent AS 접수",
                 support_mode.get(),
                 support_detail_text(),
             ]
             result = upload_gzip(
-                config,
+                current_config,
                 gzip_path,
                 f"agent-support-{uuid.uuid4()}",
                 " / ".join(part for part in symptom_parts if part),
@@ -4750,19 +5128,34 @@ def show_log_viewer(
         except Exception as exception:
             set_status(event_panel_failure_message(exception))
 
-    def preview_support_recommendation(status_target: Any = None) -> None:
-        def set_preview_text(text: str) -> None:
+    def preview_support_recommendation(
+        status_target: Any = None,
+        save_history: bool = False,
+        compact_target: bool = False,
+    ) -> None:
+        def set_preview_text(text: str, target_text: str | None = None) -> None:
             rag_preview_status.set(text)
             if status_target is not None:
-                status_target.set(text)
+                status_target.set(target_text or text)
 
         if preview_running["active"]:
             return
         preview_running["active"] = True
-        set_preview_text("선택 구간 로그를 준비하고 있습니다.")
+        set_preview_text(
+            "선택 구간 로그를 준비하고 있습니다.",
+            "진단 로그를 준비하고 있습니다." if compact_target else None,
+        )
         support_status.set("")
         symptom_time_text = symptom_time.get()
         selected_type = symptom_type.get() or "REMOTE_DRIVER_OS"
+        try:
+            current_config = reload_viewer_config()
+            current_path = path
+        except Exception as exception:
+            message = as_rag_preview_failure_message(exception)
+            set_preview_text(message, "진단 실패. 등록, 동의, 서버 상태를 확인해 주세요." if compact_target else None)
+            preview_running["active"] = False
+            return
 
         def finish() -> None:
             preview_running["active"] = False
@@ -4773,22 +5166,31 @@ def show_log_viewer(
                 f"문제 발생 전후 로그: {window.started_at.strftime('%Y-%m-%d %H:%M:%S')} ~ "
                 f"{window.ended_at.strftime('%Y-%m-%d %H:%M:%S')}"
             )
-            set_preview_text(format_as_rag_preview(result))
+            full_text = format_as_rag_preview(result)
+            target_text: str | None = None
+            if save_history:
+                record = diagnosis_history_record(result, window)
+                append_diagnosis_history(current_config, record)
+                refresh_diagnosis_history_list()
+                home_support_status.set("진단 결과를 기록 탭에 저장했습니다.")
+                target_text = compact_home_diagnosis_text(record)
+            set_preview_text(full_text, target_text if compact_target else None)
             finish()
 
         def apply_error(exception: Exception) -> None:
-            set_preview_text(as_rag_preview_failure_message(exception))
+            message = as_rag_preview_failure_message(exception)
+            set_preview_text(message, "진단 실패. 등록, 동의, 서버 상태를 확인해 주세요." if compact_target else None)
             finish()
 
         def run_preview() -> None:
             try:
                 detected_at = parse_datetime(symptom_time_text, "symptomTime") if symptom_time_text.strip() else datetime.now(KST)
                 window = default_incident_window(selected_type, detected_at=detected_at, trigger_type="USER_REQUEST")
-                gzip_path = config.log_dir.parent / "previews" / f"{window.incident_id}.jsonl.gz"
-                gzip_window(path, gzip_path, window)
+                gzip_path = current_config.log_dir.parent / "previews" / f"{window.incident_id}.jsonl.gz"
+                gzip_window(current_path, gzip_path, window)
                 root.after(0, lambda: set_preview_text("서버에서 AI 추천을 확인하고 있습니다."))
                 result = preview_as_rag(
-                    config,
+                    current_config,
                     gzip_path,
                     f"agent-rag-preview-{uuid.uuid4()}",
                     window,
@@ -4809,7 +5211,7 @@ def show_log_viewer(
     def run_home_diagnosis() -> None:
         prepare_home_support_context()
         home_support_status.set("")
-        preview_support_recommendation(home_ai_summary)
+        preview_support_recommendation(home_ai_summary, save_history=True, compact_target=True)
 
     def submit_home_support_request() -> None:
         if not home_consent.get():
@@ -4846,6 +5248,7 @@ def show_log_viewer(
             )
 
     def refresh_status() -> None:
+        reload_viewer_config()
         model = status_home_model(config, path)
         cards_model = {
             "pc": model["pcStatusCard"],
@@ -4871,10 +5274,12 @@ def show_log_viewer(
             if key in card_icons:
                 icon_kind = "startup" if key == "startup" else key
                 draw_card_icon(card_icons[key], icon_kind, tone)
+        refresh_home_diagnosis_summary()
         refresh_home_detection(model["homeDetection"])
         refresh_log_summary()
 
     def refresh_log() -> None:
+        reload_viewer_config()
         if not log_filter_state["userTouched"]:
             current_date, current_hour = default_log_filter_values()
             set_date_filter(current_date)
@@ -4907,6 +5312,7 @@ def show_log_viewer(
         range_status.set(f"범위 {range_label} | 표시 {len(rows)}개")
 
     def refresh_diagnosis_detail() -> None:
+        reload_viewer_config()
         model = diagnosis_detail_model(config, path)
         tone = str(model["tone"])
         badge_bg = {
@@ -4971,15 +5377,14 @@ def show_log_viewer(
         status_view.pack_forget()
         support_view.pack_forget()
         log_view.pack(fill="both", expand=True)
-        if should_initialize_log_filter(log_filter_state["logTabOpened"], log_filter_state["userTouched"]):
+        if log_mode.get() == "raw" and should_initialize_log_filter(log_filter_state["logTabOpened"], log_filter_state["userTouched"]):
             current_date, current_hour = default_log_filter_values()
             set_date_filter(current_date)
             hour_value.set(f"{current_hour:02d}:00")
         log_filter_state["logTabOpened"] = True
-        if not range_badge.winfo_ismapped():
-            range_badge.pack(side="right")
-        refresh_log()
-        tree.focus_set()
+        set_log_mode(log_mode.get())
+        if log_mode.get() == "raw":
+            tree.focus_set()
 
     def show_support_tab(signal: dict[str, Any] | None = None) -> None:
         selected_nav.set("진단")
