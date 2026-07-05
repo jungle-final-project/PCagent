@@ -2,7 +2,7 @@ import { ChangeEvent, FormEvent, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { DataTable, Panel, Screen, StateMessage, StatusBadge, statusLabel } from '../../components/ui';
-import { ApiError } from '../../lib/api';
+import { API_BASE_URL, ApiError } from '../../lib/api';
 import { AS_CHAT_DEFAULT_TICKET_ID, getAsChat, sendAsChat, streamAsChat } from './asChatApi';
 import type { AsChatEvidence, AsChatResponse, AsChatToolResult } from './asChatApi';
 import { createSupportTicket, getSupportDraft, getSupportTicket, issueAgentActivationToken, previewAgentLogRag, requestRemoteSupport, submitSupportFeedback, uploadAgentLog } from './supportApi';
@@ -29,6 +29,10 @@ const visitSymptomTypes = new Set([
   'VISIT_POWER_SHUTDOWN',
   'VISIT_FAN_THERMAL'
 ]);
+
+const PC_AGENT_RELEASE_DOWNLOAD_URL =
+  import.meta.env.VITE_PC_AGENT_DOWNLOAD_URL
+  ?? 'https://github.com/jungle-final-project/PCagent/releases/latest/download/agent.exe';
 
 const symptomTypeOptions = [
   ['REMOTE_AGENT', 'Agent 설치/등록/업로드/권한 오류'],
@@ -374,9 +378,10 @@ export function SupportNewPage() {
     setAgentDownloadMessage('');
     try {
       const activation = await issueAgentActivationToken();
-      await downloadAgentExe(activation.activationToken);
+      downloadAgentActivationConfig(activation.activationToken);
+      downloadAgentExe();
       setAgentDownloadState('done');
-      setAgentDownloadMessage('사용자 등록 토큰이 포함된 PC Agent 실행 파일을 내려받았습니다. 실행하면 자동 등록됩니다.');
+      setAgentDownloadMessage('PC Agent 실행 파일과 등록 설정 파일을 내려받았습니다. 둘 다 다운로드 폴더에 둔 뒤 실행하면 자동 등록됩니다.');
     } catch (cause) {
       setAgentDownloadState('error');
       setAgentDownloadMessage(cause instanceof ApiError && cause.status === 401
@@ -1006,15 +1011,32 @@ function toSupportRequestKind(value?: string | null): SupportRequestKind {
   return 'DIAGNOSIS_ONLY';
 }
 
-async function downloadAgentExe(activationToken: string) {
-  const response = await fetch('/downloads/pc-agent/agent.exe');
-  if (!response.ok) {
-    throw new Error('Agent exe download failed.');
-  }
-  const blob = await response.blob();
+function downloadAgentExe() {
+  downloadUrl(PC_AGENT_RELEASE_DOWNLOAD_URL, 'agent.exe');
+}
+
+function downloadAgentActivationConfig(activationToken: string) {
+  const payload = {
+    apiBaseUrl: pcAgentApiBaseUrl(),
+    webBaseUrl: window.location.origin,
+    environment: import.meta.env.MODE ?? 'local',
+    activationToken
+  };
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
-  downloadUrl(url, `BuildGraphAgent-${activationToken}.exe`);
+  downloadUrl(url, `buildgraph-agent-activation-${activationToken.slice(0, 12)}.json`);
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function pcAgentApiBaseUrl() {
+  const configured = import.meta.env.VITE_PC_AGENT_API_BASE_URL ?? API_BASE_URL;
+  if (configured) {
+    return new URL(configured, window.location.origin).origin;
+  }
+  if (window.location.port === '5173') {
+    return `${window.location.protocol}//${window.location.hostname}:8080`;
+  }
+  return window.location.origin;
 }
 
 function downloadUrl(url: string, filename: string) {

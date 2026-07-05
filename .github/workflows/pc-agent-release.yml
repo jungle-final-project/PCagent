@@ -1,0 +1,51 @@
+name: PC Agent Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create or update
+        required: true
+        default: pc-agent-dev
+  push:
+    tags:
+      - pc-agent-v*
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build PC Agent executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build PC Agent executables
+        working-directory: apps/pc-agent
+        shell: pwsh
+        run: .\build-agent-exe.ps1
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-agent-windows
+          path: |
+            apps/pc-agent/dist/agent.exe
+            apps/pc-agent/dist/agent-cli.exe
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          make_latest: true
+          files: |
+            apps/pc-agent/dist/agent.exe
+            apps/pc-agent/dist/agent-cli.exe

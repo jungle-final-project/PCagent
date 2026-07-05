@@ -1,10 +1,21 @@
 BuildGraph PC Agent download
 
-This local demo build does not ship a signed installer or Windows Service yet.
+The web app downloads the PC Agent executable from the GitHub Release asset.
+The repository no longer needs to keep agent.exe under apps/web/public.
+
+Expected release asset:
+
+  https://github.com/jungle-final-project/PCagent/releases/latest/download/agent.exe
+
+The support page also downloads a small activation config file named:
+
+  buildgraph-agent-activation-*.json
 
 Double-click agent.exe:
 
   Creates %LOCALAPPDATA%\BuildGraphAgent\agent-config.json when missing.
+  Imports activationToken/apiBaseUrl/webBaseUrl from the latest activation JSON
+  in the current folder, Downloads, or %LOCALAPPDATA%\BuildGraphAgent.
   Creates %LOCALAPPDATA%\BuildGraphAgent\logs.
   Registers a startup command in the current user's Startup folder.
   Starts demo metric collection in the background.
@@ -43,6 +54,12 @@ Run examples:
   agent-cli.exe doctor --config agent-config.json
   agent-cli.exe collect --config agent-config.json --iterations 1
   agent-cli.exe upload --config agent-config.json --no-open
+
+Release flow:
+
+  1. Build agent.exe from apps\pc-agent.
+  2. Upload agent.exe as a GitHub Release asset named agent.exe.
+  3. Keep the web page pointed at the release download URL.
 
 Not included yet:
 

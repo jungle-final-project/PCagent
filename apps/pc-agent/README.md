@@ -76,7 +76,9 @@ cd C:\나만무\prototype
 .\.venv\Scripts\python.exe apps\pc-agent\buildgraph_agent.py viewer --config apps\pc-agent\agent-config.example.json
 ```
 
-로컬 웹 데모에서 내려받는 파일은 `apps/web/public/downloads/pc-agent/agent.exe`에 둡니다. 새 exe를 만들면 해당 위치에 복사한 뒤 웹 이미지를 다시 빌드합니다.
+웹에서 내려받는 파일은 GitHub Release asset `agent.exe`를 기준으로 배포합니다. 웹은 `VITE_PC_AGENT_DOWNLOAD_URL` 또는 기본 `https://github.com/jungle-final-project/PCagent/releases/latest/download/agent.exe` 링크를 사용하고, 등록에 필요한 `activationToken`, `apiBaseUrl`, `webBaseUrl`은 `buildgraph-agent-activation-*.json` 파일로 함께 내려받습니다.
+
+Release로 배포할 때는 `apps/pc-agent/dist/agent.exe`를 GitHub Release asset 이름 `agent.exe`로 올립니다. Agent는 실행 시 현재 폴더, Downloads, `%LOCALAPPDATA%\BuildGraphAgent`에서 가장 최신 activation JSON을 찾아 등록 정보를 가져옵니다.
 
 ## 출력 예시
 
