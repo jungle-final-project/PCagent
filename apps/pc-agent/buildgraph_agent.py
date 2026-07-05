@@ -29,9 +29,11 @@ from urllib.parse import quote
 
 try:
     import tkinter as tk
+    from tkinter import font as tkfont
     from tkinter import ttk
 except Exception:  # pragma: no cover - optional in minimal packaged runtimes
     tk = None
+    tkfont = None
     ttk = None
 
 try:
@@ -88,12 +90,48 @@ STATUS_HOME_SIGNAL_LIMIT = 3
 LOG_TABLE_LIMIT = 500
 EVENT_PANEL_SIGNAL_LIMIT = 3
 STATUS_LOG_SUMMARY_LIMIT = 8
+HOME_MEMORY_WARNING_THRESHOLD = 85.0
+DIAGNOSIS_DETAIL_EVENT_LIMIT = 5
+DIAGNOSIS_DETAIL_WARNING_THRESHOLD = HOME_MEMORY_WARNING_THRESHOLD
+DIAGNOSIS_DETAIL_DANGER_THRESHOLD = 95.0
+HOME_USAGE_LOOKBACK_MINUTES = 5
+UI_FONT_CANDIDATES = ("Segoe UI Variable", "Segoe UI", "Malgun Gothic")
+FONT_BODY_PX = 14
+FONT_SECONDARY_PX = 12
+FONT_BUTTON_PX = 14
+FONT_SECTION_TITLE_PX = 16
+FONT_PAGE_TITLE_PX = 20
+FONT_LOG_PX = 12
 CARD_ICON_FILES = {
+    "pc": Path("assets/icons/pc-security.png"),
     "server": Path("assets/icons/server-cloud.png"),
     "upload": Path("assets/icons/upload-cloud.png"),
     "startup": Path("assets/icons/startup-windows.png"),
     "version": Path("assets/icons/version-info.png"),
 }
+
+
+def resolve_ui_font_family(root: Any | None = None) -> str:
+    if tkfont is None:
+        return UI_FONT_CANDIDATES[-1]
+    try:
+        installed = {str(name).casefold(): str(name) for name in tkfont.families(root)}
+    except Exception:
+        return UI_FONT_CANDIDATES[-1]
+    for candidate in UI_FONT_CANDIDATES:
+        found = installed.get(candidate.casefold())
+        if found:
+            return found
+    return UI_FONT_CANDIDATES[-1]
+
+
+def tk_ui_font(family: str, size_px: int, weight: str = "regular", underline: bool = False) -> tuple[Any, ...]:
+    styles: list[str] = []
+    if weight in {"semibold", "bold"}:
+        styles.append("bold")
+    if underline:
+        styles.append("underline")
+    return (family, -size_px, *styles)
 EVENT_PANEL_SIGNAL_CODES = {
     "REMOTE_DRIVER_OS",
     "REMOTE_APP_LAUNCHER",
@@ -2264,6 +2302,63 @@ def detect_recent_signals(rows: Sequence[dict[str, Any]], limit: int = STATUS_HO
     return signals
 
 
+def numeric_log_value(row: dict[str, Any], *fields: str) -> float | None:
+    value = log_value(row, *fields)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def home_usage_detection(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+    now = datetime.now(KST)
+    cutoff = now - timedelta(minutes=HOME_USAGE_LOOKBACK_MINUTES)
+    for row in reversed(list(rows)):
+        timestamp = parse_log_timestamp(row)
+        if timestamp is None:
+            continue
+        observed_at = timestamp.astimezone(KST) if timestamp.tzinfo else timestamp.replace(tzinfo=KST)
+        if observed_at < cutoff:
+            continue
+        memory = numeric_log_value(row, "memoryUsage", "ramUsage", "memoryUsedPercent")
+        if memory is not None and memory >= HOME_MEMORY_WARNING_THRESHOLD:
+            return {
+                "code": "REMOTE_STORAGE_MEMORY",
+                "title": "메모리 사용량 높음",
+                "level": "주의",
+                "timestamp": observed_at,
+                "time": observed_at.strftime("%H:%M:%S"),
+                "date": observed_at.strftime("%Y-%m-%d"),
+                "hour": observed_at.hour,
+                "detail": "최근 5분간 메모리 점유율이 높게 유지되었습니다.",
+            }
+    return None
+
+
+def status_home_detection(rows: Sequence[dict[str, Any]], signals: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+    if signals:
+        primary = dict(signals[0])
+        primary["detail"] = event_panel_signal_summary(primary)
+        return primary
+    return home_usage_detection(rows)
+
+
+def pc_status_card(
+    rows: Sequence[dict[str, Any]],
+    signals: Sequence[dict[str, Any]],
+    detection: dict[str, Any] | None,
+) -> dict[str, str]:
+    if any(str(signal.get("level")) == "위험" for signal in signals):
+        return {"value": "문제 감지", "detail": "AS 접수 검토가 필요한 신호가 있습니다", "tone": "danger"}
+    if detection is not None:
+        return {"value": "주의", "detail": sanitize_display_text(detection.get("title"), 40), "tone": "warning"}
+    if not rows:
+        return {"value": "정상", "detail": "최근 감지 신호 없음", "tone": "ok"}
+    return {"value": "정상", "detail": "최근 감지 신호 없음", "tone": "ok"}
+
+
 def event_panel_signals(signals: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2423,20 +2518,186 @@ def startup_card_status() -> dict[str, str]:
 
 def status_home_model(config: AgentConfig, path: Path) -> dict[str, Any]:
     rows = read_log_tail(path, LOG_TABLE_LIMIT)
-    server_card = latest_server_card(rows)
+    signals = detect_recent_signals(rows)
+    home_detection = status_home_detection(rows, signals)
+    pc_card = pc_status_card(rows, signals, home_detection)
     upload_card = latest_upload_card(rows)
     startup_card = startup_card_status()
     return {
         "agentStatus": "정상 실행 중" if config.agent_token else "등록 필요",
-        "serverStatus": latest_server_status(rows),
-        "serverCard": server_card,
+        "pcStatusCard": pc_card,
         "lastUpload": latest_upload_status(rows),
         "uploadCard": upload_card,
         "startupCard": startup_card,
         "version": config.agent_version,
         "policyVersion": config.policy_version,
         "versionCard": {"value": config.agent_version, "detail": "최신 버전", "tone": "ok"},
-        "signals": detect_recent_signals(rows),
+        "signals": signals,
+        "homeDetection": home_detection,
+    }
+
+
+def diagnosis_tone_label(tone: str) -> str:
+    if tone == "danger":
+        return "위험"
+    if tone == "warning":
+        return "주의"
+    if tone == "muted":
+        return "확인 전"
+    return "정상"
+
+
+def diagnosis_metric_status(value: float | None) -> tuple[str, str]:
+    if value is None:
+        return "확인 불가", "muted"
+    if value >= DIAGNOSIS_DETAIL_DANGER_THRESHOLD:
+        return "위험", "danger"
+    if value >= DIAGNOSIS_DETAIL_WARNING_THRESHOLD:
+        return "주의", "warning"
+    return "정상", "ok"
+
+
+def diagnosis_metric_description(name: str, value: float | None, status: str) -> str:
+    if value is None:
+        return f"최근 로그에 {name} 값이 없습니다."
+    if status == "정상":
+        if name == "디스크":
+            return "디스크 busy는 안정적입니다."
+        return f"현재 {name} 사용률은 안정적입니다."
+    if name == "메모리":
+        return "메모리 사용량이 높습니다."
+    if name == "디스크":
+        return "디스크 busy가 높습니다."
+    return f"{name} 사용률이 높습니다."
+
+
+def latest_diagnosis_metric_row(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+    metric_fields = (
+        ("cpuUsage", "cpuUsagePercent"),
+        ("memoryUsage", "ramUsage", "memoryUsedPercent"),
+        ("diskBusyEstimatePercent",),
+        ("gpuUsage", "gpuUsagePercent"),
+    )
+    for row in reversed(list(rows)):
+        if any(numeric_log_value(row, *fields) is not None for fields in metric_fields):
+            return row
+    return None
+
+
+def diagnosis_metric_card(
+    row: dict[str, Any] | None,
+    name: str,
+    fields: Sequence[str],
+    current_label: str,
+    threshold: str,
+) -> dict[str, str]:
+    value = numeric_log_value(row, *fields) if row is not None else None
+    status, tone = diagnosis_metric_status(value)
+    return {
+        "name": name,
+        "status": status,
+        "tone": tone,
+        "currentLabel": current_label,
+        "currentValue": format_percent(value),
+        "threshold": threshold,
+        "description": diagnosis_metric_description(name, value, status),
+    }
+
+
+def diagnosis_detail_event_status(row: dict[str, Any]) -> tuple[str, str]:
+    signal = detect_signal(row)
+    if signal is not None:
+        if str(signal.get("level")) == "위험":
+            return "위험", "danger"
+        return "주의", "warning"
+    values = [
+        numeric_log_value(row, "cpuUsage", "cpuUsagePercent"),
+        numeric_log_value(row, "memoryUsage", "ramUsage", "memoryUsedPercent"),
+        numeric_log_value(row, "diskBusyEstimatePercent"),
+        numeric_log_value(row, "gpuUsage", "gpuUsagePercent"),
+    ]
+    numeric_values = [value for value in values if value is not None]
+    if any(value >= DIAGNOSIS_DETAIL_DANGER_THRESHOLD for value in numeric_values):
+        return "위험", "danger"
+    if any(value >= DIAGNOSIS_DETAIL_WARNING_THRESHOLD for value in numeric_values):
+        return "주의", "warning"
+    return "정상", "ok"
+
+
+def diagnosis_detail_event_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
+    events: list[dict[str, str]] = []
+    for row in rows[-DIAGNOSIS_DETAIL_EVENT_LIMIT:]:
+        status, tone = diagnosis_detail_event_status(row)
+        content = display_log_message(row)
+        if content == "-":
+            content = display_log_event_summary(row)
+        events.append(
+            {
+                "time": format_log_time(row),
+                "type": display_log_event_summary(row),
+                "content": content,
+                "status": status,
+                "tone": tone,
+            }
+        )
+    return events
+
+
+def diagnosis_detail_model(config: AgentConfig, path: Path) -> dict[str, Any]:
+    rows = read_log_tail(path, LOG_TABLE_LIMIT)
+    home_model = status_home_model(config, path)
+    latest_row = rows[-1] if rows else None
+    metric_row = latest_diagnosis_metric_row(rows)
+    home_detection = home_model.get("homeDetection")
+    has_result = latest_row is not None
+    pc_card = home_model["pcStatusCard"]
+    tone = "muted" if not has_result else str(pc_card.get("tone", "muted"))
+
+    if not has_result:
+        summary = "아직 진단 결과가 없습니다."
+    elif isinstance(home_detection, dict):
+        summary = sanitize_display_text(home_detection.get("detail") or home_detection.get("title"), 120)
+    else:
+        summary = "최근 로그에서 특이 신호가 없습니다."
+
+    threshold = (
+        f"{DIAGNOSIS_DETAIL_WARNING_THRESHOLD:.0f}% 이상 시 주의 / "
+        f"{DIAGNOSIS_DETAIL_DANGER_THRESHOLD:.0f}% 이상 시 위험"
+    )
+    disk_threshold = (
+        f"busy {DIAGNOSIS_DETAIL_WARNING_THRESHOLD:.0f}% 이상 시 주의 / "
+        f"{DIAGNOSIS_DETAIL_DANGER_THRESHOLD:.0f}% 이상 시 위험"
+    )
+    summary_rows = read_status_log_summary_rows(path, DIAGNOSIS_DETAIL_EVENT_LIMIT)
+    return {
+        "hasResult": has_result,
+        "title": "진단 결과 상세",
+        "status": diagnosis_tone_label(tone),
+        "tone": tone,
+        "lastDiagnosticTime": format_log_timestamp(latest_row) if latest_row else "-",
+        "summary": summary,
+        "emptyTitle": "아직 진단 결과가 없습니다.",
+        "emptyMessage": "PC Agent가 로그를 수집하면 상세 결과를 확인할 수 있습니다.",
+        "metrics": [
+            diagnosis_metric_card(metric_row, "CPU", ("cpuUsage", "cpuUsagePercent"), "현재 사용률", threshold),
+            diagnosis_metric_card(
+                metric_row,
+                "메모리",
+                ("memoryUsage", "ramUsage", "memoryUsedPercent"),
+                "현재 사용률",
+                threshold,
+            ),
+            diagnosis_metric_card(metric_row, "디스크", ("diskBusyEstimatePercent",), "현재 busy", disk_threshold),
+            diagnosis_metric_card(metric_row, "GPU", ("gpuUsage", "gpuUsagePercent"), "현재 사용률", threshold),
+        ],
+        "events": diagnosis_detail_event_rows(summary_rows),
+        "aiAnalysis": {
+            "available": False,
+            "summary": "AI 분석 결과 없음",
+            "suspectedCauses": [],
+            "recommendedActions": [],
+            "adminReview": "AI 분석 결과가 저장되어 있지 않습니다.",
+        },
     }
 
 
@@ -2462,8 +2723,8 @@ Add-Type -AssemblyName System.Drawing
 $logPath = {powershell_string(str(log_file(config).resolve()))}
 $logDir = {powershell_string(str(config.log_dir.resolve()))}
 $supportUrl = {powershell_string(support_new_url(config))}
-$serverStatus = {powershell_string(str(model["serverCard"]["value"]))}
-$serverDetail = {powershell_string(str(model["serverCard"]["detail"]))}
+$pcStatus = {powershell_string(str(model["pcStatusCard"]["value"]))}
+$pcDetail = {powershell_string(str(model["pcStatusCard"]["detail"]))}
 $uploadStatus = {powershell_string(str(model["uploadCard"]["value"]))}
 $uploadDetail = {powershell_string(str(model["uploadCard"]["detail"]))}
 $startupStatus = {powershell_string(str(model["startupCard"]["value"]))}
@@ -2480,13 +2741,27 @@ $primaryBg = [System.Drawing.ColorTranslator]::FromHtml("#1f8a70")
 $borderColor = [System.Drawing.ColorTranslator]::FromHtml("#d7e0e3")
 $textColor = [System.Drawing.ColorTranslator]::FromHtml("#172b3a")
 $mutedColor = [System.Drawing.ColorTranslator]::FromHtml("#5c6b73")
+$uiFontFamily = "Malgun Gothic"
+$installedFonts = New-Object System.Drawing.Text.InstalledFontCollection
+$installedFontNames = @($installedFonts.Families | ForEach-Object {{ $_.Name }})
+foreach ($candidate in @("Segoe UI Variable", "Segoe UI", "Malgun Gothic")) {{
+  if ($installedFontNames -contains $candidate) {{
+    $uiFontFamily = $candidate
+    break
+  }}
+}}
+
+function New-UIFont {{
+  param([float]$Px, [System.Drawing.FontStyle]$Style = [System.Drawing.FontStyle]::Regular)
+  return New-Object System.Drawing.Font($uiFontFamily, ($Px * 72.0 / 96.0), $Style, [System.Drawing.GraphicsUnit]::Point)
+}}
 
 function Style-Button {{
   param($Button, [bool]$Primary = $false)
   $Button.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
   $Button.FlatAppearance.BorderSize = 1
   $Button.FlatAppearance.BorderColor = $borderColor
-  $Button.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+  $Button.Font = New-UIFont 14 ([System.Drawing.FontStyle]::Bold)
   $Button.Cursor = [System.Windows.Forms.Cursors]::Hand
   if ($Primary) {{
     $Button.BackColor = $primaryBg
@@ -2501,7 +2776,7 @@ function Style-NavLink {{
   param($Button)
   $Button.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
   $Button.FlatAppearance.BorderSize = 0
-  $Button.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+  $Button.Font = New-UIFont 14
   $Button.Cursor = [System.Windows.Forms.Cursors]::Hand
   $Button.BackColor = $sidebarBg
   $Button.ForeColor = $textColor
@@ -2615,12 +2890,12 @@ function Get-FilteredLogText {{
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "PC Agent"
-$form.Size = New-Object System.Drawing.Size(1000, 640)
-$form.MinimumSize = New-Object System.Drawing.Size(1000, 640)
-$form.MaximumSize = New-Object System.Drawing.Size(1000, 2000)
+$form.Size = New-Object System.Drawing.Size(1000, 720)
+$form.MinimumSize = New-Object System.Drawing.Size(1000, 720)
+$form.MaximumSize = New-Object System.Drawing.Size(1000, 720)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = $appBg
-$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$form.Font = New-UIFont 14
 
 $sidebar = New-Object System.Windows.Forms.Panel
 $sidebar.Location = New-Object System.Drawing.Point(0, 0)
@@ -2631,7 +2906,7 @@ $form.Controls.Add($sidebar)
 
 $brand = New-Object System.Windows.Forms.Label
 $brand.Text = "PC Agent"
-$brand.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Regular)
+$brand.Font = New-UIFont 14
 $brand.ForeColor = $textColor
 $brand.BackColor = $sidebarBg
 $brand.Location = New-Object System.Drawing.Point(24, 12)
@@ -2650,7 +2925,7 @@ $activeBar.BackColor = $primaryBg
 $navStatus.Controls.Add($activeBar)
 $navStatusLabel = New-Object System.Windows.Forms.Label
 $navStatusLabel.Text = "  • 상태"
-$navStatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$navStatusLabel.Font = New-UIFont 14 ([System.Drawing.FontStyle]::Bold)
 $navStatusLabel.ForeColor = $textColor
 $navStatusLabel.BackColor = [System.Drawing.Color]::White
 $navStatusLabel.Location = New-Object System.Drawing.Point(18, 12)
@@ -2659,7 +2934,7 @@ $navStatus.Controls.Add($navStatusLabel)
 $sidebar.Controls.Add($navStatus)
 
 $navLog = New-Object System.Windows.Forms.Button
-$navLog.Text = "≡ 로그"
+$navLog.Text = "≡ 기록"
 $navLog.Location = New-Object System.Drawing.Point(28, 124)
 $navLog.Size = New-Object System.Drawing.Size(96, 32)
 Style-NavLink $navLog
@@ -2667,7 +2942,7 @@ $navLog.Add_Click({{ $textbox.Focus() }})
 $sidebar.Controls.Add($navLog)
 
 $navSupport = New-Object System.Windows.Forms.Button
-$navSupport.Text = "+ AS 접수"
+$navSupport.Text = "+ 진단"
 $navSupport.Location = New-Object System.Drawing.Point(28, 174)
 $navSupport.Size = New-Object System.Drawing.Size(96, 32)
 Style-NavLink $navSupport
@@ -2684,7 +2959,7 @@ $sidebar.Controls.Add($navSettings)
 
 $title = New-Object System.Windows.Forms.Label
 $title.Text = "상태 홈"
-$title.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$title.Font = New-UIFont 20 ([System.Drawing.FontStyle]::Bold)
 $title.ForeColor = $textColor
 $title.BackColor = $appBg
 $title.AutoSize = $true
@@ -2693,7 +2968,7 @@ $form.Controls.Add($title)
 
 $subtitle = New-Object System.Windows.Forms.Label
 $subtitle.Text = "시스템 상태와 감지 로그를 실시간으로 확인합니다."
-$subtitle.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$subtitle.Font = New-UIFont 12
 $subtitle.ForeColor = $mutedColor
 $subtitle.BackColor = $appBg
 $subtitle.AutoSize = $true
@@ -2711,7 +2986,7 @@ function Add-Card {{
   $iconBox = New-Object System.Windows.Forms.Label
   $iconBox.Text = $Icon
   $iconBox.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-  $iconBox.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+  $iconBox.Font = New-UIFont 14 ([System.Drawing.FontStyle]::Bold)
   $iconBox.ForeColor = $primaryBg
   $iconBox.BackColor = $sectionBg
   $iconBox.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
@@ -2720,7 +2995,7 @@ function Add-Card {{
   $card.Controls.Add($iconBox)
   $cardTitle = New-Object System.Windows.Forms.Label
   $cardTitle.Text = $Title
-  $cardTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+  $cardTitle.Font = New-UIFont 16 ([System.Drawing.FontStyle]::Bold)
   $cardTitle.ForeColor = $textColor
   $cardTitle.BackColor = $cardBg
   $cardTitle.Location = New-Object System.Drawing.Point(14, 14)
@@ -2728,7 +3003,7 @@ function Add-Card {{
   $card.Controls.Add($cardTitle)
   $cardValue = New-Object System.Windows.Forms.Label
   $cardValue.Text = $Value
-  $cardValue.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+  $cardValue.Font = New-UIFont 14 ([System.Drawing.FontStyle]::Bold)
   $cardValue.ForeColor = $primaryBg
   $cardValue.BackColor = $cardBg
   $cardValue.Location = New-Object System.Drawing.Point(14, 38)
@@ -2743,7 +3018,7 @@ function Add-Card {{
   $card.Controls.Add($cardDetail)
 }}
 
-Add-Card 170 "PC" "서버 연결" $serverStatus $serverDetail
+Add-Card 170 "PC" "PC 상태" $pcStatus $pcDetail
 Add-Card 365 "UP" "마지막 업로드" $uploadStatus $uploadDetail
 Add-Card 560 "ST" "시작프로그램" $startupStatus $startupDetail
 Add-Card 755 "i" "버전" $versionText $versionDetail
@@ -2757,7 +3032,7 @@ $form.Controls.Add($signalsPanel)
 
 $signalLabel = New-Object System.Windows.Forms.Label
 $signalLabel.Text = "최근 감지 신호"
-$signalLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$signalLabel.Font = New-UIFont 16 ([System.Drawing.FontStyle]::Bold)
 $signalLabel.ForeColor = $textColor
 $signalLabel.BackColor = $cardBg
 $signalLabel.Location = New-Object System.Drawing.Point(16, 14)
@@ -2766,7 +3041,7 @@ $signalsPanel.Controls.Add($signalLabel)
 
 $signalsBody = New-Object System.Windows.Forms.Label
 $signalsBody.Text = $signalsText
-$signalsBody.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$signalsBody.Font = New-UIFont 14
 $signalsBody.ForeColor = $textColor
 $signalsBody.BackColor = $cardBg
 $signalsBody.Location = New-Object System.Drawing.Point(16, 44)
@@ -2775,7 +3050,7 @@ $signalsPanel.Controls.Add($signalsBody)
 
 $signalsHelp = New-Object System.Windows.Forms.Label
 $signalsHelp.Text = "단순 CPU/RAM/GPU 고사용률은 AS 알림에서 제외됩니다"
-$signalsHelp.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$signalsHelp.Font = New-UIFont 12
 $signalsHelp.ForeColor = $mutedColor
 $signalsHelp.BackColor = $cardBg
 $signalsHelp.Location = New-Object System.Drawing.Point(16, 70)
@@ -2826,7 +3101,7 @@ $form.Controls.Add($logPanel)
 
 $logTitle = New-Object System.Windows.Forms.Label
 $logTitle.Text = "로그 현황"
-$logTitle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$logTitle.Font = New-UIFont 16 ([System.Drawing.FontStyle]::Bold)
 $logTitle.ForeColor = $textColor
 $logTitle.BackColor = $cardBg
 $logTitle.Location = New-Object System.Drawing.Point(16, 14)
@@ -2837,7 +3112,7 @@ $textbox = New-Object System.Windows.Forms.TextBox
 $textbox.Multiline = $true
 $textbox.ScrollBars = "Both"
 $textbox.ReadOnly = $true
-$textbox.Font = New-Object System.Drawing.Font("Consolas", 9)
+$textbox.Font = New-UIFont 12
 $textbox.BackColor = [System.Drawing.Color]::White
 $textbox.ForeColor = $textColor
 $textbox.BorderStyle = [System.Windows.Forms.BorderStyle]::None
@@ -2938,10 +3213,10 @@ def show_log_viewer(
     root = tk.Tk()
     root.title("PC Agent")
     apply_agent_window_icon(root)
-    root.geometry("1000x640")
-    root.minsize(1000, 640)
-    root.maxsize(1000, 2000)
-    root.resizable(False, True)
+    root.geometry("1000x720")
+    root.minsize(1000, 720)
+    root.maxsize(1000, 720)
+    root.resizable(False, False)
     colors = {
         "app_bg": "#f5f7f8",
         "sidebar_bg": "#e7f2ef",
@@ -2958,6 +3233,12 @@ def show_log_viewer(
         "signal_bg": "#f8fbfb",
         "signal_hover": "#edf7f4",
     }
+    ui_font_family = resolve_ui_font_family(root)
+
+    def ui_font(size_px: int, weight: str = "regular", underline: bool = False) -> tuple[Any, ...]:
+        return tk_ui_font(ui_font_family, size_px, weight, underline)
+
+    root.option_add("*Font", ui_font(FONT_BODY_PX))
 
     def create_round_rect(
         canvas: tk.Canvas,
@@ -3072,7 +3353,7 @@ def show_log_viewer(
                 height // 2,
                 text=text,
                 fill=foreground,
-                font=("Segoe UI", 9, "bold" if is_primary else "normal"),
+                font=ui_font(FONT_BUTTON_PX, "semibold" if is_primary else "regular"),
             )
 
         def invoke(event: object = None) -> None:
@@ -3082,6 +3363,29 @@ def show_log_viewer(
         canvas.bind("<Button-1>", invoke)
         canvas.bind("<Enter>", lambda event: draw(hover))
         canvas.bind("<Leave>", lambda event: draw(fill))
+        return canvas
+
+    def disabled_button(parent: tk.Misc, text: str, width: int = 112, height: int = 32) -> tk.Canvas:
+        try:
+            parent_bg = str(parent.cget("background"))  # type: ignore[attr-defined]
+        except Exception:
+            parent_bg = colors["app_bg"]
+        canvas = tk.Canvas(
+            parent,
+            width=width,
+            height=height,
+            background=parent_bg,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        create_round_rect(canvas, 1, 1, width - 1, height - 1, 12, fill="#edf3f4", outline=colors["border"])
+        canvas.create_text(
+            width // 2,
+            height // 2,
+            text=text,
+            fill=colors["subtle"],
+            font=ui_font(FONT_BUTTON_PX),
+        )
         return canvas
 
     root.configure(background=colors["app_bg"])
@@ -3116,7 +3420,7 @@ def show_log_viewer(
         bordercolor=[("focus", colors["sidebar_active_bar"])],
         arrowcolor=[("focus", colors["sidebar_active_bar"])],
     )
-    style.configure("Agent.Toolbar.TButton", padding=(12, 5), font=("Segoe UI", 9))
+    style.configure("Agent.Toolbar.TButton", padding=(12, 5), font=ui_font(FONT_BUTTON_PX, "semibold"))
     style.configure(
         "Agent.Treeview",
         background=colors["section_bg"],
@@ -3124,14 +3428,14 @@ def show_log_viewer(
         foreground=colors["text"],
         bordercolor=colors["border"],
         rowheight=28,
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_LOG_PX),
     )
     style.configure(
         "Agent.Treeview.Heading",
         background=colors["table_header"],
         foreground=colors["muted"],
         relief="flat",
-        font=("Segoe UI", 9, "bold"),
+        font=ui_font(FONT_LOG_PX, "semibold"),
     )
     style.map(
         "Agent.Treeview",
@@ -3140,8 +3444,8 @@ def show_log_viewer(
     )
 
     range_status = tk.StringVar(value="")
-    server_status = tk.StringVar(value="-")
-    server_detail = tk.StringVar(value="-")
+    pc_status = tk.StringVar(value="-")
+    pc_detail = tk.StringVar(value="-")
     upload_status = tk.StringVar(value="-")
     upload_detail = tk.StringVar(value="-")
     startup_status = tk.StringVar(value="-")
@@ -3149,6 +3453,14 @@ def show_log_viewer(
     version_status = tk.StringVar(value="-")
     version_detail = tk.StringVar(value="-")
     selected_nav = tk.StringVar(value="상태")
+    home_ai_summary = tk.StringVar(
+        value="PC 진단하기를 누르면 최근 로그를 기준으로 AI 추천을 확인합니다."
+    )
+    home_detection_title = tk.StringVar(value="최근 감지 신호 없음")
+    home_detection_detail = tk.StringVar(value="최근 로그에서 AS 접수가 필요한 신호는 아직 없습니다.")
+    home_support_status = tk.StringVar(value="")
+    home_consent = tk.BooleanVar(value=False)
+    home_detection_value: dict[str, Any] = {"signal": None}
 
     shell = tk.Frame(root, background=colors["app_bg"])
     shell.pack(fill="both", expand=True)
@@ -3192,7 +3504,7 @@ def show_log_viewer(
         label = tk.Label(
             item,
             text=f"{icon}  {name}",
-            font=("Segoe UI", 10, "bold" if name == "상태" else "normal"),
+            font=ui_font(FONT_BUTTON_PX, "semibold" if name == "상태" else "regular"),
             anchor="w",
             padx=12,
             background=colors["sidebar_bg"],
@@ -3211,8 +3523,8 @@ def show_log_viewer(
         nav_items.append((name, item))
 
     add_nav_item("상태", "●", lambda: show_status_tab())
-    add_nav_item("로그", "≡", lambda: show_log_tab())
-    add_nav_item("AS 접수", "+", lambda: show_support_tab())
+    add_nav_item("진단", "+", lambda: show_support_tab())
+    add_nav_item("기록", "≡", lambda: show_log_tab())
     add_nav_item("설정", "○", lambda: open_log_folder(config_path))
     render_nav()
 
@@ -3224,7 +3536,7 @@ def show_log_viewer(
     range_badge = tk.Label(
         header,
         textvariable=range_status,
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["muted"],
         background="#e9f3f1",
         padx=12,
@@ -3242,7 +3554,7 @@ def show_log_viewer(
     tk.Label(
         status_header,
         text="상태 홈",
-        font=("Segoe UI", 15, "bold"),
+        font=ui_font(FONT_PAGE_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["app_bg"],
         anchor="w",
@@ -3250,7 +3562,7 @@ def show_log_viewer(
     tk.Label(
         status_header,
         text="PC Agent가 시스템을 안전하게 보호하고 있습니다.",
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["muted"],
         background=colors["app_bg"],
         anchor="w",
@@ -3307,13 +3619,13 @@ def show_log_viewer(
                 return
             except Exception:
                 pass
-        fallback_text = {"server": "PC", "upload": "UP", "startup": "ST", "version": "i"}.get(kind, "i")
+        fallback_text = {"pc": "PC", "server": "PC", "upload": "UP", "startup": "ST", "version": "i"}.get(kind, "i")
         label.configure(
             image="",
             text=fallback_text,
             width=3,
             height=1,
-            font=("Segoe UI", 9, "bold"),
+            font=ui_font(FONT_BUTTON_PX, "semibold"),
             foreground=stroke_hex,
             background=soft,
             borderwidth=0,
@@ -3337,7 +3649,7 @@ def show_log_viewer(
         tk.Label(
             card,
             text=title,
-            font=("Segoe UI", 9, "bold"),
+            font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
             foreground=colors["text"],
             background=colors["card_bg"],
             anchor="w",
@@ -3349,7 +3661,7 @@ def show_log_viewer(
         value_label = tk.Label(
             card,
             textvariable=value,
-            font=("Segoe UI", 12, "bold"),
+            font=ui_font(FONT_BUTTON_PX, "semibold"),
             foreground=colors["text"],
             background=colors["card_bg"],
             anchor="w",
@@ -3359,36 +3671,167 @@ def show_log_viewer(
         tk.Label(
             card,
             textvariable=detail,
-            font=("Segoe UI", 8),
+            font=ui_font(FONT_SECONDARY_PX),
             foreground=colors["subtle"],
             background=colors["card_bg"],
             anchor="w",
         ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
-    add_card(cards, "server", 0, "서버 연결", server_status, server_detail, "server")
+    add_card(cards, "pc", 0, "PC 상태", pc_status, pc_detail, "pc")
     add_card(cards, "upload", 1, "마지막 업로드", upload_status, upload_detail, "upload")
     add_card(cards, "startup", 2, "시작프로그램", startup_status, startup_detail, "startup")
     add_card(cards, "version", 3, "버전", version_status, version_detail, "version")
 
-    signals_section, signals_inner = rounded_container(status_view, 124, padding=(14, 10), radius=16)
-    signals_section.pack(fill="x", pady=(0, 10))
+    diagnosis_section, diagnosis_inner = rounded_container(status_view, 224, padding=(14, 12), radius=16)
+    diagnosis_section.pack(fill="x", pady=(0, 10))
+    diagnosis_inner.columnconfigure(0, weight=1)
+    ai_summary_row = tk.Frame(diagnosis_inner, background=colors["card_bg"])
+    ai_summary_row.grid(row=0, column=0, sticky="ew")
+    ai_summary_row.columnconfigure(0, weight=1)
+    ai_summary_row.rowconfigure(0, minsize=54)
+    ai_text = tk.Frame(ai_summary_row, background=colors["card_bg"])
+    ai_text.grid(row=0, column=0, sticky="ew", padx=(0, 16))
+    ai_text.columnconfigure(0, weight=1)
     tk.Label(
-        signals_inner,
-        text="최근 감지 신호",
-        font=("Segoe UI", 10, "bold"),
+        ai_text,
+        text="진단 요약",
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["card_bg"],
         anchor="w",
-    ).pack(fill="x", pady=(0, 5))
-    signals_body = tk.Frame(signals_inner, background=colors["card_bg"])
-    signals_body.pack(fill="both", expand=True)
+    ).grid(row=0, column=0, sticky="ew")
+    tk.Label(
+        ai_text,
+        textvariable=home_ai_summary,
+        font=ui_font(FONT_SECONDARY_PX),
+        foreground=colors["muted"],
+        background=colors["card_bg"],
+        justify="left",
+        anchor="w",
+        wraplength=610,
+    ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    rounded_button(
+        ai_summary_row,
+        "PC 진단하기",
+        lambda: run_home_diagnosis(),
+        "primary",
+        width=118,
+        height=32,
+    ).grid(row=0, column=1, sticky="e")
+    tk.Frame(diagnosis_inner, height=1, background=colors["border"]).grid(row=1, column=0, sticky="ew", pady=(12, 10))
+    detection_row = tk.Frame(diagnosis_inner, background=colors["card_bg"])
+    detection_row.grid(row=2, column=0, sticky="ew")
+    detection_row.columnconfigure(0, weight=1)
+    tk.Label(
+        detection_row,
+        text="최근 감지 신호",
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
+        foreground=colors["text"],
+        background=colors["card_bg"],
+        anchor="w",
+    ).grid(row=0, column=0, sticky="ew")
+    tk.Label(
+        detection_row,
+        textvariable=home_detection_title,
+        font=ui_font(FONT_BUTTON_PX, "semibold"),
+        foreground="#b7791f",
+        background=colors["card_bg"],
+        anchor="w",
+    ).grid(row=1, column=0, sticky="ew", pady=(3, 0))
+    tk.Label(
+        detection_row,
+        textvariable=home_detection_detail,
+        font=ui_font(FONT_SECONDARY_PX),
+        foreground=colors["muted"],
+        background=colors["card_bg"],
+        anchor="w",
+        wraplength=540,
+    ).grid(row=2, column=0, sticky="ew", pady=(3, 0))
+    action_row = tk.Frame(diagnosis_inner, background=colors["card_bg"])
+    action_row.grid(row=3, column=0, sticky="ew", pady=(12, 4))
+    action_row.columnconfigure(1, weight=1)
+    consent_row = tk.Frame(
+        action_row,
+        background=colors["card_bg"],
+        cursor="hand2",
+    )
+    consent_row.grid(row=0, column=0, sticky="w")
+    consent_marker = tk.Canvas(
+        consent_row,
+        width=48,
+        height=24,
+        background=colors["card_bg"],
+        highlightthickness=0,
+        borderwidth=0,
+        cursor="hand2",
+    )
+    consent_marker.pack(side="left", padx=(0, 8), pady=4)
+    consent_text = tk.Label(
+        consent_row,
+        text="최근 30분 진단 로그 전송 동의",
+        foreground=colors["text"],
+        background=colors["card_bg"],
+        font=ui_font(FONT_BODY_PX),
+        cursor="hand2",
+    )
+    consent_text.pack(side="left", padx=(0, 10), pady=4)
 
-    summary_section, summary_inner = rounded_container(status_view, 260, padding=(14, 10), radius=16)
-    summary_section.pack(fill="both", expand=True)
+    def paint_home_consent() -> None:
+        selected = bool(home_consent.get())
+        background = colors["card_bg"]
+        track_fill = colors["sidebar_active_bar"] if selected else "#dce7ea"
+        track_outline = colors["sidebar_active_bar"] if selected else "#c7d5d9"
+        text_color = colors["text"] if selected else colors["muted"]
+        consent_row.configure(background=background)
+        consent_marker.configure(background=background)
+        consent_text.configure(background=background, foreground=text_color)
+        consent_marker.delete("all")
+        create_round_rect(
+            consent_marker,
+            1,
+            1,
+            47,
+            23,
+            12,
+            fill=track_fill,
+            outline=track_outline,
+        )
+        knob_left = 27 if selected else 4
+        consent_marker.create_oval(knob_left, 4, knob_left + 16, 20, fill="#ffffff", outline="#ffffff")
+        if selected:
+            consent_marker.create_line(9, 12, 13, 16, 20, 8, fill="#ffffff", width=1.6, capstyle="round", joinstyle="round")
+
+    def toggle_home_consent(event: object = None) -> None:
+        home_consent.set(not bool(home_consent.get()))
+        paint_home_consent()
+
+    for widget in (consent_row, consent_marker, consent_text):
+        widget.bind("<Button-1>", toggle_home_consent)
+    paint_home_consent()
+
+    tk.Label(
+        action_row,
+        textvariable=home_support_status,
+        font=ui_font(FONT_SECONDARY_PX),
+        foreground="#16766b",
+        background=colors["card_bg"],
+        anchor="e",
+    ).grid(row=0, column=1, sticky="ew", padx=(8, 8))
+    rounded_button(
+        action_row,
+        "AS 접수 신청",
+        lambda: submit_home_support_request(),
+        "primary",
+        width=118,
+        height=32,
+    ).grid(row=0, column=2, sticky="e")
+
+    summary_section, summary_inner = rounded_container(status_view, 150, padding=(14, 10), radius=16)
+    summary_section.pack(fill="x", expand=False)
     tk.Label(
         summary_inner,
         text="로그 현황",
-        font=("Segoe UI", 10, "bold"),
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["card_bg"],
         anchor="w",
@@ -3420,14 +3863,14 @@ def show_log_viewer(
     tk.Label(
         summary_empty,
         text="표시할 로그가 없습니다",
-        font=("Segoe UI", 10, "bold"),
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["muted"],
         background=colors["card_bg"],
-    ).pack(pady=(36, 3))
+    ).pack(pady=(24, 3))
     tk.Label(
         summary_empty,
         text="백그라운드 수집이 시작되면 최근 로그가 표시됩니다",
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["subtle"],
         background=colors["card_bg"],
     ).pack()
@@ -3437,7 +3880,7 @@ def show_log_viewer(
     tk.Label(
         filters,
         text="날짜",
-        font=("Segoe UI", 9, "bold"),
+        font=ui_font(FONT_BUTTON_PX, "semibold"),
         foreground=colors["muted"],
         background=colors["app_bg"],
     ).pack(side="left")
@@ -3457,7 +3900,7 @@ def show_log_viewer(
     tk.Label(
         filters,
         text="년",
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_BODY_PX),
         foreground=colors["muted"],
         background=colors["app_bg"],
     ).pack(side="left", padx=(0, 6))
@@ -3473,7 +3916,7 @@ def show_log_viewer(
     tk.Label(
         filters,
         text="월",
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_BODY_PX),
         foreground=colors["muted"],
         background=colors["app_bg"],
     ).pack(side="left", padx=(0, 6))
@@ -3489,14 +3932,14 @@ def show_log_viewer(
     tk.Label(
         filters,
         text="일",
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_BODY_PX),
         foreground=colors["muted"],
         background=colors["app_bg"],
     ).pack(side="left", padx=(0, 14))
     tk.Label(
         filters,
         text="시간",
-        font=("Segoe UI", 9, "bold"),
+        font=ui_font(FONT_BUTTON_PX, "semibold"),
         foreground=colors["muted"],
         background=colors["app_bg"],
     ).pack(side="left")
@@ -3522,7 +3965,7 @@ def show_log_viewer(
     tk.Label(
         table_frame,
         text="전체 로그내용",
-        font=("Segoe UI", 10, "bold"),
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["section_bg"],
         anchor="w",
@@ -3562,25 +4005,270 @@ def show_log_viewer(
     log_empty_label = tk.Label(
         table_frame,
         text="표시할 로그가 없습니다",
-        font=("Segoe UI", 10),
+        font=ui_font(FONT_BODY_PX),
         foreground=colors["subtle"],
         background=colors["section_bg"],
     )
 
+    diagnosis_header = tk.Frame(support_view, background=colors["app_bg"])
+    diagnosis_header.pack(fill="x", pady=(0, 8))
+    tk.Label(
+        diagnosis_header,
+        text="진단 결과 상세",
+        font=ui_font(FONT_PAGE_TITLE_PX, "semibold"),
+        foreground=colors["text"],
+        background=colors["app_bg"],
+        anchor="w",
+    ).pack(fill="x")
+    tk.Label(
+        diagnosis_header,
+        text="최근 로컬 로그를 기준으로 상태, 이유, 조치 방향만 확인합니다.",
+        font=ui_font(FONT_SECONDARY_PX),
+        foreground=colors["muted"],
+        background=colors["app_bg"],
+        anchor="w",
+    ).pack(fill="x", pady=(4, 0))
+
+    diagnosis_summary_status = tk.StringVar(value="-")
+    diagnosis_summary_time = tk.StringVar(value="-")
+    diagnosis_summary_text = tk.StringVar(value="-")
+    diagnosis_empty_text = tk.StringVar(value="")
+    diagnosis_ai_summary = tk.StringVar(value="AI 분석 결과 없음")
+    diagnosis_ai_cause = tk.StringVar(value="-")
+    diagnosis_ai_action = tk.StringVar(value="-")
+    diagnosis_ai_admin = tk.StringVar(value="AI 분석 결과가 저장되어 있지 않습니다.")
+
+    diagnosis_summary_card, diagnosis_summary_inner = rounded_container(
+        support_view,
+        104,
+        padding=(14, 12),
+        radius=16,
+    )
+    diagnosis_summary_card.pack(fill="x", pady=(0, 8))
+    diagnosis_summary_inner.columnconfigure(0, weight=1)
+    diagnosis_title_row = tk.Frame(diagnosis_summary_inner, background=colors["card_bg"])
+    diagnosis_title_row.grid(row=0, column=0, sticky="ew")
+    diagnosis_title_row.columnconfigure(0, weight=1)
+    tk.Label(
+        diagnosis_title_row,
+        text="진단 결과 상세",
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
+        foreground=colors["text"],
+        background=colors["card_bg"],
+        anchor="w",
+    ).grid(row=0, column=0, sticky="ew")
+    diagnosis_status_badge = tk.Label(
+        diagnosis_title_row,
+        textvariable=diagnosis_summary_status,
+        font=ui_font(FONT_BUTTON_PX, "semibold"),
+        foreground=colors["muted"],
+        background="#edf3f4",
+        padx=10,
+        pady=4,
+    )
+    diagnosis_status_badge.grid(row=0, column=1, sticky="e")
+    tk.Label(
+        diagnosis_summary_inner,
+        textvariable=diagnosis_summary_time,
+        font=ui_font(FONT_SECONDARY_PX),
+        foreground=colors["subtle"],
+        background=colors["card_bg"],
+        anchor="w",
+    ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    tk.Label(
+        diagnosis_summary_inner,
+        textvariable=diagnosis_summary_text,
+        font=ui_font(FONT_BODY_PX),
+        foreground=colors["text"],
+        background=colors["card_bg"],
+        anchor="w",
+        wraplength=720,
+    ).grid(row=2, column=0, sticky="ew", pady=(6, 0))
+    tk.Label(
+        diagnosis_summary_inner,
+        textvariable=diagnosis_empty_text,
+        font=ui_font(FONT_SECONDARY_PX),
+        foreground=colors["muted"],
+        background=colors["card_bg"],
+        anchor="w",
+        wraplength=720,
+    ).grid(row=3, column=0, sticky="ew", pady=(3, 0))
+
+    diagnosis_metric_grid = tk.Frame(support_view, background=colors["app_bg"])
+    diagnosis_metric_grid.pack(fill="x", pady=(0, 8))
+    for index in range(4):
+        diagnosis_metric_grid.columnconfigure(index, weight=1, uniform="diagnosis-metric")
+    diagnosis_metric_widgets: list[dict[str, tk.Label]] = []
+    for index, title in enumerate(("CPU", "메모리", "디스크", "GPU")):
+        metric_canvas, metric_inner = rounded_container(diagnosis_metric_grid, 124, padding=(12, 10), radius=12)
+        metric_canvas.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
+        metric_inner.columnconfigure(0, weight=1)
+        tk.Label(
+            metric_inner,
+            text=title,
+            font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
+            foreground=colors["text"],
+            background=colors["card_bg"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        status_label = tk.Label(
+            metric_inner,
+            text="-",
+            font=ui_font(FONT_BUTTON_PX, "semibold"),
+            foreground=colors["muted"],
+            background=colors["card_bg"],
+            anchor="w",
+        )
+        status_label.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        current_label = tk.Label(
+            metric_inner,
+            text="-",
+            font=ui_font(FONT_SECONDARY_PX),
+            foreground=colors["text"],
+            background=colors["card_bg"],
+            anchor="w",
+        )
+        current_label.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        threshold_label = tk.Label(
+            metric_inner,
+            text="-",
+            font=ui_font(FONT_SECONDARY_PX),
+            foreground=colors["subtle"],
+            background=colors["card_bg"],
+            anchor="w",
+        )
+        threshold_label.grid(row=3, column=0, sticky="ew", pady=(2, 0))
+        description_label = tk.Label(
+            metric_inner,
+            text="-",
+            font=ui_font(FONT_SECONDARY_PX),
+            foreground=colors["muted"],
+            background=colors["card_bg"],
+            anchor="w",
+            wraplength=160,
+        )
+        description_label.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        diagnosis_metric_widgets.append(
+            {
+                "status": status_label,
+                "current": current_label,
+                "threshold": threshold_label,
+                "description": description_label,
+            }
+        )
+
+    diagnosis_events_card, diagnosis_events_inner = rounded_container(
+        support_view,
+        150,
+        padding=(14, 10),
+        radius=16,
+    )
+    diagnosis_events_card.pack(fill="x", pady=(0, 8))
+    tk.Label(
+        diagnosis_events_inner,
+        text="이벤트 로그 요약",
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
+        foreground=colors["text"],
+        background=colors["card_bg"],
+        anchor="w",
+    ).pack(fill="x", pady=(0, 6))
+    diagnosis_event_columns = ("time", "type", "content", "status")
+    diagnosis_event_tree = ttk.Treeview(
+        diagnosis_events_inner,
+        columns=diagnosis_event_columns,
+        show="headings",
+        height=4,
+        style="Agent.Treeview",
+    )
+    diagnosis_event_tree.heading("time", text="시간")
+    diagnosis_event_tree.heading("type", text="유형")
+    diagnosis_event_tree.heading("content", text="내용")
+    diagnosis_event_tree.heading("status", text="상태")
+    diagnosis_event_tree.column("time", width=80, minwidth=70, anchor="w", stretch=False)
+    diagnosis_event_tree.column("type", width=110, minwidth=92, anchor="w", stretch=False)
+    diagnosis_event_tree.column("content", width=430, minwidth=260, anchor="w")
+    diagnosis_event_tree.column("status", width=70, minwidth=58, anchor="center", stretch=False)
+    diagnosis_event_tree.tag_configure("odd", background=colors["row_alt"])
+    diagnosis_event_tree.tag_configure("even", background=colors["section_bg"])
+    diagnosis_event_tree.pack(fill="both", expand=True)
+    diagnosis_event_empty = tk.Label(
+        diagnosis_events_inner,
+        text="표시할 이벤트가 없습니다",
+        font=ui_font(FONT_BODY_PX),
+        foreground=colors["subtle"],
+        background=colors["card_bg"],
+    )
+
+    diagnosis_ai_card, diagnosis_ai_inner = rounded_container(support_view, 104, padding=(14, 10), radius=16)
+    diagnosis_ai_card.pack(fill="x", pady=(0, 8))
+    tk.Label(
+        diagnosis_ai_inner,
+        text="AI 분석 요약",
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
+        foreground=colors["text"],
+        background=colors["card_bg"],
+        anchor="w",
+    ).pack(fill="x", pady=(0, 4))
+    for label, variable in (
+        ("AI 요약", diagnosis_ai_summary),
+        ("의심 원인", diagnosis_ai_cause),
+        ("권장 조치", diagnosis_ai_action),
+        ("관리자 확인", diagnosis_ai_admin),
+    ):
+        row = tk.Frame(diagnosis_ai_inner, background=colors["card_bg"])
+        row.pack(fill="x")
+        tk.Label(
+            row,
+            text=f"{label}:",
+            font=ui_font(FONT_SECONDARY_PX, "semibold"),
+            foreground=colors["muted"],
+            background=colors["card_bg"],
+            width=10,
+            anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            row,
+            textvariable=variable,
+            font=ui_font(FONT_SECONDARY_PX),
+            foreground=colors["text"],
+            background=colors["card_bg"],
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+    diagnosis_actions = tk.Frame(support_view, background=colors["app_bg"], pady=2)
+    diagnosis_actions.pack(fill="x")
+    rounded_button(
+        diagnosis_actions,
+        "홈으로 돌아가기",
+        lambda: show_status_tab(),
+        "secondary",
+        width=128,
+        height=32,
+    ).pack(side="left")
+    rounded_button(
+        diagnosis_actions,
+        "새로고침",
+        lambda: refresh_diagnosis_detail(),
+        "primary",
+        width=104,
+        height=32,
+    ).pack(side="right")
+
     support_card, support_inner = rounded_container(support_view, 520, padding=(18, 16), radius=16)
     support_card.pack(fill="both", expand=True, pady=(6, 0))
+    support_card.pack_forget()
     tk.Label(
         support_inner,
-        text="AS 접수",
-        font=("Segoe UI", 16, "bold"),
+        text="진단",
+        font=ui_font(FONT_PAGE_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["card_bg"],
         anchor="w",
     ).pack(fill="x")
     tk.Label(
         support_inner,
-        text="증상과 PC Agent 로그를 함께 보내면 담당자가 더 정확히 확인할 수 있습니다.",
-        font=("Segoe UI", 9),
+        text="AI 로그 요약과 AS 접수에 필요한 상세 정보를 확인합니다.",
+        font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["muted"],
         background=colors["card_bg"],
         anchor="w",
@@ -3601,7 +4289,7 @@ def show_log_viewer(
         tk.Label(
             parent,
             text=text,
-            font=("Segoe UI", 9, "bold"),
+            font=ui_font(FONT_BUTTON_PX, "semibold"),
             foreground=colors["muted"],
             background=colors["card_bg"],
             anchor="w",
@@ -3641,7 +4329,7 @@ def show_log_viewer(
         borderwidth=1,
         highlightthickness=1,
         highlightbackground=colors["border"],
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_BODY_PX),
     )
     symptom_detail.pack(fill="both", expand=True)
 
@@ -3658,7 +4346,7 @@ def show_log_viewer(
             background=colors["card_bg"],
             activebackground=colors["card_bg"],
             selectcolor=colors["card_bg"],
-            font=("Segoe UI", 9),
+            font=ui_font(FONT_BODY_PX),
         ).pack(side="left", padx=(0, 16))
 
     preview_block = tk.Frame(
@@ -3673,7 +4361,7 @@ def show_log_viewer(
     tk.Label(
         preview_block,
         text="AI 로그 요약",
-        font=("Segoe UI", 9, "bold"),
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["section_bg"],
         anchor="w",
@@ -3681,7 +4369,7 @@ def show_log_viewer(
     tk.Label(
         preview_block,
         textvariable=rag_preview_status,
-        font=("Segoe UI", 8),
+        font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["muted"],
         background=colors["section_bg"],
         justify="left",
@@ -3692,7 +4380,7 @@ def show_log_viewer(
     tk.Label(
         support_inner,
         textvariable=incident_window_value,
-        font=("Segoe UI", 8),
+        font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["subtle"],
         background=colors["card_bg"],
         anchor="w",
@@ -3700,7 +4388,7 @@ def show_log_viewer(
     tk.Label(
         support_inner,
         textvariable=support_status,
-        font=("Segoe UI", 8),
+        font=ui_font(FONT_SECONDARY_PX),
         foreground="#16766b",
         background=colors["card_bg"],
         anchor="w",
@@ -3746,79 +4434,15 @@ def show_log_viewer(
         log_filter_state["userTouched"] = True
         show_log_tab()
 
-    def refresh_signals(signals: Sequence[dict[str, Any]]) -> None:
-        for child in signals_body.winfo_children():
-            child.destroy()
-        if not signals:
-            empty = tk.Frame(signals_body, background=colors["card_bg"])
-            empty.pack(fill="both", expand=True)
-            tk.Label(
-                empty,
-                text="최근 감지 신호 없음",
-                font=("Segoe UI", 9, "bold"),
-                foreground=colors["muted"],
-                background=colors["card_bg"],
-                anchor="w",
-            ).pack(fill="x", pady=(5, 2))
-            tk.Label(
-                empty,
-                text="단순 CPU/RAM/GPU 고사용률은 AS 알림에서 제외됩니다",
-                font=("Segoe UI", 8),
-                foreground=colors["subtle"],
-                background=colors["card_bg"],
-                anchor="w",
-            ).pack(fill="x")
+    def refresh_home_detection(detection: dict[str, Any] | None) -> None:
+        home_detection_value["signal"] = detection
+        if detection is None:
+            home_detection_title.set("최근 감지 신호 없음")
+            home_detection_detail.set("최근 로그에서 AS 접수가 필요한 신호는 아직 없습니다.")
             return
-        for signal in signals:
-            row = tk.Frame(signals_body, height=24, background=colors["signal_bg"])
-            row.pack(fill="x", pady=(0, 4))
-            row.grid_propagate(False)
-            row.columnconfigure(2, weight=1)
-            time_label = tk.Label(
-                row,
-                text=str(signal["time"]),
-                font=("Segoe UI", 9),
-                foreground=colors["subtle"],
-                background=colors["signal_bg"],
-                anchor="w",
-                width=8,
-            )
-            time_label.grid(row=0, column=0, sticky="nsw", padx=(8, 8))
-            level_label = tk.Label(
-                row,
-                text=str(signal["level"]),
-                font=("Segoe UI", 8, "bold"),
-                foreground="#1f6f5d",
-                background=colors["signal_bg"],
-                anchor="w",
-                width=7,
-            )
-            level_label.grid(row=0, column=1, sticky="nsw", padx=(0, 8))
-            title_label = tk.Label(
-                row,
-                text=sanitize_display_text(signal["title"], 72),
-                font=("Segoe UI", 9),
-                foreground=colors["text"],
-                background=colors["signal_bg"],
-                anchor="w",
-            )
-            title_label.grid(row=0, column=2, sticky="nsew")
-
-            def paint_signal(target: tk.Frame, background: str) -> None:
-                target.configure(background=background)
-                for widget in target.winfo_children():
-                    widget.configure(background=background)
-
-            def open_signal(event: object = None, current: dict[str, Any] = signal) -> None:
-                selected_nav.set("로그")
-                render_nav()
-                select_signal(current)
-
-            for widget in (row, time_label, level_label, title_label):
-                widget.configure(cursor="hand2")
-                widget.bind("<Button-1>", open_signal)
-                widget.bind("<Enter>", lambda event, target=row: paint_signal(target, colors["signal_hover"]))
-                widget.bind("<Leave>", lambda event, target=row: paint_signal(target, colors["signal_bg"]))
+        home_detection_title.set(sanitize_display_text(detection.get("title"), 72))
+        detail = str(detection.get("detail") or event_panel_signal_summary(detection))
+        home_detection_detail.set(sanitize_display_text(detail, 120))
 
     def support_detail_text() -> str:
         return symptom_detail.get("1.0", "end").strip()
@@ -3863,7 +4487,12 @@ def show_log_viewer(
             f"{window.ended_at.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-    def submit_support_request() -> None:
+    def submit_support_request(status_target: Any = None) -> None:
+        def set_status(text: str) -> None:
+            support_status.set(text)
+            if status_target is not None:
+                status_target.set(text)
+
         try:
             detected_at = parse_datetime(symptom_time.get(), "symptomTime") if symptom_time.get().strip() else datetime.now(KST)
             selected_type = symptom_type.get() or "REMOTE_DRIVER_OS"
@@ -3884,19 +4513,22 @@ def show_log_viewer(
             )
             ticket_id = str(result["ticketId"])
             reset_support_form()
-            support_status.set(
-                f"AS 접수 신청이 완료되었습니다. 관리자 AS 티켓 목록에서 확인할 수 있습니다. 티켓 {ticket_id}"
-            )
+            set_status(f"AS 접수 신청이 완료되었습니다. 관리자 AS 티켓 목록에서 확인할 수 있습니다. 티켓 {ticket_id}")
             refresh_status()
             refresh_log()
         except Exception as exception:
-            support_status.set(event_panel_failure_message(exception))
+            set_status(event_panel_failure_message(exception))
 
-    def preview_support_recommendation() -> None:
+    def preview_support_recommendation(status_target: Any = None) -> None:
+        def set_preview_text(text: str) -> None:
+            rag_preview_status.set(text)
+            if status_target is not None:
+                status_target.set(text)
+
         if preview_running["active"]:
             return
         preview_running["active"] = True
-        rag_preview_status.set("선택 구간 로그를 준비하고 있습니다.")
+        set_preview_text("선택 구간 로그를 준비하고 있습니다.")
         support_status.set("")
         symptom_time_text = symptom_time.get()
         selected_type = symptom_type.get() or "REMOTE_DRIVER_OS"
@@ -3910,11 +4542,11 @@ def show_log_viewer(
                 f"문제 발생 전후 로그: {window.started_at.strftime('%Y-%m-%d %H:%M:%S')} ~ "
                 f"{window.ended_at.strftime('%Y-%m-%d %H:%M:%S')}"
             )
-            rag_preview_status.set(format_as_rag_preview(result))
+            set_preview_text(format_as_rag_preview(result))
             finish()
 
         def apply_error(exception: Exception) -> None:
-            rag_preview_status.set(as_rag_preview_failure_message(exception))
+            set_preview_text(as_rag_preview_failure_message(exception))
             finish()
 
         def run_preview() -> None:
@@ -3923,7 +4555,7 @@ def show_log_viewer(
                 window = default_incident_window(selected_type, detected_at=detected_at, trigger_type="USER_REQUEST")
                 gzip_path = config.log_dir.parent / "previews" / f"{window.incident_id}.jsonl.gz"
                 gzip_window(path, gzip_path, window)
-                root.after(0, lambda: rag_preview_status.set("서버에서 AI 추천을 확인하고 있습니다."))
+                root.after(0, lambda: set_preview_text("서버에서 AI 추천을 확인하고 있습니다."))
                 result = preview_as_rag(
                     config,
                     gzip_path,
@@ -3936,17 +4568,44 @@ def show_log_viewer(
 
         threading.Thread(target=run_preview, daemon=True).start()
 
+    def prepare_home_support_context() -> None:
+        signal = home_detection_value.get("signal")
+        fill_support_from_signal(signal if isinstance(signal, dict) else None)
+        if signal is None:
+            symptom_title.set("PC 상태 진단")
+            set_support_detail("PC Agent가 최근 30분 로그를 기준으로 상태를 진단합니다.")
+
+    def run_home_diagnosis() -> None:
+        prepare_home_support_context()
+        home_support_status.set("")
+        preview_support_recommendation(home_ai_summary)
+
+    def submit_home_support_request() -> None:
+        if not home_consent.get():
+            home_support_status.set("최근 30분 진단 로그 전송에 동의하면 AS 접수를 신청할 수 있습니다.")
+            return
+        prepare_home_support_context()
+        submit_support_request(home_support_status)
+
+    def summary_section_height(row_count: int) -> int:
+        if row_count <= 0:
+            return 150
+        visible_rows = max(3, min(STATUS_LOG_SUMMARY_LIMIT, row_count))
+        return 72 + visible_rows * 28
+
     def refresh_log_summary() -> None:
         rows = read_status_log_summary_rows(path, STATUS_LOG_SUMMARY_LIMIT)
         summary_table.delete(*summary_table.get_children())
+        summary_section.configure(height=summary_section_height(len(rows)))
         if not rows:
             summary_table.pack_forget()
             if not summary_empty.winfo_ismapped():
-                summary_empty.pack(fill="both", expand=True)
+                summary_empty.pack(fill="x", expand=False)
             return
         summary_empty.pack_forget()
         if not summary_table.winfo_ismapped():
             summary_table.pack(fill="both", expand=True)
+        summary_table.configure(height=max(3, min(STATUS_LOG_SUMMARY_LIMIT, len(rows))))
         for index, row in enumerate(rows):
             summary_table.insert(
                 "",
@@ -3958,13 +4617,13 @@ def show_log_viewer(
     def refresh_status() -> None:
         model = status_home_model(config, path)
         cards_model = {
-            "server": model["serverCard"],
+            "pc": model["pcStatusCard"],
             "upload": model["uploadCard"],
             "startup": model["startupCard"],
             "version": model["versionCard"],
         }
-        server_status.set(str(cards_model["server"]["value"]))
-        server_detail.set(str(cards_model["server"]["detail"]))
+        pc_status.set(str(cards_model["pc"]["value"]))
+        pc_detail.set(str(cards_model["pc"]["detail"]))
         upload_status.set(str(cards_model["upload"]["value"]))
         upload_detail.set(str(cards_model["upload"]["detail"]))
         startup_status.set(str(cards_model["startup"]["value"]))
@@ -3978,7 +4637,7 @@ def show_log_viewer(
             if key in card_icons:
                 icon_kind = "startup" if key == "startup" else key
                 draw_card_icon(card_icons[key], icon_kind, tone)
-        refresh_signals(model["signals"])
+        refresh_home_detection(model["homeDetection"])
         refresh_log_summary()
 
     def refresh_log() -> None:
@@ -3998,6 +4657,55 @@ def show_log_viewer(
             log_empty_label.lift()
         range_status.set(f"범위 {selected_date} {selected_hour:02d}:00 | 표시 {len(rows)}개")
 
+    def refresh_diagnosis_detail() -> None:
+        model = diagnosis_detail_model(config, path)
+        tone = str(model["tone"])
+        badge_bg = {
+            "ok": "#eef8f5",
+            "warning": "#fff7e6",
+            "danger": "#fdeaea",
+            "muted": "#edf3f4",
+        }.get(tone, "#edf3f4")
+        diagnosis_summary_status.set(str(model["status"]))
+        diagnosis_status_badge.configure(foreground=card_tone_color(tone), background=badge_bg)
+        diagnosis_summary_time.set(f"마지막 진단 시간: {model['lastDiagnosticTime']}")
+        diagnosis_summary_text.set(str(model["summary"]))
+        diagnosis_empty_text.set("" if model["hasResult"] else str(model["emptyMessage"]))
+
+        for widgets, metric in zip(diagnosis_metric_widgets, model["metrics"], strict=False):
+            metric_tone = str(metric["tone"])
+            widgets["status"].configure(
+                text=f"상태: {metric['status']}",
+                foreground=card_tone_color(metric_tone),
+            )
+            widgets["current"].configure(text=f"{metric['currentLabel']}: {metric['currentValue']}")
+            widgets["threshold"].configure(text=f"기준: {metric['threshold']}")
+            widgets["description"].configure(text=str(metric["description"]))
+
+        diagnosis_event_tree.delete(*diagnosis_event_tree.get_children())
+        events = list(model["events"])
+        if events:
+            diagnosis_event_empty.pack_forget()
+            if not diagnosis_event_tree.winfo_ismapped():
+                diagnosis_event_tree.pack(fill="both", expand=True)
+            for index, event in enumerate(events):
+                diagnosis_event_tree.insert(
+                    "",
+                    "end",
+                    values=(event["time"], event["type"], event["content"], event["status"]),
+                    tags=("odd" if index % 2 else "even",),
+                )
+        else:
+            diagnosis_event_tree.pack_forget()
+            if not diagnosis_event_empty.winfo_ismapped():
+                diagnosis_event_empty.pack(fill="both", expand=True, pady=(24, 0))
+
+        ai = model["aiAnalysis"]
+        diagnosis_ai_summary.set(str(ai["summary"]))
+        diagnosis_ai_cause.set(", ".join(ai["suspectedCauses"]) if ai["suspectedCauses"] else "-")
+        diagnosis_ai_action.set(", ".join(ai["recommendedActions"]) if ai["recommendedActions"] else "-")
+        diagnosis_ai_admin.set(str(ai["adminReview"]))
+
     def show_status_tab() -> None:
         selected_nav.set("상태")
         render_nav()
@@ -4009,7 +4717,7 @@ def show_log_viewer(
         refresh_status()
 
     def show_log_tab() -> None:
-        selected_nav.set("로그")
+        selected_nav.set("기록")
         render_nav()
         status_view.pack_forget()
         support_view.pack_forget()
@@ -4025,14 +4733,14 @@ def show_log_viewer(
         tree.focus_set()
 
     def show_support_tab(signal: dict[str, Any] | None = None) -> None:
-        selected_nav.set("AS 접수")
+        selected_nav.set("진단")
         render_nav()
         status_view.pack_forget()
         log_view.pack_forget()
         support_view.pack(fill="both", expand=True)
         range_badge.pack_forget()
         range_status.set("")
-        fill_support_from_signal(signal)
+        refresh_diagnosis_detail()
 
     def set_current_hour() -> None:
         now = datetime.now(KST)
@@ -4189,6 +4897,12 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
         "secondary": "#ffffff",
         "secondary_hover": "#f1f6f7",
     }
+    ui_font_family = resolve_ui_font_family(panel)
+
+    def ui_font(size_px: int, weight: str = "regular", underline: bool = False) -> tuple[Any, ...]:
+        return tk_ui_font(ui_font_family, size_px, weight, underline)
+
+    panel.option_add("*Font", ui_font(FONT_BODY_PX))
     container = tk.Frame(panel, background=colors["bg"], padx=12, pady=12)
     container.pack(fill="both", expand=True)
     card = tk.Frame(
@@ -4212,13 +4926,13 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     icon = tk.Canvas(header, width=28, height=28, background=colors["card"], highlightthickness=0)
     icon.pack(side="left", padx=(0, 8))
     icon.create_oval(3, 3, 25, 25, fill=colors["soft"], outline="#b8e2e6")
-    icon.create_text(14, 14, text="!", fill=colors["teal"], font=("Segoe UI", 11, "bold"))
+    icon.create_text(14, 14, text="!", fill=colors["teal"], font=ui_font(FONT_BUTTON_PX, "semibold"))
     title_box = tk.Frame(header, background=colors["card"])
     title_box.pack(side="left", fill="x", expand=True)
     tk.Label(
         title_box,
         text="확인이 필요한 신호가 감지되었습니다",
-        font=("Segoe UI", 12, "bold"),
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["deep"],
         background=colors["card"],
         anchor="w",
@@ -4226,7 +4940,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     tk.Label(
         title_box,
         text="로그에서 자세히 확인할 수 있습니다.",
-        font=("Segoe UI", 8),
+        font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["muted"],
         background=colors["card"],
         anchor="w",
@@ -4234,7 +4948,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     close_label = tk.Label(
         header,
         text="×",
-        font=("Segoe UI", 14),
+        font=ui_font(FONT_SECTION_TITLE_PX),
         foreground=colors["muted"],
         background=colors["card"],
         cursor="hand2",
@@ -4250,7 +4964,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
         tk.Label(
             row,
             text=label,
-            font=("Segoe UI", 8, "bold"),
+            font=ui_font(FONT_SECONDARY_PX, "semibold"),
             foreground=colors["muted"],
             background=colors["soft"],
             anchor="w",
@@ -4259,7 +4973,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
         tk.Label(
             row,
             text=value,
-            font=("Segoe UI", 8),
+            font=ui_font(FONT_SECONDARY_PX),
             foreground=colors["deep"],
             background=colors["soft"],
             anchor="w",
@@ -4274,7 +4988,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     tk.Label(
         body,
         text="PC Agent가 관련 경고 이벤트를 감지했습니다. 필요하면 자동으로 정리된 제목과 로그 구간으로 AS 접수를 진행할 수 있습니다.",
-        font=("Segoe UI", 9),
+        font=ui_font(FONT_BODY_PX),
         foreground=colors["deep"],
         background=colors["card"],
         anchor="w",
@@ -4287,7 +5001,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     tk.Label(
         mode_row,
         text="신청 방식",
-        font=("Segoe UI", 8, "bold"),
+        font=ui_font(FONT_SECONDARY_PX, "semibold"),
         foreground=colors["muted"],
         background=colors["card"],
         anchor="w",
@@ -4299,7 +5013,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
             text=label,
             variable=request_mode,
             value=label,
-            font=("Segoe UI", 8),
+            font=ui_font(FONT_SECONDARY_PX),
             foreground=colors["deep"],
             background=colors["card"],
             activebackground=colors["card"],
@@ -4309,7 +5023,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     tk.Label(
         body,
         textvariable=status_text,
-        font=("Segoe UI", 8),
+        font=ui_font(FONT_SECONDARY_PX),
         foreground=colors["teal"],
         background=colors["card"],
         anchor="w",
@@ -4348,7 +5062,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
             parent,
             text=text,
             command=command,
-            font=("Segoe UI", 9, "bold" if primary else "normal"),
+            font=ui_font(FONT_BUTTON_PX, "semibold" if primary else "regular"),
             foreground="#ffffff" if primary else colors["deep"],
             background=colors["button"] if primary else colors["secondary"],
             activebackground=colors["button_hover"] if primary else colors["secondary_hover"],
@@ -4369,7 +5083,7 @@ def show_event_panel(config_path: Path, signals: Sequence[dict[str, Any]]) -> No
     link = tk.Label(
         footer,
         text="로그 확인하기 ↗",
-        font=("Segoe UI", 8, "underline"),
+        font=ui_font(FONT_SECONDARY_PX, underline=True),
         foreground=colors["teal"],
         background=colors["card"],
         cursor="hand2",
@@ -4506,6 +5220,20 @@ $primaryBg = [System.Drawing.ColorTranslator]::FromHtml("#0e7490")
 $borderColor = [System.Drawing.ColorTranslator]::FromHtml("#d7e0e3")
 $textColor = [System.Drawing.ColorTranslator]::FromHtml("#17313b")
 $mutedColor = [System.Drawing.ColorTranslator]::FromHtml("#5f737b")
+$uiFontFamily = "Malgun Gothic"
+$installedFonts = New-Object System.Drawing.Text.InstalledFontCollection
+$installedFontNames = @($installedFonts.Families | ForEach-Object {{ $_.Name }})
+foreach ($candidate in @("Segoe UI Variable", "Segoe UI", "Malgun Gothic")) {{
+  if ($installedFontNames -contains $candidate) {{
+    $uiFontFamily = $candidate
+    break
+  }}
+}}
+
+function New-UIFont {{
+  param([float]$Px, [System.Drawing.FontStyle]$Style = [System.Drawing.FontStyle]::Regular)
+  return New-Object System.Drawing.Font($uiFontFamily, ($Px * 72.0 / 96.0), $Style, [System.Drawing.GraphicsUnit]::Point)
+}}
 
 function Style-PopupButton {{
   param($Button, [bool]$Primary = $false)
@@ -4513,7 +5241,7 @@ function Style-PopupButton {{
   $Button.FlatAppearance.BorderSize = 1
   $Button.FlatAppearance.BorderColor = $borderColor
   $Button.Cursor = [System.Windows.Forms.Cursors]::Hand
-  $Button.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+  $Button.Font = New-UIFont 14 ([System.Drawing.FontStyle]::Bold)
   if ($Primary) {{
     $Button.BackColor = $primaryBg
     $Button.ForeColor = [System.Drawing.Color]::White
@@ -4532,7 +5260,7 @@ $form.MinimizeBox = $false
 $form.TopMost = $true
 $form.ShowInTaskbar = $true
 $form.BackColor = $appBg
-$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$form.Font = New-UIFont 14
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
 $form.Location = New-Object System.Drawing.Point(20, ($screen.Bottom - $form.Height - 20))
@@ -4540,7 +5268,7 @@ $form.Location = New-Object System.Drawing.Point(20, ($screen.Bottom - $form.Hei
 $iconLabel = New-Object System.Windows.Forms.Label
 $iconLabel.Text = "!"
 $iconLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-$iconLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$iconLabel.Font = New-UIFont 14 ([System.Drawing.FontStyle]::Bold)
 $iconLabel.ForeColor = $primaryBg
 $iconLabel.BackColor = [System.Drawing.Color]::White
 $iconLabel.BorderStyle = "FixedSingle"
@@ -4552,7 +5280,7 @@ $headline = New-Object System.Windows.Forms.Label
 $headline.Text = "확인이 필요한 신호가 감지되었습니다"
 $headline.Location = New-Object System.Drawing.Point(54, 20)
 $headline.Size = New-Object System.Drawing.Size(270, 24)
-$headline.Font = New-Object System.Drawing.Font("Malgun Gothic", 11, [System.Drawing.FontStyle]::Bold)
+$headline.Font = New-UIFont 16 ([System.Drawing.FontStyle]::Bold)
 $headline.ForeColor = $textColor
 $headline.BackColor = $appBg
 $form.Controls.Add($headline)
@@ -4561,7 +5289,7 @@ $subhead = New-Object System.Windows.Forms.Label
 $subhead.Text = "로그에서 자세히 확인할 수 있습니다."
 $subhead.Location = New-Object System.Drawing.Point(56, 46)
 $subhead.Size = New-Object System.Drawing.Size(250, 20)
-$subhead.Font = New-Object System.Drawing.Font("Malgun Gothic", 8)
+$subhead.Font = New-UIFont 12
 $subhead.ForeColor = $mutedColor
 $subhead.BackColor = $appBg
 $form.Controls.Add($subhead)
@@ -4576,6 +5304,7 @@ $timeCaption = New-Object System.Windows.Forms.Label
 $timeCaption.Text = "발생 시간"
 $timeCaption.Location = New-Object System.Drawing.Point(12, 12)
 $timeCaption.Size = New-Object System.Drawing.Size(58, 18)
+$timeCaption.Font = New-UIFont 12 ([System.Drawing.FontStyle]::Bold)
 $timeCaption.ForeColor = $mutedColor
 $timeCaption.BackColor = $softBg
 $infoPanel.Controls.Add($timeCaption)
@@ -4592,6 +5321,7 @@ $signalCaption = New-Object System.Windows.Forms.Label
 $signalCaption.Text = "감지 신호"
 $signalCaption.Location = New-Object System.Drawing.Point(12, 38)
 $signalCaption.Size = New-Object System.Drawing.Size(58, 18)
+$signalCaption.Font = New-UIFont 12 ([System.Drawing.FontStyle]::Bold)
 $signalCaption.ForeColor = $mutedColor
 $signalCaption.BackColor = $softBg
 $infoPanel.Controls.Add($signalCaption)
@@ -4608,6 +5338,7 @@ $windowCaption = New-Object System.Windows.Forms.Label
 $windowCaption.Text = "전송 구간"
 $windowCaption.Location = New-Object System.Drawing.Point(12, 72)
 $windowCaption.Size = New-Object System.Drawing.Size(58, 18)
+$windowCaption.Font = New-UIFont 12 ([System.Drawing.FontStyle]::Bold)
 $windowCaption.ForeColor = $mutedColor
 $windowCaption.BackColor = $softBg
 $infoPanel.Controls.Add($windowCaption)
@@ -4632,6 +5363,7 @@ $kindLabel = New-Object System.Windows.Forms.Label
 $kindLabel.Text = "신청 방식"
 $kindLabel.Location = New-Object System.Drawing.Point(18, 266)
 $kindLabel.Size = New-Object System.Drawing.Size(70, 22)
+$kindLabel.Font = New-UIFont 12 ([System.Drawing.FontStyle]::Bold)
 $kindLabel.ForeColor = $mutedColor
 $kindLabel.BackColor = $appBg
 $form.Controls.Add($kindLabel)
@@ -4657,6 +5389,7 @@ $notice = New-Object System.Windows.Forms.Label
 $notice.Text = "선택한 구간의 로그를 함께 첨부해 접수합니다."
 $notice.Location = New-Object System.Drawing.Point(18, 302)
 $notice.Size = New-Object System.Drawing.Size(300, 22)
+$notice.Font = New-UIFont 12
 $notice.ForeColor = $primaryBg
 $notice.BackColor = $appBg
 $form.Controls.Add($notice)

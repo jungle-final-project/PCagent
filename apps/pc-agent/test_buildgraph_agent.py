@@ -1207,14 +1207,226 @@ class AgentGoal1112Test(unittest.TestCase):
             with patch("buildgraph_agent.startup_dir", return_value=Path(directory)):
                 model = agent.status_home_model(config, path)
 
-            self.assertEqual(model["serverCard"]["value"], "● 연결됨")
-            self.assertEqual(model["serverCard"]["tone"], "ok")
+            self.assertEqual(model["pcStatusCard"]["value"], "정상")
+            self.assertEqual(model["pcStatusCard"]["tone"], "ok")
             self.assertEqual(model["uploadCard"]["detail"], "업로드 상태: 성공")
             self.assertEqual(model["uploadCard"]["tone"], "ok")
             self.assertEqual(model["startupCard"]["value"], "사용 중")
             self.assertEqual(model["startupCard"]["tone"], "ok")
             self.assertEqual(model["versionCard"]["value"], "1.2.3")
             self.assertEqual(model["versionCard"]["detail"], "최신 버전")
+
+    def test_status_home_model_marks_recent_memory_pressure_as_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            rows = [
+                {
+                    "timestamp": (now - timedelta(minutes=4)).isoformat(),
+                    "kind": "SYSTEM_METRIC",
+                    "memoryUsedPercent": 88.2,
+                    "message": "System metrics collected.",
+                }
+            ]
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory),
+                agent_version="1.2.3",
+                policy_version="test-policy",
+            )
+
+            model = agent.status_home_model(config, path)
+
+            self.assertEqual(model["pcStatusCard"]["value"], "주의")
+            self.assertEqual(model["pcStatusCard"]["tone"], "warning")
+            self.assertEqual(model["homeDetection"]["title"], "메모리 사용량 높음")
+
+    def test_diagnosis_detail_model_empty_state_without_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory),
+                agent_version="1.2.3",
+                policy_version="test-policy",
+            )
+
+            with patch("buildgraph_agent.startup_dir", return_value=Path(directory)):
+                model = agent.diagnosis_detail_model(config, path)
+
+            self.assertFalse(model["hasResult"])
+            self.assertEqual(model["status"], "확인 전")
+            self.assertEqual(model["summary"], "아직 진단 결과가 없습니다.")
+            self.assertEqual(model["events"], [])
+            self.assertTrue(all(metric["status"] == "확인 불가" for metric in model["metrics"]))
+
+    def test_diagnosis_detail_model_builds_metric_cards_from_recent_log(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": now.isoformat(),
+                        "kind": "SYSTEM_METRIC",
+                        "cpuUsagePercent": 32.0,
+                        "memoryUsedPercent": 91.0,
+                        "diskBusyEstimatePercent": 0.0,
+                        "gpuUsagePercent": None,
+                        "message": "System metrics collected.",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory),
+                agent_version="1.2.3",
+                policy_version="test-policy",
+            )
+
+            with patch("buildgraph_agent.startup_dir", return_value=Path(directory)):
+                model = agent.diagnosis_detail_model(config, path)
+
+            metrics = {metric["name"]: metric for metric in model["metrics"]}
+            self.assertTrue(model["hasResult"])
+            self.assertNotEqual(model["lastDiagnosticTime"], "-")
+            self.assertEqual(metrics["CPU"]["currentValue"], "32.0%")
+            self.assertEqual(metrics["CPU"]["status"], "정상")
+            self.assertEqual(metrics["메모리"]["currentValue"], "91.0%")
+            self.assertEqual(metrics["메모리"]["status"], "주의")
+            self.assertEqual(metrics["디스크"]["currentValue"], "0.0%")
+            self.assertEqual(metrics["디스크"]["status"], "정상")
+            self.assertEqual(metrics["GPU"]["status"], "확인 불가")
+            self.assertEqual(len(model["events"]), 1)
+
+    def test_diagnosis_detail_model_has_no_collection_upload_or_server_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(agent.KST).isoformat(),
+                        "kind": "SYSTEM_METRIC",
+                        "cpuUsagePercent": 10.0,
+                        "message": "System metrics collected.",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory),
+                agent_version="1.2.3",
+                policy_version="test-policy",
+            )
+
+            with (
+                patch("buildgraph_agent.startup_dir", return_value=Path(directory)),
+                patch("buildgraph_agent.urllib.request.urlopen") as urlopen,
+                patch("buildgraph_agent.upload_gzip") as upload,
+                patch("buildgraph_agent.preview_as_rag") as preview,
+                patch("buildgraph_agent.append_metric") as append_metric,
+                patch("buildgraph_agent.gzip_window") as gzip_window,
+            ):
+                agent.diagnosis_detail_model(config, path)
+
+            urlopen.assert_not_called()
+            upload.assert_not_called()
+            preview.assert_not_called()
+            append_metric.assert_not_called()
+            gzip_window.assert_not_called()
+
+    def test_diagnosis_detail_model_hides_sensitive_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(agent.KST).isoformat(),
+                        "kind": "AGENT_HEALTH",
+                        "payload": {
+                            "message": "upload failed token=secret C:\\Users\\me\\raw.log",
+                            "processList": ["secret.exe"],
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory),
+                agent_version="1.2.3",
+                policy_version="test-policy",
+            )
+
+            with patch("buildgraph_agent.startup_dir", return_value=Path(directory)):
+                model = agent.diagnosis_detail_model(config, path)
+
+            serialized = json.dumps(model, ensure_ascii=False).lower()
+            self.assertNotIn("raw-agent-token", serialized)
+            self.assertNotIn("token=secret", serialized)
+            self.assertNotIn("c:\\users", serialized)
+            self.assertNotIn("secret.exe", serialized)
+
+    def test_diagnosis_detail_model_does_not_fallback_disk_busy_to_capacity_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(agent.KST).isoformat(),
+                        "kind": "SYSTEM_METRIC",
+                        "cpuUsagePercent": 20.0,
+                        "memoryUsedPercent": 40.0,
+                        "diskUsedPercent": 87.6,
+                        "message": "System metrics collected.",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = agent.AgentConfig(
+                api_base_url="http://localhost:8080",
+                activation_token="activation-token",
+                device_fingerprint_hash="fingerprint",
+                os_version="Windows 11",
+                agent_token="raw-agent-token",
+                log_dir=Path(directory),
+                agent_version="1.2.3",
+                policy_version="test-policy",
+            )
+
+            with patch("buildgraph_agent.startup_dir", return_value=Path(directory)):
+                model = agent.diagnosis_detail_model(config, path)
+
+            metrics = {metric["name"]: metric for metric in model["metrics"]}
+            self.assertEqual(metrics["디스크"]["currentValue"], "-")
+            self.assertEqual(metrics["디스크"]["status"], "확인 불가")
 
     def test_powershell_string_escapes_single_quotes(self) -> None:
         self.assertEqual(agent.powershell_string("C:\\Users\\O'Brien"), "'C:\\Users\\O''Brien'")
