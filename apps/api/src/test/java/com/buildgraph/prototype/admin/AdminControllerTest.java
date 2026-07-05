@@ -1,16 +1,21 @@
 package com.buildgraph.prototype.admin;
 
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.buildgraph.prototype.agent.AgentQueryService;
 import com.buildgraph.prototype.agent.PcAgentAsService;
+import com.buildgraph.prototype.build.BuildGraphLayoutService;
 import com.buildgraph.prototype.price.PriceQueryService;
 import com.buildgraph.prototype.rag.RagEmbeddingService;
 import com.buildgraph.prototype.rag.RagQueryService;
@@ -32,6 +37,14 @@ import org.springframework.web.server.ResponseStatusException;
 class AdminControllerTest {
     private static final String ADMIN_TOKEN = "Bearer jwt-admin-token";
     private static final String USER_TOKEN = "Bearer jwt-user-token";
+    private static final CurrentUserService.CurrentUser ADMIN = new CurrentUserService.CurrentUser(
+            2L,
+            "00000000-0000-4000-8000-000000001002",
+            "admin@example.com",
+            "Admin User",
+            "ADMIN",
+            null
+    );
 
     @Autowired
     private MockMvc mockMvc;
@@ -55,6 +68,9 @@ class AdminControllerTest {
     private PriceQueryService priceQueryService;
 
     @MockitoBean
+    private BuildGraphLayoutService buildGraphLayoutService;
+
+    @MockitoBean
     private CurrentUserService currentUserService;
 
     @MockitoBean
@@ -66,6 +82,7 @@ class AdminControllerTest {
                 .thenThrow(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "로그인이 필요합니다."));
         when(currentUserService.requireAdmin(USER_TOKEN))
                 .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "관리자 권한이 필요합니다."));
+        when(currentUserService.requireAdmin(ADMIN_TOKEN)).thenReturn(ADMIN);
     }
 
     @Test
@@ -109,6 +126,79 @@ class AdminControllerTest {
                 .andExpect(jsonPath("$.generatedAt").value("2026-06-29T10:50:00Z"));
 
         verify(adminQueryService).dashboard();
+    }
+
+    @Test
+    void buildGraphLayoutReturnsSavedDefaultLayoutForAdminToken() throws Exception {
+        when(buildGraphLayoutService.getDefaultLayout()).thenReturn(Map.of(
+                "layoutKey", "DEFAULT",
+                "source", "SAVED",
+                "positions", Map.of(
+                        "CPU", Map.of("x", 120, "y", 180),
+                        "GPU", Map.of("x", 460, "y", 320)
+                ),
+                "updatedAt", "2026-07-03T00:00:00Z"
+        ));
+
+        mockMvc.perform(get("/api/admin/build-graph-layouts/default")
+                        .header("Authorization", ADMIN_TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.layoutKey").value("DEFAULT"))
+                .andExpect(jsonPath("$.source").value("SAVED"))
+                .andExpect(jsonPath("$.positions.CPU.x").value(120))
+                .andExpect(jsonPath("$.positions.GPU.y").value(320));
+
+        verify(currentUserService).requireAdmin(ADMIN_TOKEN);
+        verify(buildGraphLayoutService).getDefaultLayout();
+    }
+
+    @Test
+    void buildGraphLayoutSavesDefaultLayoutForAdminToken() throws Exception {
+        when(buildGraphLayoutService.saveDefaultLayout(anyMap(), eq(ADMIN))).thenReturn(Map.of(
+                "layoutKey", "DEFAULT",
+                "source", "SAVED",
+                "positions", Map.of(
+                        "CPU", Map.of("x", 140, "y", 190),
+                        "GPU", Map.of("x", 520, "y", 340)
+                )
+        ));
+
+        mockMvc.perform(put("/api/admin/build-graph-layouts/default")
+                        .header("Authorization", ADMIN_TOKEN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "positions": {
+                                    "CPU": { "x": 140, "y": 190 },
+                                    "GPU": { "x": 520, "y": 340 }
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source").value("SAVED"))
+                .andExpect(jsonPath("$.positions.CPU.x").value(140))
+                .andExpect(jsonPath("$.positions.GPU.y").value(340));
+
+        verify(currentUserService).requireAdmin(ADMIN_TOKEN);
+        verify(buildGraphLayoutService).saveDefaultLayout(anyMap(), eq(ADMIN));
+    }
+
+    @Test
+    void buildGraphLayoutResetDeletesSavedLayoutForAdminToken() throws Exception {
+        when(buildGraphLayoutService.resetDefaultLayout(ADMIN)).thenReturn(Map.of(
+                "layoutKey", "DEFAULT",
+                "source", "DEFAULT",
+                "positions", Map.of("CPU", Map.of("x", 20, "y", 170))
+        ));
+
+        mockMvc.perform(delete("/api/admin/build-graph-layouts/default")
+                        .header("Authorization", ADMIN_TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source").value("DEFAULT"))
+                .andExpect(jsonPath("$.positions.CPU.x").value(20));
+
+        verify(currentUserService).requireAdmin(ADMIN_TOKEN);
+        verify(buildGraphLayoutService).resetDefaultLayout(ADMIN);
     }
 
     @Test
@@ -161,12 +251,63 @@ class AdminControllerTest {
     }
 
     @Test
+    void ragEvidenceListReturnsUnauthorizedErrorResponseWhenAdminTokenIsMissing() throws Exception {
+        mockMvc.perform(get("/api/admin/rag-evidence"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"))
+                .andExpect(jsonPath("$.message").value("로그인이 필요합니다."));
+
+        verifyNoInteractions(ragQueryService);
+    }
+
+    @Test
+    void ragEvidenceListReturnsForbiddenErrorResponseWhenTokenIsNotAdmin() throws Exception {
+        mockMvc.perform(get("/api/admin/rag-evidence")
+                        .header("Authorization", USER_TOKEN))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.message").value("관리자 권한이 필요합니다."));
+
+        verifyNoInteractions(ragQueryService);
+    }
+
+    @Test
+    void ragEvidenceListReturnsItemsForAdminToken() throws Exception {
+        when(ragQueryService.adminEvidenceList()).thenReturn(Map.of(
+                "items", List.of(Map.of(
+                        "id", "rag-public-id",
+                        "agentSessionId", "session-public-id",
+                        "sourceId", "spec-rtx4070",
+                        "summary", "RTX 4070 QHD 성능 근거",
+                        "score", 0.92
+                )),
+                "page", 0,
+                "size", 20,
+                "total", 1
+        ));
+
+        mockMvc.perform(get("/api/admin/rag-evidence")
+                        .header("Authorization", ADMIN_TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].id").value("rag-public-id"))
+                .andExpect(jsonPath("$.items[0].agentSessionId").value("session-public-id"))
+                .andExpect(jsonPath("$.items[0].sourceId").value("spec-rtx4070"))
+                .andExpect(jsonPath("$.items[0].summary").value("RTX 4070 QHD 성능 근거"))
+                .andExpect(jsonPath("$.items[0].score").value(0.92))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(20))
+                .andExpect(jsonPath("$.total").value(1));
+
+        verify(ragQueryService).adminEvidenceList();
+    }
+
+    @Test
     void updateAsTicketStoresSupportDecisionForAdminToken() throws Exception {
         when(ticketQueryService.update("ticket-public-id", Map.of(
                 "supportDecision", "REMOTE_POSSIBLE",
                 "reviewStatus", "APPROVED",
                 "adminNote", "Remote support link sent."
-        ), null)).thenReturn(Map.of(
+        ), ADMIN)).thenReturn(Map.of(
                 "id", "ticket-public-id",
                 "status", "OPEN",
                 "analysisStatus", "RULE_READY",
@@ -196,7 +337,7 @@ class AdminControllerTest {
                 "supportDecision", "REMOTE_POSSIBLE",
                 "reviewStatus", "APPROVED",
                 "adminNote", "Remote support link sent."
-        ), null);
+        ), ADMIN);
     }
 
     @Test
@@ -234,7 +375,7 @@ class AdminControllerTest {
     void updateAsTicketReturnsNotFoundForMissingTicket() throws Exception {
         when(ticketQueryService.update("missing-ticket-id", Map.of(
                 "supportDecision", "REMOTE_POSSIBLE"
-        ), null)).thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "AS 티켓을 찾을 수 없습니다."));
+        ), ADMIN)).thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "AS 티켓을 찾을 수 없습니다."));
 
         mockMvc.perform(patch("/api/admin/as-tickets/missing-ticket-id")
                         .header("Authorization", ADMIN_TOKEN)
@@ -249,7 +390,7 @@ class AdminControllerTest {
 
         verify(ticketQueryService).update("missing-ticket-id", Map.of(
                 "supportDecision", "REMOTE_POSSIBLE"
-        ), null);
+        ), ADMIN);
     }
 
     @Test

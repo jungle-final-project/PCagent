@@ -181,6 +181,10 @@ public class TicketQueryService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "AS 티켓을 찾을 수 없습니다."));
     }
 
+    public Map<String, Object> adminTicket(String id) {
+        return ticket(id);
+    }
+
     public Map<String, Object> ticket(String id, CurrentUserService.CurrentUser user) {
         if (user == null) {
             return ticket(id);
@@ -751,6 +755,7 @@ public class TicketQueryService {
     private String ticketSql() {
         return """
                 SELECT t.public_id::text AS id,
+                       user_owner.public_id::text AS user_id,
                        t.status,
                        t.analysis_status,
                        t.review_status,
@@ -780,6 +785,7 @@ public class TicketQueryService {
                        t.diagnostic_accuracy,
                        t.resolved_at,
                        t.created_at,
+                       t.updated_at,
                        rs.session_url AS remote_support_link,
                        rs.status AS remote_support_status,
                        vr.public_id::text AS visit_support_id,
@@ -787,6 +793,7 @@ public class TicketQueryService {
                        vr.preferred_date AS visit_preferred_date,
                        vr.time_slot AS visit_time_slot
                 FROM as_tickets t
+                JOIN users user_owner ON user_owner.id = t.user_id
                 LEFT JOIN agent_log_uploads lu ON lu.id = t.log_upload_id
                 LEFT JOIN users admin ON admin.id = t.assigned_admin_id
                 LEFT JOIN LATERAL (
@@ -809,6 +816,7 @@ public class TicketQueryService {
     private Map<String, Object> ticketMap(Map<String, Object> row) {
         return MockData.map(
                 "id", DbValueMapper.string(row, "id"),
+                "userId", DbValueMapper.string(row, "user_id"),
                 "status", DbValueMapper.string(row, "status"),
                 "analysisStatus", DbValueMapper.string(row, "analysis_status"),
                 "reviewStatus", DbValueMapper.string(row, "review_status"),
@@ -843,7 +851,8 @@ public class TicketQueryService {
                 "visitPreferredDate", row.get("visit_preferred_date"),
                 "visitTimeSlot", DbValueMapper.string(row, "visit_time_slot"),
                 "resolvedAt", DbValueMapper.timestamp(row, "resolved_at"),
-                "createdAt", DbValueMapper.timestamp(row, "created_at")
+                "createdAt", DbValueMapper.timestamp(row, "created_at"),
+                "updatedAt", DbValueMapper.timestamp(row, "updated_at")
         );
     }
 

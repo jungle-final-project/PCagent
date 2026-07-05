@@ -2,11 +2,10 @@ package com.buildgraph.prototype.build;
 
 import com.buildgraph.prototype.agent.AgentRunProfile;
 import com.buildgraph.prototype.agent.AgentRunProfiles;
-import com.buildgraph.prototype.agent.AgentRunner;
 import com.buildgraph.prototype.agent.AgentSessionRoot;
 import com.buildgraph.prototype.agent.AgentSessionRootType;
-import com.buildgraph.prototype.agent.AgentStatus;
 import com.buildgraph.prototype.agent.AgentTraceService;
+import com.buildgraph.prototype.agent.AgentJobPublisher;
 import com.buildgraph.prototype.agent.AiChatEngine;
 import com.buildgraph.prototype.agent.QuoteRequirementAnalysisRequest;
 import com.buildgraph.prototype.agent.QuoteRequirementAnalysisResult;
@@ -14,6 +13,7 @@ import com.buildgraph.prototype.common.DbValueMapper;
 import com.buildgraph.prototype.common.MockData;
 import com.buildgraph.prototype.part.ToolBuildPart;
 import com.buildgraph.prototype.part.ToolCheckService;
+import com.buildgraph.prototype.user.CurrentUserService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -28,6 +28,7 @@ import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
@@ -60,25 +61,25 @@ public class BuildQueryService {
 
     private final JdbcTemplate jdbcTemplate;
     private final AgentTraceService agentTraceService;
-    private final AgentRunner agentRunner;
+    private final AgentJobPublisher agentJobPublisher;
     private final AiChatEngine aiChatEngine;
     private final ToolCheckService toolCheckService;
 
     public BuildQueryService(
             JdbcTemplate jdbcTemplate,
             AgentTraceService agentTraceService,
-            AgentRunner agentRunner,
+            AgentJobPublisher agentJobPublisher,
             AiChatEngine aiChatEngine,
             ToolCheckService toolCheckService
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.agentTraceService = agentTraceService;
-        this.agentRunner = agentRunner;
+        this.agentJobPublisher = agentJobPublisher;
         this.aiChatEngine = aiChatEngine;
         this.toolCheckService = toolCheckService;
     }
 
-    public Map<String, Object> parse(Map<String, Object> request) {
+    public Map<String, Object> parse(Map<String, Object> request, CurrentUserService.CurrentUser user) {
         Map<String, Object> body = request == null ? Map.of() : request;
         String message = text(body.get("message"));
         if (message == null) {
@@ -94,17 +95,19 @@ public class BuildQueryService {
         String id = jdbcTemplate.queryForObject("""
                 INSERT INTO requirements (user_id, raw_message, budget, usage_tags, parsed_context)
                 VALUES (
-                  (SELECT id FROM users WHERE email = 'user@example.com'),
+                  ?,
                   ?,
                   ?,
                   string_to_array(?, ','),
                   ?::jsonb
                 )
                 RETURNING public_id::text
-                """, String.class, message, fallbackBudget, String.join(",", fallbackUsageTags), json(pendingContext));
+                """, String.class, user.internalId(), message, fallbackBudget, String.join(",", fallbackUsageTags), json(pendingContext));
 
+        Map<String, Object> analysisInputs = new LinkedHashMap<>(body);
+        analysisInputs.put("_userInternalId", user.internalId());
         QuoteRequirementAnalysisResult parseResult = aiChatEngine.analyzeQuoteRequirement(
-                new QuoteRequirementAnalysisRequest(id, message, body, fallbackContext)
+                new QuoteRequirementAnalysisRequest(id, message, analysisInputs, fallbackContext)
         );
         Map<String, Object> parsedContext = parseResult.parsedContext();
         Integer budget = numberValue(parsedContext.get("budget"));
@@ -130,12 +133,12 @@ public class BuildQueryService {
         );
     }
 
-    public Map<String, Object> recommendations(Map<String, Object> request) {
+    public Map<String, Object> recommendations(Map<String, Object> request, CurrentUserService.CurrentUser user) {
         String requirementId = text(request == null ? null : request.get("requirementId"));
         if (requirementId == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "requirementId가 필요합니다.");
         }
-        RequirementRow requirement = requirement(requirementId);
+        RequirementRow requirement = requirement(requirementId, user.internalId());
         Map<String, Object> answers = objectMap(request == null ? null : request.get("answers"));
         int budget = effectiveBudget(requirement, answers);
         Integer userBudget = userBudget(requirement);
@@ -149,9 +152,9 @@ public class BuildQueryService {
             createdBuildIds.add(insertBuild(requirement.internalId(), plan, parts, warnings));
         }
 
-        String agentSessionId = runAgent(new AgentSessionRoot(AgentSessionRootType.REQUIREMENT, requirement.publicId()));
+        String agentSessionId = runAgent(new AgentSessionRoot(AgentSessionRootType.REQUIREMENT, requirement.publicId()), user.internalId());
         List<Map<String, Object>> recommendations = createdBuildIds.stream()
-                .map(this::buildDetail)
+                .map(id -> buildDetail(id, user))
                 .map(build -> with(build, "agentSessionId", agentSessionId))
                 .toList();
         return MockData.map(
@@ -163,20 +166,82 @@ public class BuildQueryService {
         );
     }
 
-    public List<Map<String, Object>> builds() {
+    public List<Map<String, Object>> builds(CurrentUserService.CurrentUser user) {
         return jdbcTemplate.queryForList("""
-                        SELECT public_id::text AS id, name, total_price, confidence, warnings, created_at
-                        FROM builds
-                        ORDER BY created_at DESC, id DESC
+                        SELECT b.public_id::text AS id, b.name, b.total_price, b.confidence, b.warnings, b.created_at
+                        FROM builds b
+                        JOIN requirements r ON r.id = b.requirement_id
+                        WHERE r.user_id = ?
+                        ORDER BY b.created_at DESC, b.id DESC
                         LIMIT 30
-                        """)
+                        """, user.internalId())
                 .stream()
                 .map(this::buildSummary)
                 .toList();
     }
 
-    public Map<String, Object> buildDetail(String id) {
-        Map<String, Object> row = buildRow(id);
+    @Transactional
+    public Map<String, Object> saveFromChat(Map<String, Object> request, CurrentUserService.CurrentUser user) {
+        Map<String, Object> body = request == null ? Map.of() : request;
+        Map<String, Object> build = objectMap(body.get("build"));
+        String sourceBuildId = firstText(text(body.get("sourceBuildId")), text(build.get("id")));
+        if (sourceBuildId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 챗봇 추천 식별자가 필요합니다.");
+        }
+        List<Map<String, Object>> itemRows = objectMaps(build.get("items"));
+        if (itemRows.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 추천 부품이 필요합니다.");
+        }
+
+        List<PartCandidate> displayPriceParts = new ArrayList<>();
+        Set<String> categories = new LinkedHashSet<>();
+        for (Map<String, Object> item : itemRows) {
+            String partId = text(item.get("partId"));
+            String rawCategory = text(item.get("category"));
+            if (rawCategory == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 부품 카테고리가 필요합니다.");
+            }
+            String category = normalizeCategory(rawCategory);
+            if (!categories.add(category)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "같은 카테고리 부품을 중복 저장할 수 없습니다.");
+            }
+            if (partId == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "저장할 부품 식별자가 필요합니다.");
+            }
+            PartCandidate part = partByPublicId(partId);
+            if (!category.equals(part.category())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "추천 부품 카테고리와 실제 부품 카테고리가 일치하지 않습니다.");
+            }
+            int quantity = Math.max(1, numberValue(item.get("quantity")) == null ? 1 : numberValue(item.get("quantity")));
+            int unitPrice = Math.max(0, numberValue(item.get("price")) == null ? (part.price() == null ? 0 : part.price()) : numberValue(item.get("price")));
+            displayPriceParts.add(withPrice(part, unitPrice * quantity));
+        }
+
+        int displayTotal = positiveOrDefault(numberValue(build.get("totalPrice")), total(displayPriceParts));
+        Integer budget = numberValue(build.get("budgetWon"));
+        String title = firstText(text(build.get("title")), firstText(text(build.get("name")), "AI 챗봇 추천 Build"));
+        String summary = firstText(text(build.get("summary")), "AI 챗봇 대화에서 생성한 추천 조합입니다.");
+        String confidence = normalizeConfidence(text(build.get("confidence")));
+        String rawMessage = firstText(text(body.get("lastUserMessage")), summary);
+        Map<String, Object> parsedContext = MockData.map(
+                "source", "AI_BUILD_CHAT",
+                "sourceBuildId", sourceBuildId,
+                "title", title,
+                "summary", summary,
+                "tier", text(build.get("tier")),
+                "budgetWon", budget
+        );
+
+        int validationBudget = budget == null || budget <= 0 ? displayTotal : budget;
+        List<Map<String, Object>> toolResults = evaluateTools(displayPriceParts, validationBudget);
+        List<Map<String, Object>> warnings = warningsFor(toolResults, displayTotal, budget == null ? 0 : budget);
+        Long requirementInternalId = insertChatRequirement(user.internalId(), rawMessage, budget, parsedContext);
+        String buildId = insertChatBuild(requirementInternalId, title, displayTotal, confidence, displayPriceParts, warnings);
+        return MockData.map("id", buildId);
+    }
+
+    public Map<String, Object> buildDetail(String id, CurrentUserService.CurrentUser user) {
+        Map<String, Object> row = buildRow(id, user.internalId());
         Map<String, Object> summary = buildSummary(row);
         return MockData.map(
                 "id", summary.get("id"),
@@ -196,7 +261,7 @@ public class BuildQueryService {
         );
     }
 
-    public Map<String, Object> changePart(String id, Map<String, Object> request) {
+    public Map<String, Object> changePart(String id, Map<String, Object> request, CurrentUserService.CurrentUser user) {
         String category = normalizeCategory(text(request == null ? null : request.get("category")));
         String selectedPartId = text(request == null ? null : request.get("partId"));
         if (selectedPartId == null) {
@@ -206,14 +271,14 @@ public class BuildQueryService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "변경할 부품을 찾을 수 없습니다.");
         }
 
-        Map<String, Object> beforeBuild = buildDetail(id);
+        Map<String, Object> beforeBuild = buildDetail(id, user);
         List<PartCandidate> beforeParts = buildPartCandidates(id);
         PartCandidate selectedPart = partByPublicId(selectedPartId);
         List<PartCandidate> afterParts = replaceCategory(beforeParts, category, selectedPart);
         int beforeTotal = total(beforeParts);
         int afterTotal = total(afterParts);
         List<Map<String, Object>> toolResults = evaluateTools(afterParts, afterTotal);
-        String agentSessionId = runAgent(new AgentSessionRoot(AgentSessionRootType.BUILD, id));
+        String agentSessionId = runAgent(new AgentSessionRoot(AgentSessionRootType.BUILD, id), user.internalId());
         Map<String, Object> agentSession = agentSessionId == null ? Map.of() : agentSession(agentSessionId);
 
         return MockData.map(
@@ -238,7 +303,7 @@ public class BuildQueryService {
         );
     }
 
-    private RequirementRow requirement(String publicId) {
+    private RequirementRow requirement(String publicId, Long userId) {
         return jdbcTemplate.queryForList("""
                         SELECT id AS internal_id,
                                public_id::text AS id,
@@ -248,7 +313,8 @@ public class BuildQueryService {
                                parsed_context
                         FROM requirements
                         WHERE public_id = ?::uuid
-                        """, publicId)
+                          AND user_id = ?
+                        """, publicId, userId)
                 .stream()
                 .findFirst()
                 .map(row -> new RequirementRow(
@@ -277,6 +343,31 @@ public class BuildQueryService {
                     """, buildInternalId, part.internalId(), part.category(), part.price());
         }
         return DbValueMapper.string(row, "public_id");
+    }
+
+    private Long insertChatRequirement(Long userInternalId, String rawMessage, Integer budget, Map<String, Object> parsedContext) {
+        return jdbcTemplate.queryForObject("""
+                INSERT INTO requirements (user_id, raw_message, budget, usage_tags, parsed_context)
+                VALUES (?, ?, ?, string_to_array(?, ','), ?::jsonb)
+                RETURNING id
+                """, Long.class, userInternalId, rawMessage, budget, "", json(parsedContext));
+    }
+
+    private String insertChatBuild(Long requirementInternalId, String name, int totalPrice, String confidence, List<PartCandidate> parts, List<Map<String, Object>> warnings) {
+        String buildId = jdbcTemplate.queryForObject("""
+                INSERT INTO builds (requirement_id, name, total_price, confidence, warnings)
+                VALUES (?, ?, ?, ?, ?::jsonb)
+                RETURNING public_id::text
+                """, String.class, requirementInternalId, name, totalPrice, confidence, json(warnings));
+        for (PartCandidate part : parts) {
+            jdbcTemplate.update("""
+                    INSERT INTO build_items (build_id, part_id, category, price)
+                    SELECT id, ?, ?, ?
+                    FROM builds
+                    WHERE public_id = ?::uuid
+                    """, part.internalId(), part.category(), part.price(), buildId);
+        }
+        return buildId;
     }
 
     private List<PartCandidate> selectBuildParts(
@@ -453,28 +544,34 @@ public class BuildQueryService {
         );
     }
 
-    private Map<String, Object> buildRow(String id) {
+    private Map<String, Object> buildRow(String id, Long userId) {
         return jdbcTemplate.queryForList("""
-                        SELECT public_id::text AS id, name, total_price, confidence, warnings, created_at
-                        FROM builds
-                        WHERE public_id = ?::uuid
-                        """, id)
+                        SELECT b.public_id::text AS id, b.name, b.total_price, b.confidence, b.warnings, b.created_at
+                        FROM builds b
+                        JOIN requirements r ON r.id = b.requirement_id
+                        WHERE b.public_id = ?::uuid
+                          AND r.user_id = ?
+                        """, id, userId)
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Build를 찾을 수 없습니다."));
     }
 
-    private String runAgent(AgentSessionRoot root) {
-        return runAgent(root, AgentRunProfiles.forRoot(root));
+    private String runAgent(AgentSessionRoot root, Long userId) {
+        return runAgent(root, AgentRunProfiles.forRoot(root), userId);
     }
 
-    private String runAgent(AgentSessionRoot root, AgentRunProfile profile) {
+    private String runAgent(AgentSessionRoot root, AgentRunProfile profile, Long userId) {
+        String sessionId = null;
         try {
-            String sessionId = agentTraceService.createQueuedSession(root, "SYSTEM", profile.purpose());
-            agentTraceService.advanceStatus(sessionId, AgentStatus.RUNNING, "SYSTEM", "agent run requested for " + profile.purpose());
-            agentRunner.run(sessionId, root, profile);
+            sessionId = agentTraceService.createQueuedSession(root, "SYSTEM", profile.purpose(), userId);
+            agentJobPublisher.publishRun(sessionId, root, profile);
             return sessionId;
         } catch (RuntimeException error) {
+            if (sessionId != null) {
+                agentTraceService.markFailed(sessionId, "SYSTEM", "agent job publish failed");
+                return sessionId;
+            }
             return null;
         }
     }
@@ -1138,6 +1235,18 @@ public class BuildQueryService {
         return List.of(text.split(",")).stream().map(String::trim).filter(item -> !item.isBlank()).toList();
     }
 
+    private static PartCandidate withPrice(PartCandidate part, int price) {
+        return new PartCandidate(
+                part.internalId(),
+                part.publicId(),
+                part.category(),
+                part.name(),
+                part.manufacturer(),
+                price,
+                part.attributes()
+        );
+    }
+
     private static List<String> normalizeGpuClasses(List<String> values) {
         return values.stream()
                 .map(value -> value.toUpperCase(Locale.ROOT).replace(" ", "_").replace("-", "_"))
@@ -1163,6 +1272,16 @@ public class BuildQueryService {
         return new LinkedHashMap<>();
     }
 
+    private static List<Map<String, Object>> objectMaps(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(item -> item instanceof Map<?, ?>)
+                .map(BuildQueryService::objectMap)
+                .toList();
+    }
+
     private static String text(Object value) {
         if (value == null) {
             return null;
@@ -1173,6 +1292,18 @@ public class BuildQueryService {
 
     private static String firstText(String first, String fallback) {
         return first == null || first.isBlank() ? fallback : first;
+    }
+
+    private static int positiveOrDefault(Integer value, int fallback) {
+        return value == null || value < 0 ? fallback : value;
+    }
+
+    private static String normalizeConfidence(String value) {
+        String confidence = firstText(value, "MEDIUM").toUpperCase(Locale.ROOT);
+        return switch (confidence) {
+            case "LOW", "MEDIUM", "HIGH" -> confidence;
+            default -> "MEDIUM";
+        };
     }
 
     private static Integer numberValue(Object value) {

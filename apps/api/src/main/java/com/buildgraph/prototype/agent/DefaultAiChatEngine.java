@@ -43,7 +43,12 @@ public class DefaultAiChatEngine implements AiChatEngine {
             RTX 5090처럼 사용자가 명시한 부품/클래스는 requiredGpuClasses와 hardConstraintPolicy에 반드시 보존하십시오.
             셀프 견적 변경 요청은 draftEdit에 교체 대상 category, operation, priceDirection, targetMaxPrice를 구조화하십시오.
             예: “그래픽카드가 너무 비싸니 싼 걸로”는 category=GPU, operation=REPLACE, priceDirection=CHEAPER입니다.
+            순수 화면 이동 요청이면 routeIntent를 구조화하십시오. 추천/교체/삭제/담기/수량 변경 요청은 화면 이동이 아닙니다.
+            routeIntent.shouldNavigate는 사용자가 명확히 화면/페이지/목록/상세로 이동하려는 경우에만 true입니다.
+            상품 상세 이동은 사용자가 특정 상품 상세를 보려는 경우에만 PART_DETAIL과 partQuery를 채우십시오. “5090 추천”, “5090 들어간 PC”처럼 후보가 여러 개인 요청은 PART_DETAIL이 아닙니다.
+            확신이 낮거나 복합 명령이면 routeIntent.shouldNavigate=false, routeType=NONE, confidence=LOW로 두십시오.
             예산이 없으면 budget은 null입니다. 일반 성능 목표는 budgetPolicy=UNSPECIFIED이고, 예산 없는 최고급/끝판왕/명시 5090 의도만 OPEN_BUDGET입니다.
+            명시 예산이 있으면 “최고급” 표현이 있어도 budgetPolicy=USER_BUDGET이며, “이하/안으로/넘지 않게”는 budgetMode=MAX, “이상/최소/부터”는 MIN, 일반 “으로/짜리/정도”는 TARGET입니다.
             출력은 서버가 제공한 JSON schema를 반드시 따릅니다.
             """;
     private static final List<String> BUILD_CATEGORIES = List.of(
@@ -54,17 +59,26 @@ public class DefaultAiChatEngine implements AiChatEngine {
     private final AgentTraceService agentTraceService;
     private final AgentRagRetrievalService agentRagRetrievalService;
     private final OpenAiResponsesClient openAiResponsesClient;
+    private final AiProfileConfig aiProfileConfig;
+    private final PartReplacementRanker partReplacementRanker;
+    private final PartRouteResolver partRouteResolver;
 
     public DefaultAiChatEngine(
             JdbcTemplate jdbcTemplate,
             AgentTraceService agentTraceService,
             AgentRagRetrievalService agentRagRetrievalService,
-            OpenAiResponsesClient openAiResponsesClient
+            OpenAiResponsesClient openAiResponsesClient,
+            AiProfileConfig aiProfileConfig,
+            PartReplacementRanker partReplacementRanker,
+            PartRouteResolver partRouteResolver
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.agentTraceService = agentTraceService;
         this.agentRagRetrievalService = agentRagRetrievalService;
         this.openAiResponsesClient = openAiResponsesClient;
+        this.aiProfileConfig = aiProfileConfig;
+        this.partReplacementRanker = partReplacementRanker;
+        this.partRouteResolver = partRouteResolver;
     }
 
     @Override
@@ -86,10 +100,16 @@ public class DefaultAiChatEngine implements AiChatEngine {
 
     @Override
     public AiChatEngineResponse respondLlmRequired(AiChatEngineRequest request) {
+        return respondLlmRequired(request, null);
+    }
+
+    @Override
+    public AiChatEngineResponse respondLlmRequired(AiChatEngineRequest request, String requestedAiProfile) {
         String message = requireText(request == null ? null : request.message(), "챗봇 메시지가 필요합니다.");
         if (!openAiResponsesClient.isConfigured()) {
             throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED, "OPENAI_API_KEY가 필요합니다.");
         }
+        AiProfileDefinition buildProfile = requireBuildChatProfile(requestedAiProfile);
         Map<String, Object> context = request == null || request.context() == null ? Map.of() : request.context();
         Map<String, Object> fallbackContext = deterministicParsedContext(context, message);
         AgentRunProfile profile = AgentRunProfiles.requirementParse();
@@ -97,7 +117,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
                 new AgentSessionRoot(AgentSessionRootType.REQUIREMENT, CHAT_RAG_ROOT_ID),
                 profile,
                 message,
-                3
+                buildProfile.ragTopK()
         );
         List<String> evidenceIds = evidenceSet.stream()
                 .map(DefaultAiChatEngine::sourceEvidenceId)
@@ -106,21 +126,47 @@ public class DefaultAiChatEngine implements AiChatEngine {
                 .toList();
         Map<String, Object> plan;
         try {
-            plan = llmBuildChatPlan(message, request, context, fallbackContext, evidenceIds, evidenceSet);
+            plan = llmBuildChatPlan(message, request, context, fallbackContext, evidenceIds, evidenceSet, buildProfile);
         } catch (ResponseStatusException error) {
             throw error;
         } catch (RuntimeException error) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "LLM 응답 JSON을 처리할 수 없습니다.", error);
         }
 
-        AiChatIntent intent = normalizeIntent(text(plan.get("intent")), classify(message, request == null ? null : request.selectedCategory(), context));
+        AiChatIntent fallbackIntent = classify(message, request == null ? null : request.selectedCategory(), context);
+        AiChatIntent intent = normalizeIntent(text(plan.get("intent")), fallbackIntent);
+        if (fallbackIntent == AiChatIntent.ASK_FOLLOW_UP && isGenericBuildRequest(safe(message).toLowerCase(Locale.ROOT))) {
+            intent = AiChatIntent.ASK_FOLLOW_UP;
+        }
+        if (fallbackIntent == AiChatIntent.PART_RECOMMEND && intent == AiChatIntent.FULL_BUILD_RECOMMEND) {
+            intent = AiChatIntent.PART_RECOMMEND;
+        }
+        if (fallbackIntent == AiChatIntent.FULL_BUILD_RECOMMEND && intent == AiChatIntent.PART_RECOMMEND) {
+            intent = AiChatIntent.FULL_BUILD_RECOMMEND;
+        }
         Map<String, Object> draftEdit = normalizeDraftEdit(objectMap(plan.get("draftEdit")), message, request == null ? null : request.selectedCategory(), context);
+        if (!hasEditableQuoteContext(context) && fallbackIntent == AiChatIntent.BUILD_MODIFY && categoryFrom(message) != null) {
+            intent = AiChatIntent.PART_RECOMMEND;
+        }
+        if (fallbackIntent == AiChatIntent.BUILD_MODIFY && !"NONE".equals(text(draftEdit.get("operation")))) {
+            intent = AiChatIntent.BUILD_MODIFY;
+        }
+        if (!hasEditableQuoteContext(context) && intent == AiChatIntent.BUILD_MODIFY && categoryFrom(message) != null) {
+            intent = AiChatIntent.PART_RECOMMEND;
+        }
+        if (fallbackIntent == AiChatIntent.PART_RECOMMEND && intent == AiChatIntent.BUILD_MODIFY && !hasEditableQuoteContext(context)) {
+            intent = AiChatIntent.PART_RECOMMEND;
+        }
         String selectedCategory = firstText(categoryFrom(text(draftEdit.get("category"))), firstText(categoryFrom(text(plan.get("selectedCategory"))), request == null ? null : request.selectedCategory()));
         Map<String, Object> parsedContext = normalizeParsedContext(objectMap(plan.get("parsedContext")), fallbackContext);
         if (!draftEdit.isEmpty()) {
             parsedContext.put("draftEdit", draftEdit);
         }
         String assistantMessage = firstText(text(plan.get("assistantMessage")), null);
+        EngineRouteIntent routeIntent = normalizeRouteIntent(objectMap(plan.get("routeIntent")), selectedCategory);
+        if (routeIntent != null) {
+            parsedContext.put("routeIntent", routeIntent.context());
+        }
         AiChatEngineResponse base = switch (intent) {
             case FULL_BUILD_RECOMMEND -> fullBuildResponse(message, parsedContext);
             case PART_RECOMMEND -> partRecommendResponse(message, selectedCategory);
@@ -129,6 +175,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
             case EXPLAIN -> explainResponse(message);
             case ASK_FOLLOW_UP -> askFollowUpResponse(message);
         };
+        base = withRouteAction(base, routeIntent);
         return withLlmMetadata(base, assistantMessage, parsedContext, evidenceIds);
     }
 
@@ -144,9 +191,10 @@ public class DefaultAiChatEngine implements AiChatEngine {
 
         AgentSessionRoot root = new AgentSessionRoot(AgentSessionRootType.REQUIREMENT, requirementId);
         AgentRunProfile profile = AgentRunProfiles.requirementParse();
+        Long userInternalId = longValue(optionalInputs.get("_userInternalId"));
         String sessionId = null;
         try {
-            sessionId = agentTraceService.createQueuedSession(root, "SYSTEM", profile.purpose());
+            sessionId = agentTraceService.createQueuedSession(root, "SYSTEM", profile.purpose(), userInternalId);
             String activeSessionId = sessionId;
             agentTraceService.advanceStatus(sessionId, AgentStatus.RUNNING, "SYSTEM", "quote requirement AI engine requested");
             List<AgentRagEvidenceDraft> evidenceSet = agentRagRetrievalService.retrieveEvidenceSet(root, profile);
@@ -221,7 +269,10 @@ public class DefaultAiChatEngine implements AiChatEngine {
     }
 
     private AiChatEngineResponse fullBuildResponse(String message, Map<String, Object> parsedContext) {
-        List<AiChatEngineResponse.BuildRecommendation> recommendations = buildRecommendations(message, parsedContext);
+        Map<String, Object> effectiveContext = new LinkedHashMap<>(parsedContext == null ? Map.of() : parsedContext);
+        Map<String, PartQueryConstraints> constraintsByCategory = fullBuildPartConstraints(message);
+        applyFullBuildConstraints(effectiveContext, constraintsByCategory);
+        List<AiChatEngineResponse.BuildRecommendation> recommendations = buildRecommendations(message, effectiveContext, constraintsByCategory);
         List<AiChatAction> actions = new ArrayList<>();
         actions.add(new AiChatAction(AiChatActionType.OPEN_SELF_QUOTE, "셀프 견적으로 보기", Map.of("route", "/self-quote")));
         if (!recommendations.isEmpty()) {
@@ -231,18 +282,24 @@ public class DefaultAiChatEngine implements AiChatEngine {
                     MockData.map(
                             "source", "AI_CHAT_ENGINE",
                             "items", recommendations.get(0).items().stream()
-                                    .map(part -> MockData.map("partId", part.partId(), "category", part.category(), "quantity", defaultQuantity(part.category())))
+                                    .map(part -> MockData.map(
+                                            "partId", part.partId(),
+                                            "category", part.category(),
+                                            "quantity", targetQuantity(part.category(), effectiveContext)
+                                    ))
                                     .toList()
                     )
             ));
         }
         return response(
-                "요청하신 조건으로 추천 PC 3개를 준비했습니다. 원하는 조합은 셀프 견적에서 그대로 담아 비교할 수 있습니다.",
+                recommendations.isEmpty() && "MUST_INCLUDE".equals(text(effectiveContext.get("hardConstraintPolicy")))
+                        ? "요청한 명시 부품 조건을 만족하는 내부 자산 후보를 찾지 못했습니다. 조건을 넓혀 다시 요청해 주세요."
+                        : "요청하신 조건으로 추천 PC 3개를 준비했습니다. 원하는 조합은 셀프 견적에서 그대로 담아 비교할 수 있습니다.",
                 AiChatIntent.FULL_BUILD_RECOMMEND,
                 actions,
                 recommendations,
                 List.of(),
-                parsedContext
+                effectiveContext
         );
     }
 
@@ -251,21 +308,37 @@ public class DefaultAiChatEngine implements AiChatEngine {
         if (category == null) {
             return askFollowUpResponse(message);
         }
-        List<AiChatEngineResponse.PartRecommendation> parts = partRecommendations(category, 3);
+        PartQueryConstraints constraints = partQueryConstraints(category, message);
+        List<AiChatEngineResponse.PartRecommendation> parts = constrainedPartRecommendations(category, constraints, 3);
         List<AiChatAction> actions = parts.stream()
                 .map(part -> new AiChatAction(
                         AiChatActionType.ADD_PART_TO_DRAFT,
                         part.name() + " 담기",
-                        MockData.map("partId", part.partId(), "category", part.category(), "quantity", defaultQuantity(part.category()))
+                        MockData.map("partId", part.partId(), "category", part.category(), "quantity", constraints.targetQuantity(defaultQuantity(part.category())))
                 ))
                 .toList();
+        Map<String, Object> parsedContext = new LinkedHashMap<>();
+        parsedContext.put("category", category);
+        parsedContext.put("hardConstraintPolicy", constraints.hasHardConstraint() ? "MUST_INCLUDE" : "NONE");
+        parsedContext.put("requiredPartKeywords", constraints.requiredPartKeywords());
+        if (constraints.targetCapacityGb() != null) {
+            parsedContext.put("targetCapacityGb", constraints.targetCapacityGb());
+        }
+        if (constraints.targetModuleCount() != null) {
+            parsedContext.put("targetModuleCount", constraints.targetModuleCount());
+        }
+        if (constraints.targetQuantity() != null) {
+            parsedContext.put("targetQuantity", constraints.targetQuantity());
+        }
         return response(
-                categoryLabel(category) + " 후보를 내부 자산 기준으로 골랐습니다. 담기 버튼은 기존 셀프 견적 장바구니 API로 연결하면 됩니다.",
+                parts.isEmpty()
+                        ? categoryLabel(category) + " 조건에 맞는 내부 자산 후보를 찾지 못했습니다. 조건을 조금 넓혀 다시 요청해 주세요."
+                        : categoryLabel(category) + " 후보를 내부 자산 기준으로 골랐습니다. 담기 버튼은 기존 셀프 견적 장바구니 API로 연결하면 됩니다.",
                 AiChatIntent.PART_RECOMMEND,
                 actions,
                 List.of(),
                 parts,
-                MockData.map("category", category)
+                parsedContext
         );
     }
 
@@ -290,13 +363,21 @@ public class DefaultAiChatEngine implements AiChatEngine {
         Map<String, Object> currentItem = currentDraftItem(context, effectiveCategory);
         String priceDirection = normalizePriceDirection(text(normalizedDraftEdit.get("priceDirection")));
         Integer targetMaxPrice = numberValue(normalizedDraftEdit.get("targetMaxPrice"));
-        List<AiChatEngineResponse.PartRecommendation> candidates = draftEditPartRecommendations(
+        PartReplacementRanker.SelectionResult selection = draftEditPartRecommendations(
                 effectiveCategory,
                 currentItem,
+                context,
                 priceDirection,
                 targetMaxPrice,
                 3
         );
+        PartQueryConstraints constraints = partQueryConstraints(effectiveCategory, message);
+        List<AiChatEngineResponse.PartRecommendation> candidates = selection.parts();
+        if (constraints.hasHardConstraint()) {
+            candidates = candidates.stream()
+                    .filter(part -> matchesPartConstraints(part, constraints))
+                    .toList();
+        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("category", effectiveCategory);
         payload.put("quantity", defaultQuantity(effectiveCategory));
@@ -305,13 +386,28 @@ public class DefaultAiChatEngine implements AiChatEngine {
             payload.put("currentPartId", text(currentItem.get("partId")));
         }
         payload.put("priceDirection", priceDirection);
+        if (!candidates.isEmpty()) {
+            AiChatEngineResponse.PartRecommendation firstCandidate = candidates.get(0);
+            payload.put("partId", firstCandidate.partId());
+            payload.put("name", firstCandidate.name());
+            payload.put("price", firstCandidate.price());
+        }
+        Map<String, Object> parsedContext = MockData.map(
+                "category", effectiveCategory,
+                "draftEdit", normalizedDraftEdit,
+                "hardConstraintPolicy", constraints.hasHardConstraint() ? "MUST_INCLUDE" : "NONE",
+                "requiredPartKeywords", constraints.requiredPartKeywords()
+        );
+        if (!selection.warnings().isEmpty()) {
+            parsedContext.put("warnings", selection.warnings());
+        }
         return response(
-                buildModifyMessage(effectiveCategory, priceDirection, currentItem, candidates),
+                buildModifyMessage(effectiveCategory, priceDirection, currentItem, candidates, constraints),
                 AiChatIntent.BUILD_MODIFY,
                 List.of(new AiChatAction(AiChatActionType.REPLACE_DRAFT_PART, "견적 부품 교체", payload)),
                 List.of(),
                 candidates,
-                MockData.map("category", effectiveCategory, "draftEdit", normalizedDraftEdit)
+                parsedContext
         );
     }
 
@@ -383,32 +479,187 @@ public class DefaultAiChatEngine implements AiChatEngine {
             Map<String, Object> parsedContext,
             List<String> evidenceIds
     ) {
+        Map<String, Object> mergedContext = new LinkedHashMap<>(response.parsedContext() == null ? Map.of() : response.parsedContext());
+        if (parsedContext != null) {
+            mergedContext.putAll(parsedContext);
+        }
+        preserveServerHardConstraints(mergedContext, response.parsedContext());
+        String finalAssistantMessage = shouldKeepServerAssistantMessage(response, mergedContext)
+                ? response.assistantMessage()
+                : firstText(assistantMessage, response.assistantMessage());
         return new AiChatEngineResponse(
-                firstText(assistantMessage, response.assistantMessage()),
+                finalAssistantMessage,
                 response.intent(),
                 response.actions(),
                 response.recommendations(),
                 response.partRecommendations(),
-                parsedContext == null ? response.parsedContext() : parsedContext,
+                mergedContext,
                 evidenceIds == null ? List.of() : evidenceIds,
                 response.toolResults(),
                 response.agentSessionId()
         );
     }
 
-    private List<AiChatEngineResponse.BuildRecommendation> buildRecommendations(String message, Map<String, Object> parsedContext) {
+    private AiChatEngineResponse withRouteAction(AiChatEngineResponse response, EngineRouteIntent routeIntent) {
+        if (routeIntent == null || routeIntent.route() == null) {
+            return response;
+        }
+        List<AiChatAction> actions = new ArrayList<>();
+        actions.add(new AiChatAction(
+                AiChatActionType.OPEN_ROUTE,
+                routeIntent.label(),
+                MockData.map(
+                        "route", routeIntent.route(),
+                        "source", "AI_CHAT_ENGINE_LLM",
+                        "reason", routeIntent.reason()
+                )
+        ));
+        actions.addAll(response.actions() == null ? List.of() : response.actions());
+        return new AiChatEngineResponse(
+                response.assistantMessage(),
+                response.intent(),
+                actions,
+                response.recommendations(),
+                response.partRecommendations(),
+                response.parsedContext(),
+                response.evidenceIds(),
+                response.toolResults(),
+                response.agentSessionId()
+        );
+    }
+
+    private EngineRouteIntent normalizeRouteIntent(Map<String, Object> source, String selectedCategory) {
+        if (!Boolean.TRUE.equals(source.get("shouldNavigate"))) {
+            return null;
+        }
+        if (!"HIGH".equals(text(source.get("confidence")))) {
+            return null;
+        }
+        String routeType = text(source.get("routeType"));
+        String category = firstText(categoryFrom(text(source.get("category"))), selectedCategory);
+        String reason = firstText(text(source.get("reason")), "LLM_ROUTE_INTENT");
+        String route = switch (routeType == null ? "NONE" : routeType) {
+            case "CATEGORY" -> category == null ? null : "/self-quote?category=" + category;
+            case "SELF_QUOTE" -> "/self-quote";
+            case "MY_QUOTES" -> "/my/quotes";
+            case "REQUIREMENT_NEW" -> "/requirements/new";
+            case "SUPPORT_NEW" -> "/support/new";
+            case "SUPPORT_AI_CHAT" -> "/support/ai-chat";
+            case "CHECKOUT" -> "/checkout";
+            case "PART_DETAIL" -> partRouteResolver.resolvePartDetailRoute(text(source.get("partQuery")), category);
+            default -> null;
+        };
+        if (route == null && "PART_DETAIL".equals(routeType) && category != null) {
+            route = partRouteResolver.resolveCategoryFilterRoute(text(source.get("partQuery")), category);
+            reason = firstText(reason, "PART_DETAIL_AMBIGUOUS_CATEGORY_FALLBACK");
+        }
+        if (!isAllowedRoute(route)) {
+            return null;
+        }
+        return new EngineRouteIntent(route, routeLabel(route), reason, MockData.map(
+                "shouldNavigate", true,
+                "routeType", routeType,
+                "category", category,
+                "partQuery", text(source.get("partQuery")),
+                "confidence", text(source.get("confidence")),
+                "resolvedRoute", route,
+                "reason", reason
+        ));
+    }
+
+    private static boolean isAllowedRoute(String route) {
+        if (route == null) {
+            return false;
+        }
+        if (List.of(
+                "/self-quote",
+                "/my/quotes",
+                "/requirements/new",
+                "/support/new",
+                "/support/ai-chat",
+                "/checkout"
+        ).contains(route)) {
+            return true;
+        }
+        return route.matches("^/self-quote\\?category=(CPU|MOTHERBOARD|RAM|GPU|STORAGE|PSU|CASE|COOLER)(?:&q=[^#\\s]+)?$")
+                || route.matches("^/parts/[0-9a-fA-F-]{8,}$");
+    }
+
+    private static String routeLabel(String route) {
+        if (route == null) {
+            return "화면 이동";
+        }
+        if (route.startsWith("/self-quote?category=")) {
+            String category = routeCategory(route);
+            return categoryLabel(category) + " 부품 보기";
+        }
+        if (route.startsWith("/parts/")) {
+            return "상품 상세 보기";
+        }
+        return switch (route) {
+            case "/self-quote" -> "셀프 견적 열기";
+            case "/my/quotes" -> "내 견적함 열기";
+            case "/requirements/new" -> "AI 견적 열기";
+            case "/support/new" -> "AS 접수 열기";
+            case "/support/ai-chat" -> "AS AI 챗봇 열기";
+            case "/checkout" -> "구매하기 열기";
+            default -> "화면 이동";
+        };
+    }
+
+    private static String routeCategory(String route) {
+        Matcher matcher = Pattern.compile("[?&]category=(CPU|MOTHERBOARD|RAM|GPU|STORAGE|PSU|CASE|COOLER)").matcher(route == null ? "" : route);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private static void preserveServerHardConstraints(Map<String, Object> mergedContext, Map<String, Object> serverContext) {
+        if (serverContext == null) {
+            return;
+        }
+        if ("MUST_INCLUDE".equals(text(serverContext.get("hardConstraintPolicy")))) {
+            mergedContext.put("hardConstraintPolicy", "MUST_INCLUDE");
+            mergedContext.put("requiredPartKeywords", serverContext.getOrDefault("requiredPartKeywords", List.of()));
+        }
+    }
+
+    private static boolean shouldKeepServerAssistantMessage(AiChatEngineResponse response, Map<String, Object> parsedContext) {
+        boolean emptyPartRecommendation = (response.intent() == AiChatIntent.PART_RECOMMEND || response.intent() == AiChatIntent.BUILD_MODIFY)
+                && response.partRecommendations().isEmpty();
+        boolean emptyBuildRecommendation = response.intent() == AiChatIntent.FULL_BUILD_RECOMMEND
+                && response.recommendations().isEmpty();
+        return (emptyPartRecommendation || emptyBuildRecommendation)
+                && "MUST_INCLUDE".equals(text(parsedContext.get("hardConstraintPolicy")));
+    }
+
+    private static boolean hasEditableQuoteContext(Map<String, Object> context) {
+        if (context == null || context.isEmpty()) {
+            return false;
+        }
+        if (!objectMaps(context.get("currentBuilds")).isEmpty()) {
+            return true;
+        }
+        Map<String, Object> currentQuoteDraft = objectMap(context.get("currentQuoteDraft"));
+        return !objectMaps(currentQuoteDraft.get("items")).isEmpty();
+    }
+
+    private List<AiChatEngineResponse.BuildRecommendation> buildRecommendations(
+            String message,
+            Map<String, Object> parsedContext,
+            Map<String, PartQueryConstraints> constraintsByCategory
+    ) {
         Integer budget = numberValue(parsedContext.get("budget"));
         int effectiveBudget = budget == null ? inferredBudgetFor(parsedContext) : budget;
-        List<BuildPreviewPlan> plans = previewPlansFor(message);
-        return plans.stream()
+        List<BuildPreviewPlan> plans = previewPlansFor(message, parsedContext);
+        List<AiChatEngineResponse.BuildRecommendation> recommendations = plans.stream()
                 .map(plan -> {
-                    List<AiChatEngineResponse.PartRecommendation> items = BUILD_CATEGORIES.stream()
-                            .map(category -> choosePart(category, Math.max(50_000, (int) (effectiveBudget * plan.budgetRatio() * categoryWeight(category))), parsedContext))
-                            .filter(part -> part != null)
-                            .toList();
-                    int total = items.stream()
-                            .mapToInt(item -> item.price() * defaultQuantity(item.category()))
-                            .sum();
+                    List<AiChatEngineResponse.PartRecommendation> items = chooseBuildParts(message, effectiveBudget, plan, parsedContext, constraintsByCategory);
+                    if (items.size() < BUILD_CATEGORIES.size() && hasUnmatchedHardConstraint(parsedContext, constraintsByCategory)) {
+                        return null;
+                    }
+                    int total = buildTotal(items, parsedContext);
+                    if (!isBuildAllowedByBudgetGuard(total, parsedContext)) {
+                        return null;
+                    }
                     return new AiChatEngineResponse.BuildRecommendation(
                             plan.name(),
                             plan.recommendedFor(),
@@ -418,15 +669,164 @@ public class DefaultAiChatEngine implements AiChatEngine {
                             items
                     );
                 })
+                .filter(Objects::nonNull)
+                .limit(3)
                 .toList();
+        if (recommendations.size() < 3 && "TARGET".equals(normalizeBudgetMode(text(parsedContext.get("budgetMode"))))) {
+            recommendations = supplementTargetBudgetRecommendations(recommendations, parsedContext, constraintsByCategory);
+        }
+        return recommendations.stream().limit(3).toList();
     }
 
-    private static List<BuildPreviewPlan> previewPlansFor(String message) {
+    private List<AiChatEngineResponse.BuildRecommendation> supplementTargetBudgetRecommendations(
+            List<AiChatEngineResponse.BuildRecommendation> recommendations,
+            Map<String, Object> parsedContext,
+            Map<String, PartQueryConstraints> constraintsByCategory
+    ) {
+        List<AiChatEngineResponse.BuildRecommendation> result = new ArrayList<>(recommendations);
+        List<String> fingerprints = result.stream()
+                .map(recommendation -> buildFingerprint(recommendation.items(), parsedContext))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        for (AiChatEngineResponse.BuildRecommendation base : recommendations) {
+            for (String category : List.of("GPU", "RAM", "MOTHERBOARD", "COOLER", "STORAGE", "CASE", "PSU", "CPU")) {
+                List<AiChatEngineResponse.PartRecommendation> withoutCategory = base.items().stream()
+                        .filter(item -> !category.equals(item.category()))
+                        .toList();
+                List<AiChatEngineResponse.PartRecommendation> candidates = partRecommendations(category, 50);
+                List<AiChatEngineResponse.PartRecommendation> compatible = compatibleReplacementParts(
+                        category,
+                        buildSelectionContext(withoutCategory),
+                        candidates
+                );
+                if (!compatible.isEmpty()) {
+                    candidates = compatible;
+                }
+                PartQueryConstraints constraints = constraintsByCategory.get(category);
+                for (AiChatEngineResponse.PartRecommendation candidate : candidates) {
+                    if (base.items().stream().anyMatch(item -> category.equals(item.category()) && item.partId().equals(candidate.partId()))) {
+                        continue;
+                    }
+                    if (constraints != null && constraints.hasHardConstraint() && !matchesPartConstraints(candidate, constraints)) {
+                        continue;
+                    }
+                    List<AiChatEngineResponse.PartRecommendation> variantItems = withReplacement(base.items(), category, candidate);
+                    if (variantItems.size() < BUILD_CATEGORIES.size()) {
+                        continue;
+                    }
+                    int total = buildTotal(variantItems, parsedContext);
+                    if (!isBuildAllowedByBudgetGuard(total, parsedContext)) {
+                        continue;
+                    }
+                    String fingerprint = buildFingerprint(variantItems, parsedContext);
+                    if (fingerprints.contains(fingerprint)) {
+                        continue;
+                    }
+                    result.add(new AiChatEngineResponse.BuildRecommendation(
+                            categoryLabel(category) + " 대안 추천 조합",
+                            "요청 예산대 안에서 " + categoryLabel(category) + " 대안을 반영",
+                            "내부 자산 후보를 기반으로 만든 챗봇 추천 초안입니다.",
+                            total,
+                            "MEDIUM",
+                            variantItems
+                    ));
+                    fingerprints.add(fingerprint);
+                    if (result.size() >= 3) {
+                        return result;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    private static List<AiChatEngineResponse.PartRecommendation> withReplacement(
+            List<AiChatEngineResponse.PartRecommendation> items,
+            String category,
+            AiChatEngineResponse.PartRecommendation replacement
+    ) {
+        List<AiChatEngineResponse.PartRecommendation> result = new ArrayList<>();
+        boolean replaced = false;
+        for (AiChatEngineResponse.PartRecommendation item : items) {
+            if (category.equals(item.category())) {
+                if (!replaced) {
+                    result.add(replacement);
+                    replaced = true;
+                }
+            } else {
+                result.add(item);
+            }
+        }
+        if (!replaced) {
+            result.add(replacement);
+        }
+        return result;
+    }
+
+    private static int buildTotal(List<AiChatEngineResponse.PartRecommendation> items, Map<String, Object> parsedContext) {
+        return items.stream()
+                .mapToInt(item -> item.price() * targetQuantity(item.category(), parsedContext))
+                .sum();
+    }
+
+    private static String buildFingerprint(List<AiChatEngineResponse.PartRecommendation> items, Map<String, Object> parsedContext) {
+        return items.stream()
+                .map(item -> item.category() + ":" + item.partId() + ":" + targetQuantity(item.category(), parsedContext))
+                .sorted()
+                .reduce((left, right) -> left + "|" + right)
+                .orElse("");
+    }
+
+    private List<AiChatEngineResponse.PartRecommendation> chooseBuildParts(
+            String message,
+            int effectiveBudget,
+            BuildPreviewPlan plan,
+            Map<String, Object> parsedContext,
+            Map<String, PartQueryConstraints> constraintsByCategory
+    ) {
+        List<AiChatEngineResponse.PartRecommendation> selected = new ArrayList<>();
+        for (String category : BUILD_CATEGORIES) {
+            PartQueryConstraints constraints = constraintsByCategory.get(category);
+            AiChatEngineResponse.PartRecommendation part = choosePart(
+                    category,
+                    targetPriceFor(category, effectiveBudget, plan, parsedContext, message),
+                    parsedContext,
+                    constraints,
+                    buildSelectionContext(selected),
+                    message
+            );
+            if (part != null) {
+                selected.add(part);
+            }
+        }
+        return selected;
+    }
+
+    private static List<BuildPreviewPlan> previewPlansFor(String message, Map<String, Object> parsedContext) {
         if (isMinimumBudgetMessage(message)) {
             return List.of(
                     new BuildPreviewPlan("기준 이상 추천 조합", "요청 금액 이상에서 성능 기준을 맞춤", 1.35, "HIGH"),
                     new BuildPreviewPlan("상위 균형 추천 조합", "요청 금액보다 여유 있게 성능과 안정성을 확보", 1.50, "HIGH"),
                     new BuildPreviewPlan("프리미엄 확장 추천 조합", "요청 금액 이상에서 업그레이드 여유까지 확보", 1.70, "MEDIUM")
+            );
+        }
+        String budgetMode = normalizeBudgetMode(text(parsedContext.get("budgetMode")));
+        if ("MAX".equals(budgetMode)) {
+            return List.of(
+                    new BuildPreviewPlan("가성비형 추천 조합", "예산 상한 안에서 핵심 성능 우선", 0.62, "MEDIUM"),
+                    new BuildPreviewPlan("균형형 추천 조합", "예산 상한 안에서 게임, 작업, 안정성 균형", 0.78, "HIGH"),
+                    new BuildPreviewPlan("고성능형 추천 조합", "예산 상한에 가깝게 성능 우선", 0.92, "MEDIUM"),
+                    new BuildPreviewPlan("상한 근접 추천 조합", "요청 예산을 넘지 않는 선에서 성능 확보", 1.00, "MEDIUM")
+            );
+        }
+        if ("TARGET".equals(budgetMode)) {
+            return List.of(
+                    new BuildPreviewPlan("가성비형 추천 조합", "요청 예산대 하단에서 핵심 성능 우선", 0.76, "MEDIUM"),
+                    new BuildPreviewPlan("균형형 추천 조합", "요청 예산대 안에서 게임, 작업, 안정성 균형", 0.82, "HIGH"),
+                    new BuildPreviewPlan("고성능형 추천 조합", "요청 예산대 안에서 성능 우선", 0.88, "HIGH"),
+                    new BuildPreviewPlan("상한 근접 추천 조합", "요청 예산대 상단에서 업그레이드 여유 확보", 0.94, "MEDIUM"),
+                    new BuildPreviewPlan("확장형 추천 조합", "요청 예산대 안에서 일부 핵심 부품을 한 단계 높임", 1.00, "MEDIUM"),
+                    new BuildPreviewPlan("프리미엄 균형 추천 조합", "요청 예산 허용 범위 안에서 전체 균형을 높임", 1.06, "MEDIUM"),
+                    new BuildPreviewPlan("최대 성능 추천 조합", "요청 예산 허용 범위 안에서 성능 극대화", 1.12, "MEDIUM")
             );
         }
         return List.of(
@@ -449,23 +849,105 @@ public class DefaultAiChatEngine implements AiChatEngine {
                 || normalized.contains("아래 말고");
     }
 
+    private static boolean isMaximumBudgetMessage(String message) {
+        String normalized = safe(message).toLowerCase(Locale.ROOT);
+        return normalized.contains("이하")
+                || normalized.contains("안으로")
+                || normalized.contains("안에서")
+                || normalized.contains("넘지 않")
+                || normalized.contains("초과하지")
+                || normalized.contains("이내")
+                || normalized.contains("밑으로")
+                || normalized.contains("아래로");
+    }
+
+    private static boolean isBuildAllowedByBudgetGuard(int totalPrice, Map<String, Object> parsedContext) {
+        Integer budget = numberValue(parsedContext.get("budget"));
+        if (budget == null || budget <= 0 || hasHardConstraint(parsedContext)) {
+            return true;
+        }
+        String budgetMode = normalizeBudgetMode(text(parsedContext.get("budgetMode")));
+        if ("MIN".equals(budgetMode)) {
+            return totalPrice >= budget;
+        }
+        if ("MAX".equals(budgetMode)) {
+            return totalPrice <= budget;
+        }
+        if ("TARGET".equals(budgetMode) || "USER_BUDGET".equals(normalizeBudgetPolicy(text(parsedContext.get("budgetPolicy"))))) {
+            return totalPrice >= budgetBandMin(budget) && totalPrice <= budgetBandMax(budget);
+        }
+        return true;
+    }
+
+    private static int budgetBandMin(int budget) {
+        return (int) Math.floor(budget * 0.875);
+    }
+
+    private static int budgetBandMax(int budget) {
+        return (int) Math.ceil(budget * 1.125);
+    }
+
     private AiChatEngineResponse.PartRecommendation choosePart(String category, int targetPrice) {
         return choosePart(category, targetPrice, Map.of());
     }
 
     private AiChatEngineResponse.PartRecommendation choosePart(String category, int targetPrice, Map<String, Object> parsedContext) {
+        return choosePart(category, targetPrice, parsedContext, null, Map.of(), "");
+    }
+
+    private AiChatEngineResponse.PartRecommendation choosePart(
+            String category,
+            int targetPrice,
+            Map<String, Object> parsedContext,
+            PartQueryConstraints constraints
+    ) {
+        return choosePart(category, targetPrice, parsedContext, constraints, Map.of(), "");
+    }
+
+    private AiChatEngineResponse.PartRecommendation choosePart(
+            String category,
+            int targetPrice,
+            Map<String, Object> parsedContext,
+            PartQueryConstraints constraints,
+            Map<String, Object> buildContext,
+            String message
+    ) {
         List<AiChatEngineResponse.PartRecommendation> parts = partRecommendations(category, 50);
+        List<AiChatEngineResponse.PartRecommendation> compatible = compatibleReplacementParts(category, buildContext, parts);
+        if (!compatible.isEmpty()) {
+            parts = compatible;
+        }
+        if (constraints != null && constraints.hasHardConstraint()) {
+            List<AiChatEngineResponse.PartRecommendation> matching = parts.stream()
+                    .filter(part -> matchesPartConstraints(part, constraints))
+                    .toList();
+            if (matching.isEmpty()) {
+                return null;
+            }
+            return matching.stream()
+                    .min((left, right) -> Integer.compare(Math.abs(left.price() - targetPrice), Math.abs(right.price() - targetPrice)))
+                    .orElse(matching.get(0));
+        }
         if ("GPU".equals(category)) {
             List<String> requiredGpuClasses = normalizeGpuClasses(stringList(parsedContext.get("requiredGpuClasses")));
             if (!requiredGpuClasses.isEmpty()) {
                 List<AiChatEngineResponse.PartRecommendation> matching = parts.stream()
                         .filter(part -> requiredGpuClasses.contains(gpuClass(part)))
                         .toList();
-                if (!matching.isEmpty()) {
-                    return matching.stream()
-                            .min((left, right) -> Integer.compare(Math.abs(left.price() - targetPrice), Math.abs(right.price() - targetPrice)))
-                            .orElse(matching.get(0));
+                if (matching.isEmpty()) {
+                    return null;
                 }
+                return matching.stream()
+                        .min((left, right) -> Integer.compare(Math.abs(left.price() - targetPrice), Math.abs(right.price() - targetPrice)))
+                        .orElse(matching.get(0));
+            }
+        }
+        if ("GPU".equals(category) && isPremiumGpuIntent(parsedContext, message)) {
+            List<AiChatEngineResponse.PartRecommendation> highGpuParts = parts.stream()
+                    .filter(part -> gpuRank(part) >= 5070)
+                    .toList();
+            if (!highGpuParts.isEmpty()) {
+                parts = highGpuParts;
             }
         }
         return parts.stream()
@@ -473,83 +955,342 @@ public class DefaultAiChatEngine implements AiChatEngine {
                 .orElse(null);
     }
 
+    private static Map<String, Object> buildSelectionContext(List<AiChatEngineResponse.PartRecommendation> selected) {
+        return MockData.map(
+                "currentQuoteDraft", MockData.map(
+                        "items", selected.stream()
+                                .map(part -> MockData.map(
+                                        "partId", part.partId(),
+                                        "category", part.category(),
+                                        "name", part.name(),
+                                        "manufacturer", part.manufacturer(),
+                                        "currentPrice", part.price(),
+                                        "attributes", part.attributes()
+                                ))
+                                .toList()
+                )
+        );
+    }
+
+    private static Map<String, PartQueryConstraints> fullBuildPartConstraints(String message) {
+        Map<String, PartQueryConstraints> constraints = new LinkedHashMap<>();
+        for (String category : BUILD_CATEGORIES) {
+            PartQueryConstraints categoryConstraints = partQueryConstraints(category, message);
+            if (categoryConstraints.hasHardConstraint() && isFullBuildConstraintScopedToCategory(category, message, categoryConstraints)) {
+                constraints.put(category, categoryConstraints);
+            }
+        }
+        return constraints;
+    }
+
+    private static boolean isFullBuildConstraintScopedToCategory(
+            String category,
+            String message,
+            PartQueryConstraints constraints
+    ) {
+        String normalized = safe(message).toLowerCase(Locale.ROOT);
+        return switch (category) {
+            case "CPU" -> constraints.cpuModelToken() != null || containsAny(normalized, "cpu", "프로세서", "씨피유");
+            case "GPU" -> containsAny(normalized, "gpu", "그래픽", "글카", "rtx", "지포스", "geforce");
+            case "RAM" -> constraints.targetCapacityGb() != null || containsAny(normalized, "ram", "램", "메모리");
+            case "MOTHERBOARD" -> containsAny(normalized, "메인보드", "보드", "motherboard", "mainboard");
+            case "STORAGE" -> containsAny(normalized, "ssd", "스토리지", "저장장치", "저장");
+            case "PSU" -> containsAny(normalized, "파워", "psu", "전원");
+            case "CASE" -> containsAny(normalized, "케이스", "case");
+            case "COOLER" -> containsAny(normalized, "쿨러", "cooler", "수랭", "공랭");
+            default -> false;
+        };
+    }
+
+    private static void applyFullBuildConstraints(
+            Map<String, Object> parsedContext,
+            Map<String, PartQueryConstraints> constraintsByCategory
+    ) {
+        if (constraintsByCategory.isEmpty()) {
+            return;
+        }
+        List<String> keywords = new ArrayList<>(stringList(parsedContext.get("requiredPartKeywords")));
+        for (Map.Entry<String, PartQueryConstraints> entry : constraintsByCategory.entrySet()) {
+            PartQueryConstraints constraints = entry.getValue();
+            keywords.addAll(constraints.requiredPartKeywords());
+            if ("RAM".equals(entry.getKey())) {
+                if (constraints.targetCapacityGb() != null) {
+                    parsedContext.put("targetCapacityGb", constraints.targetCapacityGb());
+                }
+                if (constraints.targetModuleCount() != null) {
+                    parsedContext.put("targetModuleCount", constraints.targetModuleCount());
+                }
+                if (constraints.targetQuantity() != null) {
+                    parsedContext.put("targetQuantity", constraints.targetQuantity());
+                }
+            }
+        }
+        parsedContext.put("requiredPartKeywords", keywords.stream()
+                .filter(Objects::nonNull)
+                .filter(keyword -> !keyword.isBlank())
+                .distinct()
+                .toList());
+        parsedContext.put("hardConstraintPolicy", "MUST_INCLUDE");
+    }
+
+    private static boolean hasUnmatchedHardConstraint(
+            Map<String, Object> parsedContext,
+            Map<String, PartQueryConstraints> constraintsByCategory
+    ) {
+        return "MUST_INCLUDE".equals(text(parsedContext.get("hardConstraintPolicy")))
+                || !constraintsByCategory.isEmpty()
+                || !normalizeGpuClasses(stringList(parsedContext.get("requiredGpuClasses"))).isEmpty();
+    }
+
     private List<AiChatEngineResponse.PartRecommendation> partRecommendations(String category, int limit) {
         return jdbcTemplate.queryForList("""
-                        SELECT public_id::text AS id,
-                               category,
-                               name,
-                               manufacturer,
-                               price,
-                               attributes
-                        FROM parts
-                        WHERE category = ?
-                          AND status = 'ACTIVE'
-                          AND deleted_at IS NULL
-                          AND coalesce((attributes->>'toolReady')::boolean, false) = true
-                        ORDER BY price DESC, id ASC
+                        SELECT p.public_id::text AS id,
+                               p.category,
+                               p.name,
+                               p.manufacturer,
+                               p.price,
+                               p.attributes,
+                               b.score AS benchmark_score,
+                               b.summary AS benchmark_summary
+                        FROM parts p
+                        LEFT JOIN LATERAL (
+                          SELECT score, summary
+                          FROM benchmark_summaries bs
+                          WHERE bs.part_id = p.id
+                            AND bs.deleted_at IS NULL
+                          ORDER BY bs.created_at DESC, bs.id DESC
+                          LIMIT 1
+                        ) b ON true
+                        WHERE p.category = ?
+                          AND p.status = 'ACTIVE'
+                          AND p.deleted_at IS NULL
+                          AND coalesce((p.attributes->>'toolReady')::boolean, false) = true
+                        ORDER BY p.price DESC, p.id ASC
                         LIMIT ?
                         """, category, Math.max(1, Math.min(limit, 50)))
                 .stream()
-                .map(row -> new AiChatEngineResponse.PartRecommendation(
-                        DbValueMapper.string(row, "id"),
-                        DbValueMapper.string(row, "category"),
-                        DbValueMapper.string(row, "name"),
-                        DbValueMapper.string(row, "manufacturer"),
-                        DbValueMapper.integer(row, "price"),
-                        objectMap(DbValueMapper.json(row, "attributes", Map.of()))
-                ))
+                .map(row -> {
+                    Map<String, Object> attributes = new LinkedHashMap<>(objectMap(DbValueMapper.json(row, "attributes", Map.of())));
+                    Object benchmarkScore = row.get("benchmark_score");
+                    if (benchmarkScore != null) {
+                        attributes.put("_benchmarkScore", benchmarkScore);
+                    }
+                    Object benchmarkSummary = row.get("benchmark_summary");
+                    if (benchmarkSummary != null) {
+                        attributes.put("_benchmarkSummary", benchmarkSummary);
+                    }
+                    return new AiChatEngineResponse.PartRecommendation(
+                            DbValueMapper.string(row, "id"),
+                            DbValueMapper.string(row, "category"),
+                            DbValueMapper.string(row, "name"),
+                            DbValueMapper.string(row, "manufacturer"),
+                            DbValueMapper.integer(row, "price"),
+                            attributes
+                    );
+                })
                 .toList();
     }
 
-    private List<AiChatEngineResponse.PartRecommendation> draftEditPartRecommendations(
+    private List<AiChatEngineResponse.PartRecommendation> constrainedPartRecommendations(
+            String category,
+            PartQueryConstraints constraints,
+            int limit
+    ) {
+        List<AiChatEngineResponse.PartRecommendation> parts = partRecommendations(category, 50);
+        List<AiChatEngineResponse.PartRecommendation> filtered = parts.stream()
+                .filter(part -> matchesPartConstraints(part, constraints))
+                .sorted((left, right) -> Integer.compare(left.price(), right.price()))
+                .limit(Math.max(1, limit))
+                .toList();
+        if (!constraints.hasHardConstraint() || !filtered.isEmpty()) {
+            return filtered;
+        }
+        return List.of();
+    }
+
+    private static boolean matchesPartConstraints(AiChatEngineResponse.PartRecommendation part, PartQueryConstraints constraints) {
+        if (constraints.cpuModelToken() != null && !partContainsToken(part, constraints.cpuModelToken())) {
+            return false;
+        }
+        if (constraints.brandToken() != null && !partContainsToken(part, constraints.brandToken())) {
+            return false;
+        }
+        for (String modelToken : constraints.modelTokens()) {
+            if (!partContainsToken(part, modelToken)) {
+                return false;
+            }
+        }
+        if (constraints.targetCapacityGb() != null) {
+            Integer capacityGb = attrNumber(part.attributes(), "capacityGb");
+            if ("STORAGE".equals(part.category())) {
+                if (capacityGb == null || capacityGb < constraints.targetCapacityGb()) {
+                    return false;
+                }
+            } else if (!constraints.targetCapacityGb().equals(capacityGb)) {
+                return false;
+            }
+        }
+        if (constraints.targetModuleCount() != null && !constraints.targetModuleCount().equals(attrNumber(part.attributes(), "moduleCount"))) {
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean partContainsToken(AiChatEngineResponse.PartRecommendation part, String token) {
+        String normalizedToken = compactToken(token);
+        if (normalizedToken == null) {
+            return true;
+        }
+        List<String> values = new ArrayList<>();
+        values.add(part.name());
+        values.add(part.manufacturer());
+        values.add(text(part.attributes().get("cpuClass")));
+        values.add(text(part.attributes().get("hardwareClass")));
+        values.add(text(part.attributes().get("shortSpec")));
+        part.attributes().values().stream()
+                .map(DefaultAiChatEngine::text)
+                .forEach(values::add);
+        return values.stream()
+                .map(DefaultAiChatEngine::compactToken)
+                .filter(Objects::nonNull)
+                .anyMatch(value -> value.contains(normalizedToken));
+    }
+
+    private PartReplacementRanker.SelectionResult draftEditPartRecommendations(
             String category,
             Map<String, Object> currentItem,
+            Map<String, Object> context,
             String priceDirection,
             Integer targetMaxPrice,
             int limit
     ) {
-        List<AiChatEngineResponse.PartRecommendation> parts = partRecommendations(category, 50);
-        String currentPartId = text(currentItem.get("partId"));
-        Integer currentPrice = firstNumber(currentItem.get("currentPrice"), currentItem.get("price"));
-        java.util.stream.Stream<AiChatEngineResponse.PartRecommendation> stream = parts.stream()
-                .filter(part -> currentPartId == null || !currentPartId.equals(part.partId()));
+        List<AiChatEngineResponse.PartRecommendation> parts = compatibleReplacementParts(category, context, partRecommendations(category, 50));
+        return partReplacementRanker.select(category, currentItem, priceDirection, targetMaxPrice, parts, limit);
+    }
 
-        if ("CHEAPER".equals(priceDirection)) {
-            int maxPrice = targetMaxPrice == null || targetMaxPrice <= 0
-                    ? (currentPrice == null ? Integer.MAX_VALUE : currentPrice - 1)
-                    : targetMaxPrice;
-            stream = stream.filter(part -> part.price() <= maxPrice);
-            return stream
-                    .sorted((left, right) -> Integer.compare(right.price(), left.price()))
-                    .limit(limit)
-                    .toList();
+    private static List<AiChatEngineResponse.PartRecommendation> compatibleReplacementParts(
+            String category,
+            Map<String, Object> context,
+            List<AiChatEngineResponse.PartRecommendation> parts
+    ) {
+        if (parts.isEmpty()) {
+            return parts;
         }
-        if ("MORE_EXPENSIVE".equals(priceDirection)) {
-            if (currentPrice != null) {
-                stream = stream.filter(part -> part.price() > currentPrice);
-            }
-            return stream
-                    .sorted((left, right) -> Integer.compare(left.price(), right.price()))
-                    .limit(limit)
-                    .toList();
+        List<AiChatEngineResponse.PartRecommendation> filtered = switch (category) {
+            case "CPU" -> filterByCpuSocket(context, parts);
+            case "MOTHERBOARD" -> filterByMotherboardPlatform(context, parts);
+            case "RAM" -> filterByMemoryType(context, parts);
+            case "GPU" -> filterByGpuFit(context, parts);
+            case "PSU" -> filterByPsuCapacity(context, parts);
+            case "CASE" -> filterByCaseFit(context, parts);
+            case "COOLER" -> filterByCoolerFit(context, parts);
+            default -> parts;
+        };
+        return filtered;
+    }
+
+    private static List<AiChatEngineResponse.PartRecommendation> filterByCpuSocket(
+            Map<String, Object> context,
+            List<AiChatEngineResponse.PartRecommendation> parts
+    ) {
+        String motherboardSocket = attrText(draftItem(context, "MOTHERBOARD"), "socket");
+        if (motherboardSocket == null) {
+            return parts;
         }
-        if ("SIMILAR_PRICE".equals(priceDirection) && currentPrice != null) {
-            int price = currentPrice;
-            return stream
-                    .sorted((left, right) -> Integer.compare(Math.abs(left.price() - price), Math.abs(right.price() - price)))
-                    .limit(limit)
-                    .toList();
+        return parts.stream()
+                .filter(part -> sameRequired(attrText(part.attributes(), "socket"), motherboardSocket))
+                .toList();
+    }
+
+    private static List<AiChatEngineResponse.PartRecommendation> filterByMotherboardPlatform(
+            Map<String, Object> context,
+            List<AiChatEngineResponse.PartRecommendation> parts
+    ) {
+        String cpuSocket = attrText(draftItem(context, "CPU"), "socket");
+        String memoryType = attrText(draftItem(context, "RAM"), "memoryType");
+        return parts.stream()
+                .filter(part -> sameRequired(attrText(part.attributes(), "socket"), cpuSocket))
+                .filter(part -> sameRequired(attrText(part.attributes(), "memoryType"), memoryType))
+                .toList();
+    }
+
+    private static List<AiChatEngineResponse.PartRecommendation> filterByMemoryType(
+            Map<String, Object> context,
+            List<AiChatEngineResponse.PartRecommendation> parts
+    ) {
+        String motherboardMemoryType = attrText(draftItem(context, "MOTHERBOARD"), "memoryType");
+        if (motherboardMemoryType == null) {
+            return parts;
         }
-        return stream.limit(limit).toList();
+        return parts.stream()
+                .filter(part -> sameRequired(attrText(part.attributes(), "memoryType"), motherboardMemoryType))
+                .toList();
+    }
+
+    private static List<AiChatEngineResponse.PartRecommendation> filterByGpuFit(
+            Map<String, Object> context,
+            List<AiChatEngineResponse.PartRecommendation> parts
+    ) {
+        Map<String, Object> currentCase = draftItem(context, "CASE");
+        Map<String, Object> currentPsu = draftItem(context, "PSU");
+        Integer maxGpuLengthMm = attrNumber(currentCase, "maxGpuLengthMm");
+        Integer psuCapacityW = firstPositiveNumber(attrNumber(currentPsu, "capacityW"), attrNumber(currentPsu, "wattage"));
+        return parts.stream()
+                .filter(part -> lessOrEqualRequired(attrNumber(part.attributes(), "lengthMm"), maxGpuLengthMm))
+                .filter(part -> lessOrEqualRequired(attrNumber(part.attributes(), "requiredSystemPowerW"), psuCapacityW))
+                .toList();
+    }
+
+    private static List<AiChatEngineResponse.PartRecommendation> filterByPsuCapacity(
+            Map<String, Object> context,
+            List<AiChatEngineResponse.PartRecommendation> parts
+    ) {
+        Integer requiredPsuW = attrNumber(draftItem(context, "GPU"), "requiredSystemPowerW");
+        if (requiredPsuW == null) {
+            return parts;
+        }
+        return parts.stream()
+                .filter(part -> greaterOrEqualRequired(firstPositiveNumber(attrNumber(part.attributes(), "capacityW"), attrNumber(part.attributes(), "wattage")), requiredPsuW))
+                .toList();
+    }
+
+    private static List<AiChatEngineResponse.PartRecommendation> filterByCaseFit(
+            Map<String, Object> context,
+            List<AiChatEngineResponse.PartRecommendation> parts
+    ) {
+        Integer gpuLengthMm = attrNumber(draftItem(context, "GPU"), "lengthMm");
+        Integer coolerHeightMm = firstPositiveNumber(attrNumber(draftItem(context, "COOLER"), "heightMm"), attrNumber(draftItem(context, "COOLER"), "coolerHeightMm"));
+        Integer psuDepthMm = attrNumber(draftItem(context, "PSU"), "depthMm");
+        return parts.stream()
+                .filter(part -> greaterOrEqualRequired(attrNumber(part.attributes(), "maxGpuLengthMm"), gpuLengthMm))
+                .filter(part -> greaterOrEqualRequired(attrNumber(part.attributes(), "maxCpuCoolerHeightMm"), coolerHeightMm))
+                .filter(part -> greaterOrEqualRequired(attrNumber(part.attributes(), "maxPsuLengthMm"), psuDepthMm))
+                .toList();
+    }
+
+    private static List<AiChatEngineResponse.PartRecommendation> filterByCoolerFit(
+            Map<String, Object> context,
+            List<AiChatEngineResponse.PartRecommendation> parts
+    ) {
+        String cpuSocket = attrText(draftItem(context, "CPU"), "socket");
+        Integer maxCoolerHeightMm = attrNumber(draftItem(context, "CASE"), "maxCpuCoolerHeightMm");
+        return parts.stream()
+                .filter(part -> socketSupportedRequired(part.attributes().get("socketSupport"), cpuSocket))
+                .filter(part -> lessOrEqualRequired(firstPositiveNumber(attrNumber(part.attributes(), "heightMm"), attrNumber(part.attributes(), "coolerHeightMm")), maxCoolerHeightMm))
+                .toList();
     }
 
     private static String buildModifyMessage(
             String category,
             String priceDirection,
             Map<String, Object> currentItem,
-            List<AiChatEngineResponse.PartRecommendation> candidates
+            List<AiChatEngineResponse.PartRecommendation> candidates,
+            PartQueryConstraints constraints
     ) {
         if (candidates.isEmpty()) {
+            if (constraints.hasHardConstraint()) {
+                return categoryLabel(category) + " 조건에 맞는 내부 자산 후보를 찾지 못했습니다. 조건을 조금 넓혀 다시 요청해 주세요.";
+            }
             return categoryLabel(category) + " 교체 후보를 찾지 못했습니다. 예산이나 성능 조건을 조금 더 구체적으로 알려주세요.";
         }
         String currentName = text(currentItem.get("name"));
@@ -560,7 +1301,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
             default -> "교체 가능한";
         };
         return currentName == null
-                ? categoryLabel(category) + "에서 " + directionText + " 후보를 찾았습니다. 적용 버튼을 누르면 견적 장바구니에 반영됩니다."
+                ? categoryLabel(category) + "에서 " + directionText + " 후보를 찾았습니다. 견적 장바구니에 자동 반영할 변경안을 함께 보냈습니다."
                 : currentName + " 대신 선택할 수 있는 " + directionText + " " + categoryLabel(category) + " 후보를 찾았습니다.";
     }
 
@@ -591,11 +1332,20 @@ public class DefaultAiChatEngine implements AiChatEngine {
             Map<String, Object> context,
             Map<String, Object> fallbackContext,
             List<String> evidenceIds,
-            List<AgentRagEvidenceDraft> evidenceSet
+            List<AgentRagEvidenceDraft> evidenceSet,
+            AiProfileDefinition buildProfile
     ) {
-        String output = openAiResponsesClient.createStructuredJson(
+        LlmResponseResult result = openAiResponsesClient.createStructuredJsonResult(
                 BUILD_CHAT_SYSTEM_PROMPT,
                 json(MockData.map(
+                        "aiProfile", buildProfile.profile().name(),
+                        "promptVersion", buildProfile.promptVersion(),
+                        "responseLimits", MockData.map(
+                                "assistantMessage", "Korean, concise",
+                                "recommendationCountMax", 3,
+                                "partRecommendationCountMax", 3,
+                                "actionCountMax", 3
+                        ),
                         "rawMessage", message,
                         "surface", request == null ? null : request.surface(),
                         "selectedCategory", request == null ? null : request.selectedCategory(),
@@ -606,9 +1356,12 @@ public class DefaultAiChatEngine implements AiChatEngine {
                         "ragEvidenceSet", evidenceItems(evidenceIds, evidenceSet)
                 )),
                 BUILD_CHAT_SCHEMA_NAME,
-                buildChatPlanSchema()
+                buildChatPlanSchema(),
+                buildProfile.model(),
+                buildProfile.reasoningEffort(),
+                buildProfile.maxOutputTokens()
         );
-        return parseJsonObject(output);
+        return parseJsonObject(result.text());
     }
 
     private static Map<String, Object> buildChatPlanSchema() {
@@ -637,9 +1390,46 @@ public class DefaultAiChatEngine implements AiChatEngine {
                                 null
                         )),
                         "parsedContext", requirementParseSchema(),
-                        "draftEdit", draftEditSchema()
+                        "draftEdit", draftEditSchema(),
+                        "routeIntent", routeIntentSchema()
                 ),
-                "required", List.of("intent", "assistantMessage", "selectedCategory", "parsedContext", "draftEdit")
+                "required", List.of("intent", "assistantMessage", "selectedCategory", "parsedContext", "draftEdit", "routeIntent")
+        );
+    }
+
+    private static Map<String, Object> routeIntentSchema() {
+        return MockData.map(
+                "type", "object",
+                "additionalProperties", false,
+                "properties", MockData.map(
+                        "shouldNavigate", MockData.map("type", "boolean"),
+                        "routeType", MockData.map("type", "string", "enum", List.of(
+                                "CATEGORY",
+                                "SELF_QUOTE",
+                                "MY_QUOTES",
+                                "REQUIREMENT_NEW",
+                                "SUPPORT_NEW",
+                                "SUPPORT_AI_CHAT",
+                                "CHECKOUT",
+                                "PART_DETAIL",
+                                "NONE"
+                        )),
+                        "category", MockData.map("type", List.of("string", "null"), "enum", Arrays.asList(
+                                "CPU",
+                                "MOTHERBOARD",
+                                "RAM",
+                                "GPU",
+                                "STORAGE",
+                                "PSU",
+                                "CASE",
+                                "COOLER",
+                                null
+                        )),
+                        "partQuery", MockData.map("type", List.of("string", "null")),
+                        "confidence", MockData.map("type", "string", "enum", List.of("HIGH", "MEDIUM", "LOW")),
+                        "reason", MockData.map("type", List.of("string", "null"))
+                ),
+                "required", List.of("shouldNavigate", "routeType", "category", "partQuery", "confidence", "reason")
         );
     }
 
@@ -675,6 +1465,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
                 "additionalProperties", false,
                 "properties", MockData.map(
                         "budget", MockData.map("type", List.of("integer", "null")),
+                        "budgetMode", MockData.map("type", "string", "enum", List.of("TARGET", "MAX", "MIN", "OPEN", "UNSPECIFIED")),
                         "usageTags", MockData.map("type", "array", "items", MockData.map("type", "string", "enum", List.of("GAMING", "DEVELOPMENT", "VIDEO_EDIT", "AI_DEV", "GENERAL"))),
                         "resolution", MockData.map("type", List.of("string", "null"), "enum", Arrays.asList("FHD", "QHD", "4K", null)),
                         "preferredVendors", MockData.map("type", "array", "items", MockData.map("type", "string", "enum", List.of("NVIDIA", "AMD", "INTEL"))),
@@ -688,7 +1479,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
                         "confidence", confidenceSchema(),
                         "parseNotes", MockData.map("type", List.of("string", "null"))
                 ),
-                "required", List.of("budget", "usageTags", "resolution", "preferredVendors", "priority", "performanceTier", "budgetPolicy", "mustHave", "requiredGpuClasses", "requiredPartKeywords", "hardConstraintPolicy", "confidence", "parseNotes")
+                "required", List.of("budget", "budgetMode", "usageTags", "resolution", "preferredVendors", "priority", "performanceTier", "budgetPolicy", "mustHave", "requiredGpuClasses", "requiredPartKeywords", "hardConstraintPolicy", "confidence", "parseNotes")
         );
     }
 
@@ -727,21 +1518,33 @@ public class DefaultAiChatEngine implements AiChatEngine {
         if (containsAny(normalized, "왜", "이유", "근거", "설명")) {
             return AiChatIntent.EXPLAIN;
         }
-        if (containsAny(normalized, "알림", "목표가", "떨어지", "되면 알려", "가격")) {
-            return AiChatIntent.PRICE_ALERT_HELP;
-        }
-        boolean hasBuildSignal = containsAny(normalized, "컴퓨터", "본체", "pc", "견적", "맞춰");
+        boolean hasBuildSignal = containsAny(normalized, "컴퓨터", "본체", "pc", "견적", "조합");
         boolean hasUsageSignal = containsAny(normalized, "게임", "개발", "영상", "편집", "ai", "cuda", "qhd", "fhd", "4k");
-        boolean hasModifySignal = containsAny(normalized, "바꿔", "변경", "교체", "업그레이드", "추가", "빼줘", "낮춰", "올려", "비싸", "저렴", "싼", "가성비");
+        boolean hasModifySignal = containsAny(normalized, "바꿔", "변경", "교체", "업그레이드", "추가", "빼줘", "낮춰", "올려", "비싸", "저렴", "싼", "가성비", "더 좋은", "상위", "고급", "빠른", "넉넉", "여유", "비슷", "가격대", "유지");
         boolean hasExistingBuildSignal = containsAny(normalized, "견적", "현재 견적", "기존", "구성", "부품");
         boolean asksUpgradeHeadroom = containsAny(normalized, "업그레이드 여유", "추후 업그레이드", "향후 업그레이드");
+        if (isGenericBuildRequest(normalized)) {
+            return AiChatIntent.ASK_FOLLOW_UP;
+        }
+        if (!hasEditableQuoteContext(context) && isWholeBuildUsageRequest(normalized, hasUsageSignal)) {
+            return AiChatIntent.FULL_BUILD_RECOMMEND;
+        }
         if (hasModifySignal && !asksUpgradeHeadroom && (!hasBuildSignal || hasExistingBuildSignal)) {
             return AiChatIntent.BUILD_MODIFY;
         }
-        if (categoryFrom(firstText(selectedCategory, message)) != null && !containsAny(normalized, "컴퓨터", "본체", "pc", "견적", "맞춰")) {
+        if (containsAny(normalized, "알림", "목표가", "떨어지", "되면 알려", "가격")) {
+            return AiChatIntent.PRICE_ALERT_HELP;
+        }
+        if (hasBuildSignal || isWholeBuildUsageRequest(normalized, hasUsageSignal)) {
+            return AiChatIntent.FULL_BUILD_RECOMMEND;
+        }
+        if (isVendorPreferenceBuildRequest(normalized)) {
+            return AiChatIntent.FULL_BUILD_RECOMMEND;
+        }
+        if (categoryFrom(firstText(selectedCategory, message)) != null && !containsAny(normalized, "컴퓨터", "본체", "pc", "견적")) {
             return AiChatIntent.PART_RECOMMEND;
         }
-        if (hasBuildSignal || (normalized.contains("추천") && hasUsageSignal)) {
+        if (normalized.contains("추천") && hasUsageSignal) {
             return AiChatIntent.FULL_BUILD_RECOMMEND;
         }
         if (context != null && context.get("buildId") != null) {
@@ -750,11 +1553,85 @@ public class DefaultAiChatEngine implements AiChatEngine {
         return AiChatIntent.ASK_FOLLOW_UP;
     }
 
+    private static boolean isGenericBuildRequest(String normalized) {
+        if (!containsAny(normalized, "컴퓨터", "pc", "본체")) {
+            return false;
+        }
+        if (!containsAny(normalized, "맞춰", "추천", "만들", "짜줘")) {
+            return false;
+        }
+        if (categoryFrom(normalized) != null) {
+            return false;
+        }
+        return !containsAny(
+                normalized,
+                "게임", "개발", "영상", "편집", "ai", "cuda", "qhd", "fhd", "4k",
+                "사무", "학습", "최고", "끝판왕", "고성능", "저소음", "화이트", "작은",
+                "업그레이드", "저장", "크롬", "전력", "인텔", "엔비디아", "라데온",
+                "만원", "예산", "5090", "5080", "5070"
+        );
+    }
+
+    private static boolean isVendorPreferenceBuildRequest(String normalized) {
+        if (!containsAny(normalized, "추천", "맞춰", "구성")) {
+            return false;
+        }
+        if (isDirectSinglePartRequest(normalized)) {
+            return false;
+        }
+        return containsAny(normalized, "라데온 말고", "엔비디아 위주", "nvidia 위주", "지포스 위주", "인텔 선호", "amd 말고");
+    }
+
+    private static boolean isWholeBuildUsageRequest(String normalized, boolean hasUsageSignal) {
+        if (!hasUsageSignal) {
+            return false;
+        }
+        if (isDirectSinglePartRequest(normalized)) {
+            return false;
+        }
+        return containsAny(
+                normalized,
+                "용으로",
+                "용인데",
+                "위주",
+                "돌릴",
+                "작업",
+                "크롬 탭",
+                "탭 많",
+                "신경",
+                "목표",
+                "전력 여유",
+                "게임용",
+                "영상편집",
+                "로컬 ai",
+                "cuda 실험"
+        );
+    }
+
+    private static boolean isDirectSinglePartRequest(String normalized) {
+        return containsAny(
+                normalized,
+                "하나 추천",
+                "중에 뭐",
+                "부품 추천",
+                "cpu 하나",
+                "gpu 하나",
+                "ssd 추천",
+                "파워 추천",
+                "케이스 추천",
+                "쿨러 추천",
+                "메인보드 추천",
+                "ram 구성 추천",
+                "램 구성 추천"
+        );
+    }
+
     private static Map<String, Object> deterministicParsedContext(Map<String, Object> body, String message) {
         Integer budget = numberValue(body.get("budget"));
         if (budget == null) {
             budget = inferBudget(message);
         }
+        String budgetMode = inferBudgetMode(message, budget);
         List<String> usageTags = usageTags(body.get("usageTags"), message);
         String resolution = firstText(text(body.get("resolution")), inferResolution(message));
         List<String> preferredVendors = preferredVendors(body.get("preferredVendors"), message);
@@ -767,6 +1644,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
         return MockData.map(
                 "usageTags", usageTags,
                 "budget", budget,
+                "budgetMode", budgetMode,
                 "resolution", resolution,
                 "preferredVendors", preferredVendors,
                 "priority", text(body.get("priority")),
@@ -784,6 +1662,140 @@ public class DefaultAiChatEngine implements AiChatEngine {
                         "hardConstraints", requiredGpuClasses.isEmpty() ? "LOW" : "HIGH"
                 )
         );
+    }
+
+    private static PartQueryConstraints partQueryConstraints(String category, String message) {
+        String normalizedCategory = categoryFrom(category);
+        String cpuModelToken = "CPU".equals(normalizedCategory) ? inferCpuModelToken(message) : null;
+        Integer targetCapacityGb = "RAM".equals(normalizedCategory) || "STORAGE".equals(normalizedCategory) ? inferCapacityGb(message) : null;
+        Integer targetModuleCount = "RAM".equals(normalizedCategory) ? inferRamModuleCount(message) : null;
+        Integer targetQuantity = targetModuleCount != null ? targetModuleCount : null;
+        String brandToken = inferBrandToken(message);
+        List<String> modelTokens = inferModelTokens(normalizedCategory, message, cpuModelToken);
+        List<String> keywords = new ArrayList<>();
+        if (cpuModelToken != null) {
+            keywords.add(cpuModelToken);
+        }
+        if (brandToken != null) {
+            keywords.add(brandToken);
+        }
+        keywords.addAll(modelTokens);
+        if (targetCapacityGb != null) {
+            keywords.add(targetCapacityGb + "GB");
+        }
+        if (targetModuleCount != null) {
+            keywords.add(targetModuleCount + "개");
+        }
+        return new PartQueryConstraints(
+                cpuModelToken,
+                brandToken,
+                modelTokens,
+                targetCapacityGb,
+                targetModuleCount,
+                targetQuantity,
+                keywords
+        );
+    }
+
+    private static String inferBrandToken(String message) {
+        String normalized = safe(message).toLowerCase(Locale.ROOT);
+        Map<String, String> aliases = new LinkedHashMap<>();
+        aliases.put("리안리", "LIANLI");
+        aliases.put("lian li", "LIANLI");
+        aliases.put("lian-li", "LIANLI");
+        aliases.put("lianli", "LIANLI");
+        aliases.put("msi", "MSI");
+        aliases.put("엠에스아이", "MSI");
+        aliases.put("asus", "ASUS");
+        aliases.put("에이수스", "ASUS");
+        aliases.put("아수스", "ASUS");
+        aliases.put("gigabyte", "GIGABYTE");
+        aliases.put("기가바이트", "GIGABYTE");
+        aliases.put("asrock", "ASROCK");
+        aliases.put("애즈락", "ASROCK");
+        aliases.put("corsair", "CORSAIR");
+        aliases.put("커세어", "CORSAIR");
+        aliases.put("samsung", "SAMSUNG");
+        aliases.put("삼성", "SAMSUNG");
+        aliases.put("g.skill", "GSKILL");
+        aliases.put("gskill", "GSKILL");
+        aliases.put("지스킬", "GSKILL");
+        aliases.put("kingston", "KINGSTON");
+        aliases.put("킹스톤", "KINGSTON");
+        aliases.put("fractal", "FRACTAL");
+        aliases.put("프렉탈", "FRACTAL");
+        aliases.put("nzxt", "NZXT");
+        aliases.put("arctic", "ARCTIC");
+        aliases.put("deepcool", "DEEPCOOL");
+        aliases.put("딥쿨", "DEEPCOOL");
+        aliases.put("noctua", "NOCTUA");
+        aliases.put("녹투아", "NOCTUA");
+        aliases.put("thermalright", "THERMALRIGHT");
+        aliases.put("써멀라이트", "THERMALRIGHT");
+        for (Map.Entry<String, String> alias : aliases.entrySet()) {
+            if (normalized.contains(alias.getKey())) {
+                return alias.getValue();
+            }
+        }
+        return null;
+    }
+
+    private static List<String> inferModelTokens(String category, String message, String cpuModelToken) {
+        if ("CPU".equals(category) || "RAM".equals(category)) {
+            return List.of();
+        }
+        String normalized = safe(message).toLowerCase(Locale.ROOT);
+        if (!"GPU".equals(category) && containsAny(normalized, "맞는", "호환", "용 파워", "용 쿨러", "용 보드", "용 메인보드")) {
+            return List.of();
+        }
+        String withoutBudget = safe(message)
+                .replaceAll("(?i)\\d+\\s*만\\s*원?", " ")
+                .replaceAll("(?i)\\d[\\d,]{5,}\\s*원?", " ")
+                .replaceAll("(?i)\\d+\\s*(?:GB|기가|기가바이트)", " ");
+        Matcher matcher = Pattern.compile("(?i)(?:RTX|GEFORCE|지포스)?\\s*(\\d{3,5}(?:\\s*(?:X3D|TI|SUPER|XT|XTX|X|KF|K|F))?|[A-Z]{1,5}[- ]?\\d{2,5}[A-Z0-9-]*)")
+                .matcher(withoutBudget);
+        List<String> tokens = new ArrayList<>();
+        while (matcher.find()) {
+            String token = matcher.group(1).replaceAll("\\s+", "").toUpperCase(Locale.ROOT);
+            if (token.length() < 3 || token.equals(cpuModelToken)) {
+                continue;
+            }
+            if (!tokens.contains(token)) {
+                tokens.add(token);
+            }
+        }
+        return tokens;
+    }
+
+    private static String inferCpuModelToken(String message) {
+        Matcher matcher = Pattern.compile("(\\d{4,5}\\s*(?:X3D|X|KF|K|F)|\\d{3}\\s*(?:KF|K))", Pattern.CASE_INSENSITIVE)
+                .matcher(safe(message));
+        if (!matcher.find()) {
+            return null;
+        }
+        return matcher.group(1).replaceAll("\\s+", "").toUpperCase(Locale.ROOT);
+    }
+
+    private static Integer inferCapacityGb(String message) {
+        Matcher matcher = Pattern.compile("(\\d+)\\s*(TB|테라|테라바이트|GB|기가|기가바이트)", Pattern.CASE_INSENSITIVE)
+                .matcher(safe(message));
+        if (!matcher.find()) {
+            return null;
+        }
+        int value = Integer.parseInt(matcher.group(1));
+        String unit = matcher.group(2).toLowerCase(Locale.ROOT);
+        return unit.startsWith("t") || unit.startsWith("테라") ? value * 1000 : value;
+    }
+
+    private static Integer inferRamModuleCount(String message) {
+        String normalized = safe(message).toLowerCase(Locale.ROOT);
+        if (containsAny(normalized, "한 개", "한개", "1개", "1장", "싱글", "single", "x1", "1x")) {
+            return 1;
+        }
+        if (containsAny(normalized, "두 개", "두개", "2개", "2장", "듀얼", "dual", "x2", "2x")) {
+            return 2;
+        }
+        return null;
     }
 
     private static Map<String, Object> withAgentParseMetadata(
@@ -842,6 +1854,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
 
     private static Map<String, Object> normalizeParsedContext(Map<String, Object> source, Map<String, Object> fallback) {
         Integer budget = firstNumber(source.get("budget"), fallback.get("budget"));
+        String budgetMode = normalizeBudgetMode(firstText(text(source.get("budgetMode")), text(fallback.get("budgetMode"))));
         List<String> usageTags = normalizeUsageTags(stringList(source.get("usageTags")));
         if (usageTags.isEmpty()) {
             usageTags = normalizeUsageTags(stringList(fallback.get("usageTags")));
@@ -878,6 +1891,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("usageTags", usageTags.isEmpty() ? List.of("GENERAL") : usageTags);
         result.put("budget", budget);
+        result.put("budgetMode", budgetMode);
         result.put("resolution", resolution);
         result.put("preferredVendors", preferredVendors);
         result.put("priority", firstText(text(source.get("priority")), text(fallback.get("priority"))));
@@ -902,12 +1916,18 @@ public class DefaultAiChatEngine implements AiChatEngine {
             Map<String, Object> context
     ) {
         Map<String, Object> result = new LinkedHashMap<>();
-        String operation = normalizeDraftOperation(firstText(text(source.get("operation")), inferDraftOperation(message)));
-        String category = firstText(categoryFrom(text(source.get("category"))), categoryFrom(firstText(selectedCategory, message)));
+        String inferredOperation = inferDraftOperation(message);
+        String operation = !"NONE".equals(inferredOperation)
+                ? inferredOperation
+                : normalizeDraftOperation(text(source.get("operation")));
+        String category = firstText(categoryFrom(firstText(selectedCategory, message)), categoryFrom(text(source.get("category"))));
         if (category == null) {
             category = categoryFrom(text(mostExpensiveDraftItem(context).get("category")));
         }
-        String priceDirection = normalizePriceDirection(firstText(text(source.get("priceDirection")), inferPriceDirection(message)));
+        String inferredPriceDirection = inferPriceDirection(message);
+        String priceDirection = !"ANY".equals(inferredPriceDirection)
+                ? inferredPriceDirection
+                : normalizePriceDirection(text(source.get("priceDirection")));
         Integer targetMaxPrice = firstNumber(source.get("targetMaxPrice"), inferBudget(message));
         Integer targetQuantity = numberValue(source.get("targetQuantity"));
         result.put("operation", operation);
@@ -930,7 +1950,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
         String normalized = safe(message).toLowerCase(Locale.ROOT);
         if (containsAny(normalized, "빼", "삭제", "제거", "remove", "delete")) return "REMOVE";
         if (containsAny(normalized, "수량", "개로", "장으로", "늘려", "줄여")) return "UPDATE_QUANTITY";
-        if (containsAny(normalized, "바꿔", "변경", "교체", "낮춰", "올려", "싼", "저렴", "비싸", "추천")) return "REPLACE";
+        if (containsAny(normalized, "바꿔", "변경", "교체", "낮춰", "올려", "싼", "저렴", "비싸", "추천", "더 좋은", "상위", "고급", "빠른", "넉넉", "여유", "비슷", "가격대", "유지")) return "REPLACE";
         return "NONE";
     }
 
@@ -946,7 +1966,7 @@ public class DefaultAiChatEngine implements AiChatEngine {
         if (containsAny(normalized, "싼", "저렴", "낮춰", "줄여", "가성비", "예산 안", "이하", "초과", "비싸")) {
             return "CHEAPER";
         }
-        if (containsAny(normalized, "좋은", "상위", "업그레이드", "성능", "올려", "비싸도", "고급")) {
+        if (containsAny(normalized, "좋은", "상위", "업그레이드", "성능", "올려", "비싸도", "고급", "빠른", "넉넉", "여유", "조용", "잘 식히", "큰 그래픽카드")) {
             return "MORE_EXPENSIVE";
         }
         if (containsAny(normalized, "비슷", "유지", "그 가격", "같은 가격")) {
@@ -963,6 +1983,66 @@ public class DefaultAiChatEngine implements AiChatEngine {
                 .filter(item -> category.equals(text(item.get("category"))))
                 .findFirst()
                 .orElse(Map.of());
+    }
+
+    private static Map<String, Object> draftItem(Map<String, Object> context, String category) {
+        return currentDraftItem(context, category);
+    }
+
+    private static String attrText(Map<String, Object> item, String key) {
+        return text(attributesOf(item).get(key));
+    }
+
+    private static Integer attrNumber(Map<String, Object> item, String key) {
+        return numberValue(attributesOf(item).get(key));
+    }
+
+    private static Map<String, Object> attributesOf(Map<String, Object> item) {
+        if (item == null || item.isEmpty()) {
+            return Map.of();
+        }
+        if (item.containsKey("attributes")) {
+            return objectMap(item.get("attributes"));
+        }
+        return item;
+    }
+
+    private static boolean sameRequired(String candidateValue, String requiredValue) {
+        return requiredValue == null || candidateValue != null && requiredValue.equalsIgnoreCase(candidateValue);
+    }
+
+    private static boolean lessOrEqualRequired(Integer candidateValue, Integer maxValue) {
+        return maxValue == null || candidateValue != null && candidateValue <= maxValue;
+    }
+
+    private static boolean greaterOrEqualRequired(Integer candidateValue, Integer minValue) {
+        return minValue == null || candidateValue != null && candidateValue >= minValue;
+    }
+
+    private static Integer firstPositiveNumber(Integer... values) {
+        for (Integer value : values) {
+            if (value != null && value > 0) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static boolean socketSupported(Object socketSupport, String socket) {
+        if (socket == null || socketSupport == null) {
+            return true;
+        }
+        if (socketSupport instanceof List<?> list) {
+            return list.stream().anyMatch(item -> socket.equalsIgnoreCase(String.valueOf(item)));
+        }
+        return String.valueOf(socketSupport).toUpperCase(Locale.ROOT).contains(socket.toUpperCase(Locale.ROOT));
+    }
+
+    private static boolean socketSupportedRequired(Object socketSupport, String socket) {
+        if (socket == null) {
+            return true;
+        }
+        return socketSupport != null && socketSupported(socketSupport, socket);
     }
 
     private static Map<String, Object> mostExpensiveDraftItem(Map<String, Object> context) {
@@ -1068,6 +2148,10 @@ public class DefaultAiChatEngine implements AiChatEngine {
 
     private static String categoryFrom(String value) {
         String normalized = safe(value).toLowerCase(Locale.ROOT);
+        String canonical = normalized.toUpperCase(Locale.ROOT).replace("-", "_");
+        if (BUILD_CATEGORIES.contains(canonical)) {
+            return canonical;
+        }
         if (containsAny(normalized, "gpu", "그래픽", "글카", "rtx", "지포스", "라데온")) return "GPU";
         if (containsAny(normalized, "cpu", "프로세서", "라이젠", "인텔")) return "CPU";
         if (containsAny(normalized, "메인보드", "보드", "motherboard")) return "MOTHERBOARD";
@@ -1108,8 +2192,33 @@ public class DefaultAiChatEngine implements AiChatEngine {
         return normalized.isEmpty() ? null : normalized.get(0);
     }
 
+    private static int gpuRank(AiChatEngineResponse.PartRecommendation part) {
+        String haystack = (firstText(gpuClass(part), "") + " " + (part == null ? "" : part.name())).toUpperCase(Locale.ROOT);
+        if (haystack.contains("5090")) return 5090;
+        if (haystack.contains("5080")) return 5080;
+        if (haystack.contains("5070") && (haystack.contains("TI") || haystack.contains("5070TI"))) return 5075;
+        if (haystack.contains("5070")) return 5070;
+        if (haystack.contains("5060") && (haystack.contains("TI") || haystack.contains("5060TI"))) return 5065;
+        if (haystack.contains("5060")) return 5060;
+        if (haystack.contains("4090")) return 4090;
+        if (haystack.contains("4080")) return 4080;
+        if (haystack.contains("4070") && (haystack.contains("TI") || haystack.contains("4070TI"))) return 4075;
+        if (haystack.contains("4070")) return 4070;
+        return 0;
+    }
+
     private static int defaultQuantity(String category) {
         return "RAM".equals(category) || "STORAGE".equals(category) ? 2 : 1;
+    }
+
+    private static int targetQuantity(String category, Map<String, Object> parsedContext) {
+        if (("RAM".equals(category) || "STORAGE".equals(category)) && parsedContext != null) {
+            Integer targetQuantity = numberValue(parsedContext.get("targetQuantity"));
+            if (targetQuantity != null && targetQuantity > 0) {
+                return Math.max(1, Math.min(9, targetQuantity));
+            }
+        }
+        return defaultQuantity(category);
     }
 
     private static double categoryWeight(String category) {
@@ -1126,6 +2235,35 @@ public class DefaultAiChatEngine implements AiChatEngine {
         };
     }
 
+    private static int targetPriceFor(
+            String category,
+            int effectiveBudget,
+            BuildPreviewPlan plan,
+            Map<String, Object> parsedContext,
+            String message
+    ) {
+        double weight = categoryWeight(category);
+        if ("GPU".equals(category) && isPremiumGpuIntent(parsedContext, message)) {
+            weight = Math.max(weight, plan.budgetRatio() > 1.0 ? 0.72 : 0.64);
+        }
+        return Math.max(50_000, (int) (effectiveBudget * plan.budgetRatio() * weight));
+    }
+
+    private static boolean isPremiumGpuIntent(Map<String, Object> parsedContext, String message) {
+        String performanceTier = normalizePerformanceTier(text(parsedContext.get("performanceTier")));
+        boolean userBudgetWithoutHardConstraint = numberValue(parsedContext.get("budget")) != null
+                && "USER_BUDGET".equals(normalizeBudgetPolicy(text(parsedContext.get("budgetPolicy"))))
+                && !hasHardConstraint(parsedContext);
+        if (userBudgetWithoutHardConstraint) {
+            return false;
+        }
+        if (!"ENTHUSIAST".equals(performanceTier) && !"OPEN_BUDGET".equals(normalizeBudgetPolicy(text(parsedContext.get("budgetPolicy"))))) {
+            return false;
+        }
+        String normalized = safe(message).toLowerCase(Locale.ROOT);
+        return containsAny(normalized, "그래픽", "글카", "gpu", "rtx", "게임", "qhd", "4k", "고사양", "최고사양", "최상급", "최고급", "끝판왕");
+    }
+
     private static int inferredBudgetFor(Map<String, Object> parsedContext) {
         String performanceTier = normalizePerformanceTier(text(parsedContext.get("performanceTier")));
         String budgetPolicy = normalizeBudgetPolicy(text(parsedContext.get("budgetPolicy")));
@@ -1137,6 +2275,12 @@ public class DefaultAiChatEngine implements AiChatEngine {
             return PERFORMANCE_UNSPECIFIED_BUDGET;
         }
         return STANDARD_UNSPECIFIED_BUDGET;
+    }
+
+    private static boolean hasHardConstraint(Map<String, Object> parsedContext) {
+        return "MUST_INCLUDE".equals(text(parsedContext.get("hardConstraintPolicy")))
+                || !normalizeGpuClasses(stringList(parsedContext.get("requiredGpuClasses"))).isEmpty()
+                || !normalizeKeywords(stringList(parsedContext.get("requiredPartKeywords"))).isEmpty();
     }
 
     private static boolean isPerformanceTarget(Map<String, Object> parsedContext) {
@@ -1223,6 +2367,26 @@ public class DefaultAiChatEngine implements AiChatEngine {
         return List.of("USER_BUDGET", "OPEN_BUDGET", "UNSPECIFIED").contains(upper) ? upper : "UNSPECIFIED";
     }
 
+    private static String inferBudgetMode(String message, Integer budget) {
+        if (budget == null) {
+            return "UNSPECIFIED";
+        }
+        if (isMinimumBudgetMessage(message)) {
+            return "MIN";
+        }
+        if (isMaximumBudgetMessage(message)) {
+            return "MAX";
+        }
+        return "TARGET";
+    }
+
+    private static String normalizeBudgetMode(String value) {
+        String normalized = text(value);
+        if (normalized == null) return "UNSPECIFIED";
+        String upper = normalized.toUpperCase(Locale.ROOT);
+        return List.of("TARGET", "MAX", "MIN", "OPEN", "UNSPECIFIED").contains(upper) ? upper : "UNSPECIFIED";
+    }
+
     private static Map<String, Object> normalizeConfidence(Map<String, Object> source, Map<String, Object> fallback) {
         Map<String, Object> result = new LinkedHashMap<>();
         List<String> keys = List.of("usageTags", "budget", "resolution", "preferredVendors");
@@ -1283,12 +2447,29 @@ public class DefaultAiChatEngine implements AiChatEngine {
         return Integer.valueOf(text.replace(",", ""));
     }
 
+    private static Long longValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = text(value);
+        if (text == null) return null;
+        return Long.valueOf(text.replace(",", ""));
+    }
+
     private static String requireText(Object value, String message) {
         String text = text(value);
         if (text == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
         }
         return text;
+    }
+
+    private AiProfileDefinition requireBuildChatProfile(String requestedAiProfile) {
+        try {
+            return aiProfileConfig.buildChatProfile(requestedAiProfile);
+        } catch (IllegalArgumentException error) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, error.getMessage(), error);
+        }
     }
 
     private static String text(Object value) {
@@ -1303,6 +2484,11 @@ public class DefaultAiChatEngine implements AiChatEngine {
 
     private static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static String compactToken(String value) {
+        String text = text(value);
+        return text == null ? null : text.toUpperCase(Locale.ROOT).replaceAll("[^0-9A-Z가-힣]", "");
     }
 
     private static boolean containsAny(String value, String... needles) {
@@ -1355,5 +2541,30 @@ public class DefaultAiChatEngine implements AiChatEngine {
     }
 
     private record BuildPreviewPlan(String name, String recommendedFor, double budgetRatio, String confidence) {
+    }
+
+    private record EngineRouteIntent(String route, String label, String reason, Map<String, Object> context) {
+    }
+
+    private record PartQueryConstraints(
+            String cpuModelToken,
+            String brandToken,
+            List<String> modelTokens,
+            Integer targetCapacityGb,
+            Integer targetModuleCount,
+            Integer targetQuantity,
+            List<String> requiredPartKeywords
+    ) {
+        private boolean hasHardConstraint() {
+            return cpuModelToken != null
+                    || brandToken != null
+                    || !modelTokens.isEmpty()
+                    || targetCapacityGb != null
+                    || targetModuleCount != null;
+        }
+
+        private int targetQuantity(int fallback) {
+            return targetQuantity == null || targetQuantity <= 0 ? fallback : targetQuantity;
+        }
     }
 }

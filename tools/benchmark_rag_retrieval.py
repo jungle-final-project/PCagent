@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Benchmark public RAG retrieval quality through GET /api/rag/search."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import math
+import statistics
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Benchmark RAG retrieval variants")
+    parser.add_argument("--base-url", default="http://localhost:8080")
+    parser.add_argument("--cases", default="tools/rag_retrieval_cases.json")
+    parser.add_argument("--output-dir", default="docs/reports")
+    parser.add_argument("--user-email", default="user@example.com")
+    parser.add_argument("--user-password", default="passw0rd!")
+    parser.add_argument("--variant-label", default="default")
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--fresh", action="store_true", help="Do not merge with an existing same-day report.")
+    args = parser.parse_args()
+
+    cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))
+    token = login(args.base_url, args.user_email, args.user_password)
+    results = [run_case(args.base_url, token, args.variant_label, case) for case in cases]
+    output_dir = Path(args.output_dir)
+    merged_results = results if args.fresh else merge_results(output_dir, results)
+    if args.fresh:
+        write_json(output_dir, results)
+    output = write_report(output_dir, merged_results)
+    print(output)
+    return 0 if not args.strict or all(result["topKHit"] for result in results) else 1
+
+
+def run_case(base_url: str, token: str, variant: str, case: dict[str, Any]) -> dict[str, Any]:
+    purpose = None if case["purpose"] == "PUBLIC_SEARCH" else case["purpose"]
+    required_top_k = int(case.get("requiredTopK") or 3)
+    size = max(required_top_k, 10)
+    query = {
+        "q": case["query"],
+        "limit": str(size),
+    }
+    if purpose:
+        query["purpose"] = purpose
+    if case.get("sourceType"):
+        query["sourceType"] = case["sourceType"]
+
+    started = time.perf_counter()
+    response = None
+    error = None
+    try:
+        response = request_json(base_url, "GET", "/api/rag/search", token, query=query, timeout=45)
+    except RuntimeError as exc:
+        error = str(exc)
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    items = response.get("items", []) if response else []
+    top_items = items[:required_top_k]
+    top_one = items[:1]
+    top_k_diagnostics = hit_diagnostics(top_items, case)
+    top_one_diagnostics = hit_diagnostics(top_one, case)
+    return {
+        "variant": variant,
+        "caseId": case["id"],
+        "purpose": case["purpose"],
+        "query": case["query"],
+        "latencyMs": latency_ms,
+        "top1Hit": top_one_diagnostics["hit"],
+        "topKHit": top_k_diagnostics["hit"],
+        "expectedSourceHit": top_k_diagnostics["expectedSourceHit"],
+        "expectedTypeHit": top_k_diagnostics["expectedTypeHit"],
+        "mustTermsHit": top_k_diagnostics["mustTermsHit"],
+        "top1ExpectedSourceHit": top_one_diagnostics["expectedSourceHit"],
+        "top1ExpectedTypeHit": top_one_diagnostics["expectedTypeHit"],
+        "top1MustTermsHit": top_one_diagnostics["mustTermsHit"],
+        "requiredTopK": required_top_k,
+        "resultCount": len(items),
+        "topSources": ", ".join(source_id(item) for item in top_items) or "-",
+        "retrievalModes": ", ".join(sorted(retrieval_modes(top_items))) or "-",
+        "error": error,
+    }
+
+
+def hit(items: list[dict[str, Any]], case: dict[str, Any]) -> bool:
+    return hit_diagnostics(items, case)["hit"]
+
+
+def hit_diagnostics(items: list[dict[str, Any]], case: dict[str, Any]) -> dict[str, bool]:
+    if not items:
+        return {
+            "hit": False,
+            "expectedSourceHit": False,
+            "expectedTypeHit": False,
+            "mustTermsHit": False,
+        }
+    expected_ids = {str(item).lower() for item in case.get("expectedSourceIds", [])}
+    expected_source_hit = False
+    if expected_ids:
+        for item in items:
+            if source_id(item).lower() in expected_ids or str(item.get("id", "")).lower() in expected_ids:
+                expected_source_hit = True
+                break
+        return {
+            "hit": expected_source_hit,
+            "expectedSourceHit": expected_source_hit,
+            "expectedTypeHit": True,
+            "mustTermsHit": must_terms_hit(items, case),
+        }
+
+    expected_types = {str(item).upper() for item in case.get("expectedSourceTypes", [])}
+    term_ok = must_terms_hit(items, case)
+    type_ok = True
+    if expected_types:
+        type_ok = any(source_type(item).upper() in expected_types for item in items)
+    return {
+        "hit": type_ok and term_ok,
+        "expectedSourceHit": True,
+        "expectedTypeHit": type_ok,
+        "mustTermsHit": term_ok,
+    }
+
+
+def must_terms_hit(items: list[dict[str, Any]], case: dict[str, Any]) -> bool:
+    term_groups = [
+        [alias.strip().lower() for alias in str(term).split("|") if alias.strip()]
+        for term in case.get("mustContainTerms", [])
+        if str(term).strip()
+    ]
+    if not term_groups:
+        return True
+    haystack = "\n".join(json.dumps(item, ensure_ascii=False).lower() for item in items)
+    matched = sum(1 for aliases in term_groups if any(alias in haystack for alias in aliases))
+    return matched >= max(1, math.ceil(len(term_groups) / 2))
+
+
+def retrieval_modes(items: list[dict[str, Any]]) -> set[str]:
+    modes = set()
+    for item in items:
+        metadata = item.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("retrievalMode"):
+            modes.add(str(metadata["retrievalMode"]))
+    return modes
+
+
+def source_id(item: dict[str, Any]) -> str:
+    return str(item.get("sourceId") or "")
+
+
+def source_type(item: dict[str, Any]) -> str:
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        return str(metadata.get("sourceType") or "")
+    return ""
+
+
+def merge_results(output_dir: Path, current_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = output_dir / f"rag-retrieval-benchmark-{dt.datetime.now().strftime('%Y%m%d')}.json"
+    variants = {row["variant"] for row in current_results}
+    existing: list[dict[str, Any]] = []
+    if cache_path.exists():
+        try:
+            existing = json.loads(cache_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = []
+    merged = [row for row in existing if row.get("variant") not in variants] + current_results
+    cache_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return merged
+
+
+def write_json(output_dir: Path, results: list[dict[str, Any]]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = output_dir / f"rag-retrieval-benchmark-{dt.datetime.now().strftime('%Y%m%d')}.json"
+    cache_path.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def write_report(output_dir: Path, results: list[dict[str, Any]]) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"rag-retrieval-benchmark-{dt.datetime.now().strftime('%Y%m%d')}.md"
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for result in results:
+        grouped.setdefault((result["variant"], result["purpose"]), []).append(result)
+    distinct_case_count = len({result["caseId"] for result in results})
+    variant_count = len({result["variant"] for result in results})
+
+    lines = [
+        "# RAG 검색 벤치마크",
+        "",
+        f"- 생성 시각: {dt.datetime.now().isoformat(timespec='seconds')}",
+        f"- 고유 케이스 수: {distinct_case_count}",
+        f"- 실험 variant 수: {variant_count}",
+        f"- 총 결과 row 수: {len(results)}",
+        "- endpoint: `GET /api/rag/search`",
+        "",
+        "## 요약",
+        "",
+        "| 실험 라벨 | 목적 | 케이스 | top1 적중률 | topK 적중률 | 평균 지연(ms) | p95 지연(ms) | 평균 결과 수 |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for (variant, purpose), rows in grouped.items():
+        latencies = [row["latencyMs"] for row in rows]
+        result_counts = [row["resultCount"] for row in rows]
+        lines.append(
+            f"| {variant} | {purpose} | {len(rows)} | {ratio(row['top1Hit'] for row in rows):.1%} | "
+            f"{ratio(row['topKHit'] for row in rows):.1%} | {mean(latencies):.0f} | "
+            f"{percentile(latencies, 95):.0f} | {mean(result_counts):.1f} |"
+        )
+
+    lines.extend([
+        "",
+        "## 케이스별 결과",
+        "",
+        "| 실험 라벨 | 목적 | 케이스 | top1 | topK | 지연(ms) | 요구 k | 결과 수 | 검색 모드 | 상위 source | 오류 |",
+        "|---|---|---|---:|---:|---:|---:|---:|---|---|---|",
+    ])
+    for row in results:
+        error = (row["error"] or "").replace("|", "/")
+        lines.append(
+            f"| {row['variant']} | {row['purpose']} | {row['caseId']} | {yes(row['top1Hit'])} | "
+            f"{yes(row['topKHit'])} | {row['latencyMs']} | {row['requiredTopK']} | {row['resultCount']} | "
+            f"{row['retrievalModes']} | {row['topSources']} | {error} |"
+        )
+
+    failed_rows = [row for row in results if not row["topKHit"]]
+    top1_miss_rows = [row for row in results if row["topKHit"] and not row["top1Hit"]]
+    if failed_rows:
+        lines.extend([
+            "",
+            "## 실패 요약",
+            "",
+            "| 실험 라벨 | 목적 | 실패 분류 | 실패 수 | 케이스 |",
+            "|---|---|---|---:|---|",
+        ])
+        grouped_failures: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for row in failed_rows:
+            grouped_failures.setdefault((row["variant"], row["purpose"], failure_bucket(row)), []).append(row)
+        for (variant, purpose, bucket), rows in sorted(grouped_failures.items()):
+            case_ids = ", ".join(row["caseId"] for row in rows[:12])
+            if len(rows) > 12:
+                case_ids += f", +{len(rows) - 12} more"
+            lines.append(f"| {variant} | {purpose} | {bucket} | {len(rows)} | {case_ids} |")
+
+        lines.extend([
+            "",
+            "### 실패 케이스",
+            "",
+            "| 실험 라벨 | 목적 | 케이스 | 실패 분류 | 질의 | 상위 source |",
+            "|---|---|---|---|---|---|",
+        ])
+        for row in failed_rows:
+            query = row["query"].replace("|", "/")
+            top_sources = row["topSources"].replace("|", "/")
+            lines.append(
+                f"| {row['variant']} | {row['purpose']} | {row['caseId']} | "
+                f"{failure_bucket(row)} | {query} | {top_sources} |"
+            )
+
+    if top1_miss_rows:
+        lines.extend([
+            "",
+            "## Top1 미스 요약",
+            "",
+            "| 실험 라벨 | 목적 | top1 미스 수 | 케이스 |",
+            "|---|---|---:|---|",
+        ])
+        grouped_top1: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in top1_miss_rows:
+            grouped_top1.setdefault((row["variant"], row["purpose"]), []).append(row)
+        for (variant, purpose), rows in sorted(grouped_top1.items()):
+            case_ids = ", ".join(row["caseId"] for row in rows[:12])
+            if len(rows) > 12:
+                case_ids += f", +{len(rows) - 12} more"
+            lines.append(f"| {variant} | {purpose} | {len(rows)} | {case_ids} |")
+
+    lines.extend([
+        "",
+        "## 정책 해석 기준",
+        "",
+        "- `topKHitRate`가 vector-off와 2%p 미만 차이면 해당 경로는 latency를 보고 끌 후보가 된다.",
+        "- `REQUIREMENT_PARSE`와 `BUILD_RECOMMEND`는 5090, 끝판왕, 예산 표현 같은 의미 검색 실패 감소를 우선한다.",
+        "- `AS_ANALYZE`는 thermal, driver, memory, storage, power 증상 근거가 top3 안에 들어오는지를 우선한다.",
+        "- 이 보고서는 기본 env를 바꾸지 않고 다음 PR의 정책 판단 근거로만 사용한다.",
+    ])
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
+
+
+def failure_bucket(row: dict[str, Any]) -> str:
+    if row.get("error"):
+        return "api-error"
+    if int(row.get("resultCount") or 0) == 0:
+        return "emptyResult"
+    if not row.get("expectedSourceHit", True):
+        return "expectedSourceMiss"
+    if not row.get("expectedTypeHit", True):
+        return "expectedSourceMiss"
+    if not row.get("mustTermsHit", True):
+        return "mustTermMiss"
+    if not row.get("top1Hit") and row.get("topKHit"):
+        return "top1OnlyMiss"
+    query = str(row.get("query") or "").lower()
+    purpose = str(row.get("purpose") or "")
+    if purpose == "REQUIREMENT_PARSE":
+        if any(term in query for term in ("5090", "5080", "rtx", "글카")):
+            return "hard-part-constraint"
+        if any(term in query for term in ("예산", "가격", "만원", "최고급", "하이엔드", "플래그십", "끝판왕")):
+            return "budget-performance-intent"
+        if any(term in query for term in ("qhd", "4k", "144", "게임", "배그", "프레임")):
+            return "game-resolution"
+        if any(term in query for term in ("저소음", "조용", "소음", "업그레이드", "브랜드", "nvidia", "엔비디아")):
+            return "brand-noise-upgrade"
+        return "workload-followup"
+    if purpose == "BUILD_RECOMMEND":
+        if any(term in query for term in ("케이스", "쿨링", "컴팩트", "길이", "높이")):
+            return "case-cooling-fit"
+        if any(term in query for term in ("가격", "스냅샷", "현재가", "외부 api", "저장")):
+            return "saved-price-policy"
+        if any(term in query for term in ("파워", "전력", "psu", "헤드룸")):
+            return "power-headroom"
+        return "recommend-policy"
+    if purpose == "AS_ANALYZE":
+        if any(term in query for term in ("먼지", "흡기", "팬", "쿨러", "케이스", "발열")):
+            return "thermal-airflow"
+        return "as-symptom"
+    return "public-search"
+
+
+def login(base_url: str, email: str, password: str) -> str:
+    response = request_json(base_url, "POST", "/api/auth/login", None, body={"email": email, "password": password})
+    token = response.get("accessToken")
+    if not token:
+        raise RuntimeError(f"login failed for {email}: accessToken missing")
+    return token
+
+
+def request_json(
+    base_url: str,
+    method: str,
+    path: str,
+    token: str | None,
+    body: dict[str, Any] | None = None,
+    query: dict[str, str] | None = None,
+    timeout: int = 60,
+) -> dict[str, Any]:
+    query_string = f"?{urllib.parse.urlencode(query)}" if query else ""
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(f"{base_url}{path}{query_string}", data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{method} {path} failed: HTTP {exc.code} {raw}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{method} {path} failed: {exc}") from exc
+
+
+def ratio(values) -> float:
+    items = list(values)
+    return sum(1 for item in items if item) / len(items) if items else 0.0
+
+
+def mean(values) -> float:
+    return statistics.mean(values) if values else 0.0
+
+
+def percentile(values, percent: int) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil((percent / 100) * len(ordered)) - 1))
+    return ordered[index]
+
+
+def yes(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+if __name__ == "__main__":
+    sys.exit(main())

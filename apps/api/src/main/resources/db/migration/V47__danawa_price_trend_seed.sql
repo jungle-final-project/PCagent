@@ -16,4 +16,3 @@ ON CONFLICT (part_id, source, collected_at) WHERE source = 'DANAWA_PRICE_TREND'
 DO UPDATE SET
   price = EXCLUDED.price,
   raw_payload = EXCLUDED.raw_payload;
-

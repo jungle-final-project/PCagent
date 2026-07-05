@@ -7,14 +7,14 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
 class AgentIdempotencyMigrationContractTest {
-    private static final Path MIGRATION = Path.of("src/main/resources/db/migration/V54__agent_idempotency_records.sql");
+    private static final Path MIGRATION = Path.of("src/main/resources/db/migration/V57__agent_idempotency_records.sql");
 
     @Test
     void migrationCreatesAgentScopedIdempotencyRecordTable() throws Exception {
         String sql = normalizedSql();
 
         assertThat(sql)
-                .contains("CREATE TABLE agent_idempotency_records")
+                .contains("CREATE TABLE IF NOT EXISTS agent_idempotency_records")
                 .contains("agent_device_id BIGINT NOT NULL REFERENCES agent_devices(id)")
                 .contains("idempotency_key VARCHAR(160) NOT NULL")
                 .contains("request_method VARCHAR(10) NOT NULL")

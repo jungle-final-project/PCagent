@@ -22,6 +22,9 @@ spring:
     host: ${SPRING_RABBITMQ_HOST:localhost}
     username: ${SPRING_RABBITMQ_USERNAME:buildgraph}
     password: ${SPRING_RABBITMQ_PASSWORD:buildgraph}
+    listener:
+      simple:
+        default-requeue-rejected: false
   mail:
     host: ${SPRING_MAIL_HOST:localhost}
     port: ${SPRING_MAIL_PORT:1025}
@@ -35,6 +38,7 @@ management:
 agent:
   runner:
     mode: ${AGENT_RUNNER_MODE:deterministic}
+  log-storage-root: ${AGENT_LOG_STORAGE_ROOT:data/agent-logs}
 
 openai:
   base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
@@ -47,12 +51,16 @@ openai:
 rag:
   vector:
     enabled: ${RAG_VECTOR_ENABLED:true}
+    requirement-parse-enabled: ${RAG_VECTOR_REQUIREMENT_PARSE_ENABLED:${RAG_VECTOR_ENABLED:true}}
+    build-recommend-enabled: ${RAG_VECTOR_BUILD_RECOMMEND_ENABLED:${RAG_VECTOR_ENABLED:true}}
+    as-analyze-enabled: ${RAG_VECTOR_AS_ANALYZE_ENABLED:${RAG_VECTOR_ENABLED:true}}
+    public-search-enabled: ${RAG_VECTOR_PUBLIC_SEARCH_ENABLED:${RAG_VECTOR_ENABLED:true}}
   embedding:
     backfill-on-startup: ${RAG_EMBEDDING_BACKFILL_ON_STARTUP:false}
 
 ai:
   as-chat:
-    default-profile: ${AS_CHAT_DEFAULT_PROFILE:AS_CHAT_FAST}
+    default-profile: ${AS_CHAT_DEFAULT_PROFILE:AS_CHAT_54_MINI_FAST}
     fast:
       model: ${AS_CHAT_FAST_MODEL:gpt-5.5}
       reasoning-effort: ${AS_CHAT_FAST_REASONING_EFFORT:low}
@@ -62,6 +70,24 @@ ai:
       include-evidence-chunk-text: ${AS_CHAT_FAST_INCLUDE_EVIDENCE_CHUNK_TEXT:false}
       include-tool-result-payload: ${AS_CHAT_FAST_INCLUDE_TOOL_RESULT_PAYLOAD:false}
       use-compact-prompt: ${AS_CHAT_FAST_USE_COMPACT_PROMPT:true}
+    gpt54-fast:
+      model: ${AS_CHAT_54_FAST_MODEL:gpt-5.4}
+      reasoning-effort: ${AS_CHAT_54_FAST_REASONING_EFFORT:low}
+      rag-top-k: ${AS_CHAT_54_FAST_RAG_TOP_K:2}
+      max-output-tokens: ${AS_CHAT_54_FAST_MAX_OUTPUT_TOKENS:900}
+      recent-message-limit: ${AS_CHAT_54_FAST_RECENT_MESSAGE_LIMIT:3}
+      include-evidence-chunk-text: ${AS_CHAT_54_FAST_INCLUDE_EVIDENCE_CHUNK_TEXT:false}
+      include-tool-result-payload: ${AS_CHAT_54_FAST_INCLUDE_TOOL_RESULT_PAYLOAD:false}
+      use-compact-prompt: ${AS_CHAT_54_FAST_USE_COMPACT_PROMPT:true}
+    gpt54-mini-fast:
+      model: ${AS_CHAT_54_MINI_FAST_MODEL:gpt-5.4-mini}
+      reasoning-effort: ${AS_CHAT_54_MINI_FAST_REASONING_EFFORT:low}
+      rag-top-k: ${AS_CHAT_54_MINI_FAST_RAG_TOP_K:2}
+      max-output-tokens: ${AS_CHAT_54_MINI_FAST_MAX_OUTPUT_TOKENS:850}
+      recent-message-limit: ${AS_CHAT_54_MINI_FAST_RECENT_MESSAGE_LIMIT:3}
+      include-evidence-chunk-text: ${AS_CHAT_54_MINI_FAST_INCLUDE_EVIDENCE_CHUNK_TEXT:false}
+      include-tool-result-payload: ${AS_CHAT_54_MINI_FAST_INCLUDE_TOOL_RESULT_PAYLOAD:false}
+      use-compact-prompt: ${AS_CHAT_54_MINI_FAST_USE_COMPACT_PROMPT:true}
     nano-fast:
       model: ${AS_CHAT_NANO_FAST_MODEL:gpt-5.4-nano}
       reasoning-effort: ${AS_CHAT_NANO_FAST_REASONING_EFFORT:low}
@@ -89,6 +115,51 @@ ai:
       include-evidence-chunk-text: ${AS_CHAT_HIGH_QUALITY_INCLUDE_EVIDENCE_CHUNK_TEXT:true}
       include-tool-result-payload: ${AS_CHAT_HIGH_QUALITY_INCLUDE_TOOL_RESULT_PAYLOAD:false}
       use-compact-prompt: ${AS_CHAT_HIGH_QUALITY_USE_COMPACT_PROMPT:true}
+  build-chat:
+    default-profile: ${BUILD_CHAT_DEFAULT_PROFILE:BUILD_CHAT_54_MINI_FAST}
+    cache:
+      enabled: ${BUILD_CHAT_CACHE_ENABLED:true}
+      ttl-seconds: ${BUILD_CHAT_CACHE_TTL_SECONDS:600}
+      prewarm:
+        enabled: ${BUILD_CHAT_CACHE_PREWARM_ENABLED:true}
+        ttl-seconds: ${BUILD_CHAT_CACHE_PREWARM_TTL_SECONDS:3600}
+        refresh-delay-ms: ${BUILD_CHAT_CACHE_PREWARM_REFRESH_DELAY_MS:2700000}
+    semantic-cache:
+      enabled: ${BUILD_CHAT_SEMANTIC_CACHE_ENABLED:true}
+      threshold: ${BUILD_CHAT_SEMANTIC_CACHE_THRESHOLD:0.94}
+      ttl-seconds: ${BUILD_CHAT_SEMANTIC_CACHE_TTL_SECONDS:600}
+    tier-snapshot:
+      enabled: ${BUILD_CHAT_TIER_SNAPSHOT_ENABLED:true}
+      min-budget-won: ${BUILD_CHAT_TIER_SNAPSHOT_MIN_BUDGET_WON:2000000}
+      max-budget-won: ${BUILD_CHAT_TIER_SNAPSHOT_MAX_BUDGET_WON:13000000}
+      step-won: ${BUILD_CHAT_TIER_SNAPSHOT_STEP_WON:1000000}
+      refresh-delay-ms: ${BUILD_CHAT_TIER_SNAPSHOT_REFRESH_DELAY_MS:3600000}
+      tolerance-pct: ${BUILD_CHAT_TIER_SNAPSHOT_TOLERANCE_PCT:15}
+    fast:
+      model: ${BUILD_CHAT_FAST_MODEL:gpt-5.5}
+      reasoning-effort: ${BUILD_CHAT_FAST_REASONING_EFFORT:low}
+      rag-top-k: ${BUILD_CHAT_FAST_RAG_TOP_K:3}
+      max-output-tokens: ${BUILD_CHAT_FAST_MAX_OUTPUT_TOKENS:900}
+      recent-message-limit: ${BUILD_CHAT_FAST_RECENT_MESSAGE_LIMIT:0}
+    gpt54-fast:
+      model: ${BUILD_CHAT_54_FAST_MODEL:gpt-5.4}
+      reasoning-effort: ${BUILD_CHAT_54_FAST_REASONING_EFFORT:low}
+      rag-top-k: ${BUILD_CHAT_54_FAST_RAG_TOP_K:3}
+      max-output-tokens: ${BUILD_CHAT_54_FAST_MAX_OUTPUT_TOKENS:900}
+      recent-message-limit: ${BUILD_CHAT_54_FAST_RECENT_MESSAGE_LIMIT:0}
+    gpt54-mini-fast:
+      model: ${BUILD_CHAT_54_MINI_FAST_MODEL:gpt-5.4-mini}
+      reasoning-effort: ${BUILD_CHAT_54_MINI_FAST_REASONING_EFFORT:low}
+      rag-top-k: ${BUILD_CHAT_54_MINI_FAST_RAG_TOP_K:3}
+      max-output-tokens: ${BUILD_CHAT_54_MINI_FAST_MAX_OUTPUT_TOKENS:850}
+      recent-message-limit: ${BUILD_CHAT_54_MINI_FAST_RECENT_MESSAGE_LIMIT:0}
+
+recommendation:
+  reranker:
+    enabled: ${RECOMMENDATION_RERANKER_ENABLED:false}
+    shadow-enabled: ${RECOMMENDATION_RERANKER_SHADOW_ENABLED:true}
+    endpoint: ${RECOMMENDATION_RERANKER_ENDPOINT:http://localhost:8091/score}
+    timeout-ms: ${RECOMMENDATION_RERANKER_TIMEOUT_MS:1200}
 
 part:
   price-refresh:

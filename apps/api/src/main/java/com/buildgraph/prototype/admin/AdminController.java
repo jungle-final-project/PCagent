@@ -2,6 +2,7 @@ package com.buildgraph.prototype.admin;
 
 import com.buildgraph.prototype.agent.AgentQueryService;
 import com.buildgraph.prototype.agent.PcAgentAsService;
+import com.buildgraph.prototype.build.BuildGraphLayoutService;
 import com.buildgraph.prototype.price.PriceQueryService;
 import com.buildgraph.prototype.rag.RagEmbeddingService;
 import com.buildgraph.prototype.rag.RagQueryService;
@@ -10,9 +11,11 @@ import com.buildgraph.prototype.user.CurrentUserService;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -28,6 +31,7 @@ public class AdminController {
     private final RagEmbeddingService ragEmbeddingService;
     private final TicketQueryService ticketQueryService;
     private final PriceQueryService priceQueryService;
+    private final BuildGraphLayoutService buildGraphLayoutService;
     private final CurrentUserService currentUserService;
     private final PcAgentAsService pcAgentAsService;
 
@@ -38,6 +42,7 @@ public class AdminController {
             RagEmbeddingService ragEmbeddingService,
             TicketQueryService ticketQueryService,
             PriceQueryService priceQueryService,
+            BuildGraphLayoutService buildGraphLayoutService,
             CurrentUserService currentUserService,
             PcAgentAsService pcAgentAsService
     ) {
@@ -47,6 +52,7 @@ public class AdminController {
         this.ragEmbeddingService = ragEmbeddingService;
         this.ticketQueryService = ticketQueryService;
         this.priceQueryService = priceQueryService;
+        this.buildGraphLayoutService = buildGraphLayoutService;
         this.currentUserService = currentUserService;
         this.pcAgentAsService = pcAgentAsService;
     }
@@ -61,6 +67,27 @@ public class AdminController {
     Map<String, Object> auditLogs(@RequestHeader(value = "Authorization", required = false) String authorization) {
         currentUserService.requireAdmin(authorization);
         return adminQueryService.auditLogs();
+    }
+
+    @GetMapping("/build-graph-layouts/default")
+    Map<String, Object> buildGraphLayout(@RequestHeader(value = "Authorization", required = false) String authorization) {
+        currentUserService.requireAdmin(authorization);
+        return buildGraphLayoutService.getDefaultLayout();
+    }
+
+    @PutMapping("/build-graph-layouts/default")
+    Map<String, Object> saveBuildGraphLayout(
+            @RequestBody(required = false) Map<String, Object> request,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return buildGraphLayoutService.saveDefaultLayout(request == null ? Map.of() : request, admin);
+    }
+
+    @DeleteMapping("/build-graph-layouts/default")
+    Map<String, Object> resetBuildGraphLayout(@RequestHeader(value = "Authorization", required = false) String authorization) {
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return buildGraphLayoutService.resetDefaultLayout(admin);
     }
 
     @GetMapping("/agent-sessions")
@@ -85,6 +112,12 @@ public class AdminController {
     Map<String, Object> toolInvocation(@PathVariable String id, @RequestHeader(value = "Authorization", required = false) String authorization) {
         currentUserService.requireAdmin(authorization);
         return agentQueryService.toolInvocation(id);
+    }
+
+    @GetMapping("/rag-evidence")
+    Map<String, Object> ragEvidenceList(@RequestHeader(value = "Authorization", required = false) String authorization) {
+        currentUserService.requireAdmin(authorization);
+        return ragQueryService.adminEvidenceList();
     }
 
     @GetMapping("/rag-evidence/{id}")
@@ -112,7 +145,7 @@ public class AdminController {
     @GetMapping("/as-tickets/{id}")
     Map<String, Object> ticket(@PathVariable String id, @RequestHeader(value = "Authorization", required = false) String authorization) {
         currentUserService.requireAdmin(authorization);
-        return ticketQueryService.ticket(id);
+        return ticketQueryService.adminTicket(id);
     }
 
     @PatchMapping("/as-tickets/{id}")
@@ -144,8 +177,8 @@ public class AdminController {
     @PostMapping("/price-jobs/run")
     @ResponseStatus(HttpStatus.CREATED)
     Map<String, Object> runPriceJob(@RequestHeader(value = "Authorization", required = false) String authorization) {
-        currentUserService.requireAdmin(authorization);
-        return priceQueryService.runPriceJob();
+        CurrentUserService.CurrentUser admin = currentUserService.requireAdmin(authorization);
+        return priceQueryService.runPriceJob(admin);
     }
 
 }

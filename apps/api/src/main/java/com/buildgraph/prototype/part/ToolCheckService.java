@@ -128,12 +128,33 @@ public class ToolCheckService {
         int maxGpuLength = intAttr(pcCase, "maxGpuLengthMm", 0);
         int coolerHeight = intAttr(cooler, "heightMm", intAttr(cooler, "coolerHeightMm", 0));
         int maxCoolerHeight = intAttr(pcCase, "maxCpuCoolerHeightMm", 190);
-        boolean pass = gpuLength <= maxGpuLength && coolerHeight <= maxCoolerHeight;
+        boolean gpuKnown = gpuLength > 0 && maxGpuLength > 0;
+        boolean coolerKnown = coolerHeight > 0 && maxCoolerHeight > 0;
+        boolean gpuExceeded = gpuKnown && gpuLength > maxGpuLength;
+        boolean coolerExceeded = coolerKnown && coolerHeight > maxCoolerHeight;
+        boolean fail = gpuExceeded || coolerExceeded;
+        int gpuHeadroom = gpuKnown ? maxGpuLength - gpuLength : 0;
+        int coolerHeadroom = coolerKnown ? maxCoolerHeight - coolerHeight : 0;
+        boolean warn = !fail && (
+                !gpuKnown
+                        || !coolerKnown
+                        || gpuHeadroom < 20
+                        || coolerHeadroom < 5
+        );
         return tool("size",
-                pass ? "PASS" : "WARN",
-                "MEDIUM",
-                pass ? "GPU 길이와 쿨러 높이가 케이스 제약 안에 있습니다." : "케이스 장착 제약을 추가 확인해야 합니다.",
-                MockData.map("gpuLengthMm", gpuLength, "maxGpuLengthMm", maxGpuLength, "coolerHeightMm", coolerHeight, "maxCpuCoolerHeightMm", maxCoolerHeight));
+                fail ? "FAIL" : warn ? "WARN" : "PASS",
+                fail ? "HIGH" : "MEDIUM",
+                fail ? "케이스 장착 한계를 초과해 해당 조합은 장착할 수 없습니다."
+                        : warn ? "케이스 장착 여유가 낮거나 일부 치수 근거가 부족해 추가 확인이 필요합니다."
+                        : "GPU 길이와 쿨러 높이가 케이스 제약 안에 있습니다.",
+                MockData.map(
+                        "gpuLengthMm", gpuLength,
+                        "maxGpuLengthMm", maxGpuLength,
+                        "gpuHeadroomMm", gpuHeadroom,
+                        "coolerHeightMm", coolerHeight,
+                        "maxCpuCoolerHeightMm", maxCoolerHeight,
+                        "coolerHeadroomMm", coolerHeadroom
+                ));
     }
 
     /** Evaluates coarse workload fit without promising exact FPS. */
@@ -169,7 +190,9 @@ public class ToolCheckService {
         return tool("performance",
                 pass ? "PASS" : "WARN",
                 benchmarkBacked ? "HIGH" : "MEDIUM",
-                pass ? "공개 벤치마크/공식 스펙 기반 적합도 점수상 요구 작업에 무리가 적은 조합입니다." : "성능 또는 작업 적합도 여유가 낮아 상위 부품을 검토해야 합니다.",
+                pass
+                        ? "공개 벤치마크/공식 스펙 기반 적합도 점수상 요구 작업에 무리가 적은 조합입니다. 점수는 참고용이며 실제 성능을 보장하지 않습니다."
+                        : "성능 또는 작업 적합도 여유가 낮아 상위 부품을 검토해야 합니다. 점수는 참고용이며 실제 성능을 보장하지 않습니다.",
                 details);
     }
 

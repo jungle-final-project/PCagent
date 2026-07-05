@@ -28,36 +28,36 @@ REQUIRED_PATHS = [
     "/api/auth/exchange",
     "/api/requirements/parse",
     "/api/builds/recommend",
+    "/api/builds/from-chat",
     "/api/builds/{id}",
     "/api/builds/history",
     "/api/builds/{id}/change-part",
+    "/api/ai/build-chat",
+    "/api/build-graphs/resolve",
     "/api/parts",
     "/api/parts/{id}",
+    "/api/quote-drafts/current/apply-ai-build",
     *TOOL_PATHS,
     "/api/price-alerts",
     "/api/admin/price-jobs",
     "/api/admin/price-jobs/run",
-    "/api/agent/devices/register",
-    "/api/agent/consents",
-    "/api/agent/heartbeat",
-    "/api/agent/log-uploads",
-    "/api/agent/sessions",
-    "/api/agent/sessions/{id}/run",
-    "/api/agent/sessions/{id}",
+    "/api/ai/agent-sessions",
+    "/api/ai/agent-sessions/{id}/run",
+    "/api/ai/agent-sessions/{id}",
     "/api/rag/search",
     "/api/rag/evidence/{id}",
     "/api/agent-logs/upload",
     "/api/agent-logs/{id}",
     "/api/as-tickets",
     "/api/as-tickets/{id}",
-    "/api/as-tickets/{id}/remote-support-requests",
-    "/api/as-tickets/{id}/feedback",
     "/api/admin/dashboard",
     "/api/admin/audit-logs/recent",
+    "/api/admin/build-graph-layouts/default",
     "/api/admin/agent-sessions",
     "/api/admin/agent-sessions/{id}",
     "/api/admin/tool-invocations",
     "/api/admin/tool-invocations/{id}",
+    "/api/admin/rag-evidence",
     "/api/admin/rag-evidence/{id}",
     "/api/admin/as-tickets",
     "/api/admin/as-tickets/{id}",
@@ -71,48 +71,40 @@ POST_JSON_REQUEST_SCHEMAS = {
     "/api/auth/exchange": "AuthExchangeRequest",
     "/api/requirements/parse": "RequirementParseRequest",
     "/api/builds/recommend": "BuildRecommendRequest",
+    "/api/builds/from-chat": "BuildSaveFromChatRequest",
     "/api/builds/{id}/change-part": "ChangePartRequest",
+    "/api/ai/build-chat": "AiBuildChatRequest",
     "/api/price-alerts": "PriceAlertCreateRequest",
-    "/api/admin/price-jobs/run": "PriceJobRunRequest",
-    "/api/agent/devices/register": "PcAgentRegisterRequest",
-    "/api/agent/consents": "PcAgentConsentRequest",
-    "/api/agent/heartbeat": "PcAgentHeartbeatRequest",
-    "/api/agent/sessions": "AgentSessionCreateRequest",
+    "/api/ai/agent-sessions": "AgentSessionCreateRequest",
     "/api/as-tickets": "AsTicketCreateRequest",
-    "/api/as-tickets/{id}/remote-support-requests": "RemoteSupportRequestCreateRequest",
-    "/api/as-tickets/{id}/feedback": "SupportFeedbackRequest",
+}
+
+PUT_JSON_REQUEST_SCHEMAS = {
+    "/api/quote-drafts/current/apply-ai-build": "AiBuildApplyRequest",
+    "/api/admin/build-graph-layouts/default": "BuildGraphLayoutSaveRequest",
 }
 
 REQUIRED_SCHEMAS = [
     "ErrorResponse",
     "AuthResponse",
     "ChangePartRequest",
+    "BuildSaveFromChatRequest",
+    "BuildSaveFromChatResponse",
+    "AiBuildChatRequest",
+    "AiBuildChatResponse",
+    "AiBuildApplyRequest",
+    "QuoteDraftDto",
+    "BuildGraphLayoutDto",
+    "BuildGraphLayoutSaveRequest",
+    "BuildGraphResolveRequest",
+    "BuildGraphResolveResponse",
     "ToolCheckRequest",
     "ToolCheckResponse",
     "AgentLogUploadRequest",
-    "PcAgentRegisterRequest",
-    "PcAgentRegisterResponse",
-    "PcAgentConsentRequest",
-    "PcAgentConsentResponse",
-    "PcAgentHeartbeatRequest",
-    "PcAgentHeartbeatResponse",
-    "PcAgentLogUploadRequest",
-    "PcAgentLogUploadResponse",
-    "SupportDecision",
-    "SafetyAdviceLevel",
-    "DiagnosticAccuracy",
-    "SafetyNoticeDto",
-    "IncidentWindowDto",
-    "LogSummaryDto",
-    "SupportRoutingDto",
-    "AiDiagnosisRequestDto",
-    "AsTicketDto",
-    "RemoteSupportRequestCreateRequest",
-    "SupportFeedbackRequest",
-    "AdminAsTicketUpdateRequest",
     "AgentSessionDto",
     "ToolInvocationDto",
     "RagEvidenceDto",
+    "AdminRagEvidenceDto",
 ]
 
 REQUIRED_ERROR_CODES = {
@@ -144,6 +136,18 @@ def request_schema_ref(operation: dict, content_type: str = "application/json") 
     return ref_name(schema)
 
 
+def validate_json_request_schemas(
+    paths: dict, method: str, request_schemas: dict[str, str]
+) -> None:
+    for path, schema_name in request_schemas.items():
+        operation = paths.get(path, {}).get(method)
+        if not operation:
+            raise SystemExit(f"Missing {method.upper()} operation for {path}")
+
+        if request_schema_ref(operation) != schema_name:
+            raise SystemExit(f"{path} must reference {schema_name}")
+
+
 def main() -> None:
     with OPENAPI_PATH.open(encoding="utf-8") as file:
         spec = yaml.safe_load(file)
@@ -167,13 +171,8 @@ def main() -> None:
     if missing_schemas:
         raise SystemExit(f"Missing OpenAPI schemas: {', '.join(missing_schemas)}")
 
-    for path, schema_name in POST_JSON_REQUEST_SCHEMAS.items():
-        post = paths.get(path, {}).get("post")
-        if not post:
-            raise SystemExit(f"Missing POST operation for {path}")
-
-        if request_schema_ref(post) != schema_name:
-            raise SystemExit(f"{path} must reference {schema_name}")
+    validate_json_request_schemas(paths, "post", POST_JSON_REQUEST_SCHEMAS)
+    validate_json_request_schemas(paths, "put", PUT_JSON_REQUEST_SCHEMAS)
 
     for path in TOOL_PATHS:
         post = paths.get(path, {}).get("post")
@@ -187,128 +186,6 @@ def main() -> None:
     upload_schema = request_schema_ref(upload_post, "multipart/form-data")
     if upload_schema != "AgentLogUploadRequest":
         raise SystemExit("/api/agent-logs/upload must use multipart/form-data AgentLogUploadRequest")
-
-    agent_security = spec.get("components", {}).get("securitySchemes", {})
-    if "agentBearerAuth" not in agent_security:
-        raise SystemExit("OpenAPI must define agentBearerAuth for PC Agent token endpoints")
-    for path in ["/api/agent/consents", "/api/agent/heartbeat", "/api/agent/log-uploads"]:
-        post = paths[path].get("post", {})
-        if {"agentBearerAuth": []} not in post.get("security", []):
-            raise SystemExit(f"{path} must use agentBearerAuth")
-        parameters = post.get("parameters", [])
-        if not any(parameter.get("$ref") == "#/components/parameters/IdempotencyKey" for parameter in parameters):
-            raise SystemExit(f"{path} must declare Idempotency-Key header")
-    register_security = paths["/api/agent/devices/register"].get("post", {}).get("security")
-    if register_security != []:
-        raise SystemExit("/api/agent/devices/register must not require bearer auth")
-    agent_upload_post = paths["/api/agent/log-uploads"].get("post", {})
-    agent_upload_schema = request_schema_ref(agent_upload_post, "multipart/form-data")
-    if agent_upload_schema != "PcAgentLogUploadRequest":
-        raise SystemExit("/api/agent/log-uploads must use multipart/form-data PcAgentLogUploadRequest")
-
-    consent_types = set(
-        schemas["PcAgentConsentRequest"]
-        .get("properties", {})
-        .get("consentType", {})
-        .get("enum", [])
-    )
-    required_consent_types = {
-        "SERVER_UPLOAD",
-        "REMOTE_CONNECTION",
-        "REMOTE_FULL_CONTROL",
-        "HIGH_RISK_REMOTE_ACTION",
-    }
-    missing_consent_types = required_consent_types - consent_types
-    if missing_consent_types:
-        raise SystemExit(f"PcAgentConsentRequest missing consent types: {', '.join(sorted(missing_consent_types))}")
-
-    admin_ticket_patch = paths["/api/admin/as-tickets/{id}"].get("patch", {})
-    if request_schema_ref(admin_ticket_patch) != "AdminAsTicketUpdateRequest":
-        raise SystemExit("/api/admin/as-tickets/{id} PATCH must reference AdminAsTicketUpdateRequest")
-
-    as_ticket_properties = schemas["AsTicketDto"].get("properties", {})
-    for field in [
-        "analysisStatus",
-        "reviewStatus",
-        "supportDecision",
-        "riskLevel",
-        "autoResponseAllowed",
-        "adminNote",
-        "remoteSupportLink",
-        "remoteSupportStatus",
-        "visitSupportRequired",
-        "visitSupportStatus",
-        "visitPreferredDate",
-        "visitTimeSlot",
-        "safetyAdviceLevel",
-        "safetyNotices",
-        "feedbackRating",
-        "feedbackComment",
-        "feedbackCreatedAt",
-        "diagnosticAccuracy",
-    ]:
-        if field not in as_ticket_properties:
-            raise SystemExit(f"AsTicketDto missing {field}")
-
-    admin_ticket_update_properties = schemas["AdminAsTicketUpdateRequest"].get("properties", {})
-    for field in [
-        "status",
-        "assignedAdminId",
-        "adminNote",
-        "supportDecision",
-        "reviewStatus",
-        "riskLevel",
-        "diagnosticAccuracy",
-        "autoResponseAllowed",
-        "remoteSupportLink",
-        "visitSupportRequired",
-        "visitPreferredDate",
-        "visitTimeSlot",
-    ]:
-        if field not in admin_ticket_update_properties:
-            raise SystemExit(f"AdminAsTicketUpdateRequest missing {field}")
-
-    final_support_decisions = {
-        "SELF_SOLVABLE",
-        "REMOTE_POSSIBLE",
-        "VISIT_REQUIRED",
-        "REPAIR_OR_REPLACE",
-        "NEEDS_MORE_INFO",
-        "MONITOR_ONLY",
-        "UNSUPPORTED",
-    }
-    support_decision_enum = set(schemas["SupportDecision"].get("enum", []))
-    if support_decision_enum != final_support_decisions:
-        raise SystemExit("SupportDecision enum must match FINAL_SUPPORT_SCENARIOS")
-    ui_labels = schemas["SupportDecision"].get("x-ui-labels", {})
-    missing_ui_labels = final_support_decisions - set(ui_labels)
-    if missing_ui_labels:
-        raise SystemExit(f"SupportDecision missing UI labels: {', '.join(sorted(missing_ui_labels))}")
-    for schema_name in ["AsTicketDto", "AdminAsTicketUpdateRequest", "PcAgentLogUploadResponse"]:
-        support_decision_schema = schemas[schema_name].get("properties", {}).get("supportDecision", {})
-        if support_decision_schema.get("$ref") != "#/components/schemas/SupportDecision":
-            raise SystemExit(f"{schema_name}.supportDecision must reference SupportDecision")
-    for field, schema_name in [
-        ("incidentWindow", "IncidentWindowDto"),
-        ("logSummary", "LogSummaryDto"),
-        ("supportRouting", "SupportRoutingDto"),
-    ]:
-        as_ticket_field = as_ticket_properties.get(field, {})
-        refs = [item.get("$ref") for item in as_ticket_field.get("allOf", [])]
-        if f"#/components/schemas/{schema_name}" not in refs:
-            raise SystemExit(f"AsTicketDto.{field} must reference {schema_name}")
-    if schemas["LogSummaryDto"]["properties"]["rawSamples"].get("maxItems") != 20:
-        raise SystemExit("LogSummaryDto.rawSamples must be limited to 20")
-    if schemas["AiDiagnosisRequestDto"]["properties"]["rawSamples"].get("maxItems") != 20:
-        raise SystemExit("AiDiagnosisRequestDto.rawSamples must be limited to 20")
-    ai_required = set(schemas["AiDiagnosisRequestDto"].get("required", []))
-    if "supportRouting" not in ai_required:
-        raise SystemExit("AiDiagnosisRequestDto must require supportRouting")
-
-    support_routing_properties = schemas["SupportRoutingDto"].get("properties", {})
-    for field in ["safetyAdviceLevel", "safetyNotices", "allowAutoResponse", "adminApprovalRequired"]:
-        if field not in support_routing_properties:
-            raise SystemExit(f"SupportRoutingDto missing {field}")
 
     auth_properties = schemas["AuthResponse"].get("properties", {})
     for field in ["accessToken", "refreshToken", "user"]:
