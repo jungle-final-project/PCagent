@@ -571,6 +571,7 @@ class PcAgentAsServiceTest {
                 any(String.class),
                 eq(20L),
                 eq(200L),
+                eq("[PC진단] 디스플레이 드라이버"),
                 eq(symptom),
                 eq("REMOTE_POSSIBLE"),
                 eq("MEDIUM"),
@@ -602,6 +603,8 @@ class PcAgentAsServiceTest {
         assertThat(response.get("uploadJobId")).isEqualTo("upload-job-public-id");
         assertThat(response.get("logUploadId")).isEqualTo("log-upload-public-id");
         assertThat(response.get("ticketId")).isEqualTo("ticket-public-id");
+        assertThat(response.get("ticketTitle")).isEqualTo("[PC진단] 디스플레이 드라이버");
+        assertThat(response.get("ticketCreated")).isEqualTo(true);
         assertThat(response.get("analysisStatus")).isEqualTo("RULE_READY");
         assertThat(response.get("reviewStatus")).isEqualTo("REQUIRED");
         assertThat(response.get("supportDecision")).isEqualTo("REMOTE_POSSIBLE");
@@ -630,6 +633,7 @@ class PcAgentAsServiceTest {
                 any(String.class),
                 eq(20L),
                 eq(200L),
+                eq("[PC진단] 디스플레이 드라이버"),
                 eq(symptom),
                 eq("REMOTE_POSSIBLE"),
                 eq("MEDIUM"),
@@ -643,6 +647,155 @@ class PcAgentAsServiceTest {
                 eq("NONE"),
                 any(String.class)
         );
+    }
+
+    @Test
+    void uploadLogsSkipsTicketForNormalDiagnosisButKeepsUploadSuccess() {
+        when(jdbcTemplate.queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L)))
+                .thenReturn(1);
+        when(jdbcTemplate.queryForMap(contains("INSERT INTO agent_upload_jobs"), eq(10L), eq("normal-upload-key"), any(), any()))
+                .thenReturn(MockData.map(
+                        "upload_job_internal_id", 100L,
+                        "upload_job_id", "upload-job-public-id",
+                        "status", "UPLOADED"
+                ));
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO agent_log_uploads"),
+                eq(20L),
+                eq(10L),
+                eq(100L),
+                eq(20),
+                eq("agent-log.jsonl.gz"),
+                any(Long.class),
+                eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
+                any(String.class),
+                any(String.class),
+                any(Timestamp.class),
+                any(Timestamp.class)
+        )).thenReturn(MockData.map(
+                "log_upload_internal_id", 200L,
+                "log_upload_id", "log-upload-public-id",
+                "status", "UPLOADED",
+                "file_name", "agent-log.jsonl.gz",
+                "file_size", 65L,
+                "range_minutes", 20,
+                "delete_after", Instant.parse("2026-08-01T00:00:00Z")
+        ));
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO agent_log_bundles"),
+                eq(100L),
+                eq(200L),
+                eq(1),
+                eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
+                any(String.class),
+                any(Long.class),
+                eq(Timestamp.from(Instant.parse("2026-08-01T00:00:00Z")))
+        )).thenReturn(MockData.map("log_bundle_id", "bundle-public-id"));
+
+        Map<String, Object> response = service.uploadLogs(
+                AGENT,
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(singleRawLog())),
+                MockData.map("symptomType", "NORMAL", "symptom", "정상 점검"),
+                "normal-upload-key"
+        );
+
+        assertThat(response.get("uploadJobId")).isEqualTo("upload-job-public-id");
+        assertThat(response.get("logUploadId")).isEqualTo("log-upload-public-id");
+        assertThat(response.get("ticketId")).isNull();
+        assertThat(response.get("ticketCreated")).isEqualTo(false);
+        assertThat(response.get("ticketCreationSkipped")).isEqualTo(true);
+        assertThat(response.get("ticketSkipReason")).isEqualTo("NO_ISSUE_DETECTED");
+        assertThat(response.get("supportDecision")).isEqualTo("MONITOR_ONLY");
+        assertThat(response.get("riskLevel")).isEqualTo("LOW");
+        assertThat(response.get("status")).isEqualTo("UPLOADED");
+        assertThat(response.get("analysisStatus")).isEqualTo("RULE_READY");
+        assertThat(response.get("reviewStatus")).isEqualTo("NOT_REQUIRED");
+
+        verify(jdbcTemplate, never()).queryForMap(contains("INSERT INTO as_tickets"), any(), any(), any());
+    }
+
+    @Test
+    void uploadLogsCreatesNeedsMoreInfoTicketForConsultativeResult() {
+        String symptom = "공유기 문제인지 잘 모르겠습니다.";
+        when(jdbcTemplate.queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L)))
+                .thenReturn(1);
+        when(jdbcTemplate.queryForMap(contains("INSERT INTO agent_upload_jobs"), eq(10L), eq("consult-upload-key"), any(), any()))
+                .thenReturn(MockData.map(
+                        "upload_job_internal_id", 100L,
+                        "upload_job_id", "upload-job-public-id",
+                        "status", "UPLOADED"
+                ));
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO agent_log_uploads"),
+                eq(20L),
+                eq(10L),
+                eq(100L),
+                eq(20),
+                eq("agent-log.jsonl.gz"),
+                any(Long.class),
+                eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
+                any(String.class),
+                any(String.class),
+                any(Timestamp.class),
+                any(Timestamp.class)
+        )).thenReturn(MockData.map(
+                "log_upload_internal_id", 200L,
+                "log_upload_id", "log-upload-public-id",
+                "status", "UPLOADED",
+                "file_name", "agent-log.jsonl.gz",
+                "file_size", 65L,
+                "range_minutes", 20,
+                "delete_after", Instant.parse("2026-08-01T00:00:00Z")
+        ));
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO agent_log_bundles"),
+                eq(100L),
+                eq(200L),
+                eq(1),
+                eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
+                any(String.class),
+                any(Long.class),
+                eq(Timestamp.from(Instant.parse("2026-08-01T00:00:00Z")))
+        )).thenReturn(MockData.map("log_bundle_id", "bundle-public-id"));
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO as_tickets"),
+                any(String.class),
+                eq(20L),
+                eq(200L),
+                eq("[PC진단] 상담 필요"),
+                eq(symptom),
+                eq("NEEDS_MORE_INFO"),
+                eq("MEDIUM"),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                any(String.class),
+                eq("NONE"),
+                any(String.class)
+        )).thenReturn(MockData.map(
+                "ticket_id", "ticket-public-id",
+                "status", "OPEN",
+                "analysis_status", "RULE_READY",
+                "review_status", "REQUIRED",
+                "support_decision", "NEEDS_MORE_INFO",
+                "risk_level", "MEDIUM"
+        ));
+
+        Map<String, Object> response = service.uploadLogs(
+                AGENT,
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(singleRawLog())),
+                MockData.map("symptomType", "ISP_ROUTER", "symptom", symptom),
+                "consult-upload-key"
+        );
+
+        assertThat(response.get("ticketId")).isEqualTo("ticket-public-id");
+        assertThat(response.get("ticketTitle")).isEqualTo("[PC진단] 상담 필요");
+        assertThat(response.get("ticketCreated")).isEqualTo(true);
+        assertThat(response.get("supportDecision")).isEqualTo("NEEDS_MORE_INFO");
+        assertThat(response.get("reviewStatus")).isEqualTo("REQUIRED");
     }
 
     @Test

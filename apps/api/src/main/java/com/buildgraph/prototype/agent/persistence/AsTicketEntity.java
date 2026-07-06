@@ -19,6 +19,9 @@ public class AsTicketEntity extends PublicIdEntity {
     @Column(name = "assigned_admin_id")
     private Long assignedAdminId;
 
+    @Column(name = "title")
+    private String title;
+
     @Column(name = "symptom", nullable = false)
     private String symptom;
 

@@ -54,6 +54,14 @@ final class PcAgentLogAnalyzer {
             "UNSUPPORTED_ILLEGAL_SOFTWARE",
             "UNSUPPORTED_PHYSICAL_DAMAGE"
     );
+    private static final Set<String> NORMAL_SYMPTOMS = Set.of(
+            "NORMAL",
+            "NO_ISSUE",
+            "HEALTHY",
+            "OK",
+            "LOCAL_NORMAL",
+            "PC_NORMAL"
+    );
     private static final Pattern WINDOWS_PATH = Pattern.compile("(?i)[a-z]:\\\\[^\\s\"']+");
     private static final Pattern UNIX_USER_PATH = Pattern.compile("(?i)/(users|home)/[^\\s\"']+");
     private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
@@ -365,7 +373,11 @@ final class PcAgentLogAnalyzer {
         List<String> visitReasons = new ArrayList<>();
         List<String> blockingFactors = new ArrayList<>();
 
-        if (UNSUPPORTED_SYMPTOMS.contains(symptomType) || unsupportedText(symptom)) {
+        if (NORMAL_SYMPTOMS.contains(symptomType) && reasonCodes.isEmpty()) {
+            decision = "MONITOR_ONLY";
+            confidence = "HIGH";
+            reasons.add("NO_ISSUE_DETECTED");
+        } else if (UNSUPPORTED_SYMPTOMS.contains(symptomType) || unsupportedText(symptom)) {
             decision = "NEEDS_MORE_INFO";
             confidence = "HIGH";
             addIfNotNull(reasons, unsupportedReasonFor(symptomType, symptom));
@@ -432,6 +444,9 @@ final class PcAgentLogAnalyzer {
     private static String routingRiskLevel(String decision, String confidence, String safetyAdviceLevel) {
         if ("STOP_USE_UNTIL_REVIEW".equals(safetyAdviceLevel) || "VISIT_REQUIRED".equals(decision)) {
             return "HIGH";
+        }
+        if ("MONITOR_ONLY".equals(decision) || "SELF_SOLVABLE".equals(decision)) {
+            return "LOW";
         }
         if ("HIGH".equals(confidence)) {
             return "MEDIUM";

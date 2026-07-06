@@ -74,6 +74,20 @@ class PcAgentLogAnalyzerTest {
     }
 
     @Test
+    void normalDiagnosisWithoutRuleSignalsRoutesToMonitorOnly() {
+        PcAgentLogAnalyzer.AnalysisResult result = analyze(
+                "NORMAL",
+                "정상 점검",
+                rawLog(1, "2026-07-02T09:55:00Z", "AGENT_EVENT", "health check ok")
+        );
+
+        assertThat(result.supportRouting().get("recommendedDecision")).isEqualTo("MONITOR_ONLY");
+        assertThat(result.supportRouting().get("supportDecision")).isEqualTo("MONITOR_ONLY");
+        assertThat(result.supportRouting().get("riskLevel")).isEqualTo("LOW");
+        assertThat(result.supportRouting().get("reasonCodes").toString()).contains("NO_ISSUE_DETECTED");
+    }
+
+    @Test
     void storageMemoryRoutesToVisitWithSafetyAdviceWhenDiskFailureSignalExists() {
         PcAgentLogAnalyzer.AnalysisResult result = analyze(
                 "REMOTE_STORAGE_MEMORY",

@@ -1,0 +1,2 @@
+ALTER TABLE as_tickets
+  ADD COLUMN IF NOT EXISTS title VARCHAR(255);

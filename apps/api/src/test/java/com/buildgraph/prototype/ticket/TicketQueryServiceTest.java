@@ -64,6 +64,39 @@ class TicketQueryServiceTest {
     }
 
     @Test
+    void adminTicketLookupIncludesPcDiagnosisRoutingFields() {
+        when(jdbcTemplate.queryForList(contains("SELECT t.public_id::text AS id"), eq("ticket-public-id")))
+                .thenReturn(List.of(MockData.map(
+                        "id", "ticket-public-id",
+                        "title", "[PC진단] 디스플레이 드라이버",
+                        "status", "OPEN",
+                        "analysis_status", "RULE_READY",
+                        "review_status", "REQUIRED",
+                        "support_decision", "REMOTE_POSSIBLE",
+                        "risk_level", "MEDIUM",
+                        "auto_response_allowed", false,
+                        "symptom", "GPU temperature spike",
+                        "log_upload_id", "log-upload-public-id",
+                        "assigned_admin_id", "admin-public-id",
+                        "cause_candidates", "[]",
+                        "upgrade_candidates", "[]",
+                        "incident_window", "{\"symptomType\":\"REMOTE_DRIVER_OS\"}",
+                        "log_summary", "{\"summaryText\":\"driver reset\",\"rawSamples\":[{\"refId\":\"raw-1\"}]}",
+                        "support_routing", "{\"recommendedDecision\":\"REMOTE_POSSIBLE\",\"riskLevel\":\"MEDIUM\"}",
+                        "log_summary_text", "driver reset",
+                        "admin_note", "Rule diagnosis complete."
+                )));
+
+        Map<String, Object> response = service.ticket("ticket-public-id");
+
+        assertThat(response.get("title")).isEqualTo("[PC진단] 디스플레이 드라이버");
+        assertThat(response.get("supportDecision")).isEqualTo("REMOTE_POSSIBLE");
+        assertThat(response.get("riskLevel")).isEqualTo("MEDIUM");
+        assertThat(response.get("logSummary")).isInstanceOf(Map.class);
+        assertThat(response.get("supportRouting")).isInstanceOf(Map.class);
+    }
+
+    @Test
     void updateStoresApprovedRemoteDecisionLinkAndAuditLog() {
         when(jdbcTemplate.queryForList(contains("FROM as_tickets"), eq("ticket-public-id")))
                 .thenReturn(List.of(MockData.map(

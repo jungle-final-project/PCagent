@@ -751,6 +751,7 @@ public class TicketQueryService {
     private String ticketSql() {
         return """
                 SELECT t.public_id::text AS id,
+                       COALESCE(t.title, t.symptom) AS title,
                        t.status,
                        t.analysis_status,
                        t.review_status,
@@ -809,6 +810,7 @@ public class TicketQueryService {
     private Map<String, Object> ticketMap(Map<String, Object> row) {
         return MockData.map(
                 "id", DbValueMapper.string(row, "id"),
+                "title", DbValueMapper.string(row, "title"),
                 "status", DbValueMapper.string(row, "status"),
                 "analysisStatus", DbValueMapper.string(row, "analysis_status"),
                 "reviewStatus", DbValueMapper.string(row, "review_status"),

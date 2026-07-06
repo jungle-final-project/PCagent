@@ -624,7 +624,8 @@ public class PcAgentAsService {
                 rangeMinutes,
                 schemaVersion,
                 symptom,
-                incidentWindow
+                incidentWindow,
+                analysis
         );
         if (existingUpload != null) {
             return existingUpload;
@@ -724,9 +725,30 @@ public class PcAgentAsService {
                 gzip.compressedBytes(),
                 timestampParameter(logUpload.get("delete_after"))
         );
-        String ticketPublicId = UUID.randomUUID().toString();
-        Map<String, Object> logSummary = PcAgentLogAnalyzer.withTicketId(analysis.logSummary(), ticketPublicId);
         Map<String, Object> supportRouting = analysis.supportRouting();
+        String recommendedDecision = string(supportRouting, "recommendedDecision", "NEEDS_MORE_INFO");
+        String riskLevel = riskLevelForRouting(recommendedDecision, supportRouting);
+        String safetyAdviceLevel = string(supportRouting, "safetyAdviceLevel", "NONE");
+        Object safetyNotices = supportRouting.getOrDefault("safetyNotices", List.of());
+        if (!shouldCreateTicket(recommendedDecision)) {
+            return noTicketUploadResponse(
+                    uploadJob,
+                    logUpload,
+                    incidentWindow,
+                    supportRouting,
+                    analysis.logSummary(),
+                    recommendedDecision,
+                    riskLevel,
+                    safetyAdviceLevel,
+                    safetyNotices,
+                    rangeMinutes,
+                    deleteAfter
+            );
+        }
+
+        String ticketPublicId = UUID.randomUUID().toString();
+        String ticketTitle = ticketTitleFor(incidentWindow.symptomType(), supportRouting);
+        Map<String, Object> logSummary = PcAgentLogAnalyzer.withTicketId(analysis.logSummary(), ticketPublicId);
         @SuppressWarnings("unchecked")
         Map<String, Object> userSymptom = (Map<String, Object>) logSummary.get("userSymptom");
         Map<String, Object> aiDiagnosisRequest = PcAgentLogAnalyzer.aiDiagnosisRequest(
@@ -735,15 +757,12 @@ public class PcAgentAsService {
                 logSummary,
                 supportRouting
         );
-        String recommendedDecision = string(supportRouting, "recommendedDecision", "NEEDS_MORE_INFO");
-        String riskLevel = riskLevelForRouting(recommendedDecision, supportRouting);
-        String safetyAdviceLevel = string(supportRouting, "safetyAdviceLevel", "NONE");
-        Object safetyNotices = supportRouting.getOrDefault("safetyNotices", List.of());
         Map<String, Object> ticket = jdbcTemplate.queryForMap("""
                 INSERT INTO as_tickets (
                   public_id,
                   user_id,
                   log_upload_id,
+                  title,
                   symptom,
                   status,
                   analysis_status,
@@ -764,6 +783,7 @@ public class PcAgentAsService {
                 )
                 VALUES (
                   ?::uuid,
+                  ?,
                   ?,
                   ?,
                   ?,
@@ -794,6 +814,7 @@ public class PcAgentAsService {
                 ticketPublicId,
                 principal.userInternalId(),
                 logUploadInternalId,
+                ticketTitle,
                 symptom,
                 recommendedDecision,
                 riskLevel,
@@ -812,6 +833,10 @@ public class PcAgentAsService {
                 "uploadJobId", DbValueMapper.string(uploadJob, "upload_job_id"),
                 "logUploadId", DbValueMapper.string(logUpload, "log_upload_id"),
                 "ticketId", DbValueMapper.string(ticket, "ticket_id"),
+                "ticketTitle", ticketTitle,
+                "ticketCreated", true,
+                "ticketCreationSkipped", false,
+                "ticketSkipReason", null,
                 "status", DbValueMapper.string(ticket, "status"),
                 "analysisStatus", DbValueMapper.string(ticket, "analysis_status"),
                 "reviewStatus", DbValueMapper.string(ticket, "review_status"),
@@ -1063,12 +1088,14 @@ public class PcAgentAsService {
             int rangeMinutes,
             int schemaVersion,
             String symptom,
-            PcAgentLogAnalyzer.IncidentWindow incidentWindow
+            PcAgentLogAnalyzer.IncidentWindow incidentWindow,
+            PcAgentLogAnalyzer.AnalysisResult analysis
     ) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT uj.public_id::text AS upload_job_id,
                        lu.public_id::text AS log_upload_id,
                        t.public_id::text AS ticket_id,
+                       t.title,
                        t.status,
                        t.analysis_status,
                        t.review_status,
@@ -1088,7 +1115,7 @@ public class PcAgentAsService {
                 FROM agent_upload_jobs uj
                 JOIN agent_log_uploads lu ON lu.upload_job_id = uj.id
                 JOIN agent_log_bundles alb ON alb.upload_job_id = uj.id
-                JOIN as_tickets t ON t.log_upload_id = lu.id
+                LEFT JOIN as_tickets t ON t.log_upload_id = lu.id
                 WHERE uj.device_id = ?
                   AND uj.idempotency_key = ?
                 ORDER BY uj.id DESC
@@ -1102,17 +1129,48 @@ public class PcAgentAsService {
         boolean sameRequest = rangeMinutes == integer(row, "range_minutes", -1)
                 && schemaVersion == integer(row, "schema_version", -1)
                 && gzipSha256.equals(DbValueMapper.string(row, "sha256"))
-                && symptom.equals(DbValueMapper.string(row, "symptom"))
+                && sameSymptom(symptom, DbValueMapper.string(row, "symptom"))
                 && incidentWindow.startedAt().equals(instantValue(row, "range_started_at"))
                 && incidentWindow.endedAt().equals(instantValue(row, "range_ended_at"));
         if (!sameRequest) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Idempotency-Key was already used with a different upload request.");
         }
 
+        if (DbValueMapper.string(row, "ticket_id") == null) {
+            Map<String, Object> supportRouting = analysis.supportRouting();
+            String recommendedDecision = string(supportRouting, "recommendedDecision", "MONITOR_ONLY");
+            String riskLevel = riskLevelForRouting(recommendedDecision, supportRouting);
+            return MockData.map(
+                    "uploadJobId", DbValueMapper.string(row, "upload_job_id"),
+                    "logUploadId", DbValueMapper.string(row, "log_upload_id"),
+                    "ticketId", null,
+                    "ticketTitle", null,
+                    "ticketCreated", false,
+                    "ticketCreationSkipped", true,
+                    "ticketSkipReason", ticketSkipReason(recommendedDecision),
+                    "status", "UPLOADED",
+                    "analysisStatus", "RULE_READY",
+                    "reviewStatus", "NOT_REQUIRED",
+                    "supportDecision", recommendedDecision,
+                    "riskLevel", riskLevel,
+                    "safetyAdviceLevel", string(supportRouting, "safetyAdviceLevel", "NONE"),
+                    "safetyNotices", supportRouting.getOrDefault("safetyNotices", List.of()),
+                    "rangeMinutes", rangeMinutes,
+                    "incidentWindow", incidentWindow.toMap(),
+                    "supportRouting", supportRouting,
+                    "rawSamplesCount", rawSamplesCount(analysis.logSummary()),
+                    "deleteAfter", DbValueMapper.timestamp(row, "delete_after")
+            );
+        }
+
         return MockData.map(
                 "uploadJobId", DbValueMapper.string(row, "upload_job_id"),
                 "logUploadId", DbValueMapper.string(row, "log_upload_id"),
                 "ticketId", DbValueMapper.string(row, "ticket_id"),
+                "ticketTitle", DbValueMapper.string(row, "title"),
+                "ticketCreated", true,
+                "ticketCreationSkipped", false,
+                "ticketSkipReason", null,
                 "status", DbValueMapper.string(row, "status"),
                 "analysisStatus", DbValueMapper.string(row, "analysis_status"),
                 "reviewStatus", DbValueMapper.string(row, "review_status"),
@@ -1124,6 +1182,54 @@ public class PcAgentAsService {
                 "rawSamplesCount", rawSamplesCount(DbValueMapper.json(row, "log_summary", Map.of())),
                 "deleteAfter", DbValueMapper.timestamp(row, "delete_after")
         );
+    }
+
+    private static Map<String, Object> noTicketUploadResponse(
+            Map<String, Object> uploadJob,
+            Map<String, Object> logUpload,
+            PcAgentLogAnalyzer.IncidentWindow incidentWindow,
+            Map<String, Object> supportRouting,
+            Map<String, Object> logSummary,
+            String recommendedDecision,
+            String riskLevel,
+            String safetyAdviceLevel,
+            Object safetyNotices,
+            int rangeMinutes,
+            Object deleteAfter
+    ) {
+        return MockData.map(
+                "uploadJobId", DbValueMapper.string(uploadJob, "upload_job_id"),
+                "logUploadId", DbValueMapper.string(logUpload, "log_upload_id"),
+                "ticketId", null,
+                "ticketTitle", null,
+                "ticketCreated", false,
+                "ticketCreationSkipped", true,
+                "ticketSkipReason", ticketSkipReason(recommendedDecision),
+                "status", DbValueMapper.string(logUpload, "status"),
+                "analysisStatus", "RULE_READY",
+                "reviewStatus", "NOT_REQUIRED",
+                "supportDecision", recommendedDecision,
+                "riskLevel", riskLevel,
+                "safetyAdviceLevel", safetyAdviceLevel,
+                "safetyNotices", safetyNotices,
+                "rangeMinutes", rangeMinutes,
+                "incidentWindow", incidentWindow.toMap(),
+                "supportRouting", supportRouting,
+                "rawSamplesCount", rawSamplesCount(logSummary),
+                "deleteAfter", deleteAfter
+        );
+    }
+
+    private static boolean shouldCreateTicket(String recommendedDecision) {
+        return !"MONITOR_ONLY".equals(recommendedDecision);
+    }
+
+    private static String ticketSkipReason(String recommendedDecision) {
+        return "MONITOR_ONLY".equals(recommendedDecision) ? "NO_ISSUE_DETECTED" : null;
+    }
+
+    private static boolean sameSymptom(String requestedSymptom, String storedSymptom) {
+        return storedSymptom == null || requestedSymptom.equals(storedSymptom);
     }
 
     private static List<Map<String, Object>> causeCandidatesFrom(Map<String, Object> supportRouting) {
@@ -1152,11 +1258,42 @@ public class PcAgentAsService {
         if (Set.of("VISIT_REQUIRED", "REPAIR_OR_REPLACE").contains(recommendedDecision)) {
             return "HIGH";
         }
-        if ("UNSUPPORTED".equals(recommendedDecision)) {
+        if (Set.of("UNSUPPORTED", "MONITOR_ONLY", "SELF_SOLVABLE").contains(recommendedDecision)) {
             return "LOW";
         }
         String confidence = string(supportRouting, "confidence", "MEDIUM");
         return "HIGH".equals(confidence) ? "MEDIUM" : "LOW".equals(confidence) ? "LOW" : "MEDIUM";
+    }
+
+    private static String ticketTitleFor(String symptomType, Map<String, Object> supportRouting) {
+        Object reasonCodesValue = supportRouting.get("reasonCodes");
+        if (reasonCodesValue instanceof List<?> reasonCodes && !reasonCodes.isEmpty()) {
+            return "[PC진단] " + problemTypeFor(String.valueOf(reasonCodes.get(0)));
+        }
+        return "[PC진단] " + problemTypeFor(symptomType);
+    }
+
+    private static String problemTypeFor(String code) {
+        return switch (code) {
+            case "REMOTE_DRIVER_OS", "DRIVER_CRASH_LOG" -> "디스플레이 드라이버";
+            case "REMOTE_STORAGE_MEMORY", "VISIT_DISK_FAILURE", "STORAGE_IO_BOTTLENECK" -> "저장장치/메모리";
+            case "VISIT_POWER_SHUTDOWN", "PSU_POWER_EVENT" -> "전원/재부팅";
+            case "VISIT_FAN_THERMAL", "GPU_THERMAL_THROTTLE" -> "발열/팬";
+            case "REMOTE_LOCAL_NETWORK", "LOCAL_NETWORK_CONFIG" -> "네트워크";
+            case "REMOTE_APP_LAUNCHER", "APP_SPECIFIC_FAILURE" -> "앱 실행";
+            case "REMOTE_STARTUP_SERVICE", "BACKGROUND_SERVICE_PRESSURE" -> "시작 프로그램/서비스";
+            case "REMOTE_AGENT", "AGENT_INSTALL_OR_UPLOAD_FAILURE" -> "PC Agent";
+            case "VISIT_WHEA_BSOD", "BSOD_SIGNATURE" -> "블루스크린/하드웨어";
+            case "UNSUPPORTED_CATEGORY",
+                    "UNSUPPORTED_GAME_FPS_TUNING",
+                    "UNSUPPORTED_OVERCLOCK_STABILITY",
+                    "UNSUPPORTED_ISP_ROUTER",
+                    "UNSUPPORTED_PERIPHERAL_PRINTER",
+                    "UNSUPPORTED_DATA_RECOVERY",
+                    "UNSUPPORTED_ILLEGAL_SOFTWARE",
+                    "UNSUPPORTED_PHYSICAL_DAMAGE" -> "상담 필요";
+            default -> "일반 진단";
+        };
     }
 
     private static int rawSamplesCount(Object logSummary) {
