@@ -196,6 +196,32 @@ public class TicketQueryService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "AS 티켓을 찾을 수 없습니다."));
     }
 
+    public LogBundleDownload logBundle(String ticketId) {
+        return jdbcTemplate.queryForList("""
+                        SELECT lu.file_name,
+                               alb.sha256,
+                               alb.size_bytes,
+                               alb.original_gzip_bytes
+                        FROM as_tickets t
+                        JOIN agent_log_uploads lu ON lu.id = t.log_upload_id
+                        JOIN agent_log_bundles alb ON alb.log_upload_id = lu.id
+                        WHERE t.deleted_at IS NULL
+                          AND t.public_id = ?::uuid
+                          AND alb.original_gzip_bytes IS NOT NULL
+                        ORDER BY alb.created_at DESC, alb.id DESC
+                        LIMIT 1
+                        """, ticketId)
+                .stream()
+                .findFirst()
+                .map(row -> new LogBundleDownload(
+                        downloadFileName(DbValueMapper.string(row, "file_name")),
+                        bytes(row, "original_gzip_bytes"),
+                        DbValueMapper.string(row, "sha256"),
+                        longValue(row, "size_bytes")
+                ))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "로그 원본을 찾을 수 없습니다."));
+    }
+
     @Transactional
     public Map<String, Object> requestRemoteSupport(
             String id,
@@ -953,5 +979,23 @@ public class TicketQueryService {
 
     private static String stringOrNull(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    private static byte[] bytes(Map<String, Object> row, String key) {
+        Object value = row.get(key);
+        if (value instanceof byte[] bytes) {
+            return bytes;
+        }
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "로그 원본을 찾을 수 없습니다.");
+    }
+
+    private static String downloadFileName(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            return "pc-agent-log-bundle.gz";
+        }
+        return fileName.endsWith(".gz") ? fileName : fileName + ".gz";
+    }
+
+    public record LogBundleDownload(String fileName, byte[] bytes, String sha256, Long sizeBytes) {
     }
 }

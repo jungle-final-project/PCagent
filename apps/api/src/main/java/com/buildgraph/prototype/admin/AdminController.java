@@ -8,7 +8,11 @@ import com.buildgraph.prototype.rag.RagQueryService;
 import com.buildgraph.prototype.ticket.TicketQueryService;
 import com.buildgraph.prototype.user.CurrentUserService;
 import java.util.Map;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -113,6 +117,23 @@ public class AdminController {
     Map<String, Object> ticket(@PathVariable String id, @RequestHeader(value = "Authorization", required = false) String authorization) {
         currentUserService.requireAdmin(authorization);
         return ticketQueryService.ticket(id);
+    }
+
+    @GetMapping("/as-tickets/{id}/log-bundle")
+    ResponseEntity<byte[]> ticketLogBundle(
+            @PathVariable String id,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) {
+        currentUserService.requireAdmin(authorization);
+        TicketQueryService.LogBundleDownload download = ticketQueryService.logBundle(id);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/gzip"))
+                .contentLength(download.bytes().length)
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(download.fileName())
+                        .build()
+                        .toString())
+                .body(download.bytes());
     }
 
     @PatchMapping("/as-tickets/{id}")

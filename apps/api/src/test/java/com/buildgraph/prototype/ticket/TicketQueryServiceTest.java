@@ -10,6 +10,8 @@ import static org.mockito.Mockito.when;
 
 import com.buildgraph.prototype.common.MockData;
 import com.buildgraph.prototype.user.CurrentUserService;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -94,6 +96,36 @@ class TicketQueryServiceTest {
         assertThat(response.get("riskLevel")).isEqualTo("MEDIUM");
         assertThat(response.get("logSummary")).isInstanceOf(Map.class);
         assertThat(response.get("supportRouting")).isInstanceOf(Map.class);
+    }
+
+    @Test
+    void logBundleDownloadReturnsStoredOriginalGzipBytes() throws Exception {
+        byte[] originalGzip = new byte[]{0x1f, (byte) 0x8b, 0x08, 0x00, 0x10, 0x20};
+        String sha256 = sha256Hex(originalGzip);
+        when(jdbcTemplate.queryForList(contains("original_gzip_bytes"), eq("ticket-public-id")))
+                .thenReturn(List.of(MockData.map(
+                        "file_name", "agent-log.jsonl.gz",
+                        "sha256", sha256,
+                        "size_bytes", (long) originalGzip.length,
+                        "original_gzip_bytes", originalGzip
+                )));
+
+        TicketQueryService.LogBundleDownload download = service.logBundle("ticket-public-id");
+
+        assertThat(download.fileName()).isEqualTo("agent-log.jsonl.gz");
+        assertThat(download.bytes()).isEqualTo(originalGzip);
+        assertThat(sha256Hex(download.bytes())).isEqualTo(sha256);
+        assertThat(download.sizeBytes()).isEqualTo((long) originalGzip.length);
+    }
+
+    @Test
+    void logBundleDownloadReturnsNotFoundWhenOriginalGzipIsMissing() {
+        when(jdbcTemplate.queryForList(contains("original_gzip_bytes"), eq("ticket-public-id")))
+                .thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.logBundle("ticket-public-id"))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(exception -> assertThatStatus((ResponseStatusException) exception, HttpStatus.NOT_FOUND));
     }
 
     @Test
@@ -583,5 +615,9 @@ class TicketQueryServiceTest {
 
     private static void assertThatStatus(ResponseStatusException exception, HttpStatus status) {
         org.assertj.core.api.Assertions.assertThat(exception.getStatusCode()).isEqualTo(status);
+    }
+
+    private static String sha256Hex(byte[] bytes) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 }

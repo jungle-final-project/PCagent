@@ -26,6 +26,9 @@ public class AgentLogBundleEntity extends PublicIdEntity {
     @Column(name = "size_bytes", nullable = false)
     private Long sizeBytes;
 
+    @Column(name = "original_gzip_bytes")
+    private byte[] originalGzipBytes;
+
     @Column(name = "delete_after", nullable = false)
     private Instant deleteAfter;
 

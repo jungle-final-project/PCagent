@@ -6,6 +6,8 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -197,6 +199,48 @@ class AdminControllerTest {
                 "reviewStatus", "APPROVED",
                 "adminNote", "Remote support link sent."
         ), null);
+    }
+
+    @Test
+    void downloadAsTicketLogBundleReturnsOriginalGzipForAdminToken() throws Exception {
+        byte[] originalGzip = new byte[]{0x1f, (byte) 0x8b, 0x08, 0x00, 0x01, 0x02, 0x03};
+        when(ticketQueryService.logBundle("ticket-public-id"))
+                .thenReturn(new TicketQueryService.LogBundleDownload(
+                        "agent-log.jsonl.gz",
+                        originalGzip,
+                        "sha256",
+                        (long) originalGzip.length
+                ));
+
+        mockMvc.perform(get("/api/admin/as-tickets/ticket-public-id/log-bundle")
+                        .header("Authorization", ADMIN_TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("application/gzip"))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("attachment")))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("agent-log.jsonl.gz")))
+                .andExpect(content().bytes(originalGzip));
+
+        verify(currentUserService).requireAdmin(ADMIN_TOKEN);
+        verify(ticketQueryService).logBundle("ticket-public-id");
+    }
+
+    @Test
+    void downloadAsTicketLogBundleRequiresAdminToken() throws Exception {
+        mockMvc.perform(get("/api/admin/as-tickets/ticket-public-id/log-bundle"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+
+        verifyNoInteractions(ticketQueryService);
+    }
+
+    @Test
+    void downloadAsTicketLogBundleRejectsUserToken() throws Exception {
+        mockMvc.perform(get("/api/admin/as-tickets/ticket-public-id/log-bundle")
+                        .header("Authorization", USER_TOKEN))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+
+        verifyNoInteractions(ticketQueryService);
     }
 
     @Test

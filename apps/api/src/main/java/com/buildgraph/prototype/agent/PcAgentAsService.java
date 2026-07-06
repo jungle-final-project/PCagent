@@ -712,9 +712,10 @@ public class PcAgentAsService {
                   storage_path,
                   sha256,
                   size_bytes,
+                  original_gzip_bytes,
                   delete_after
                 )
-                VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, now() + interval '30 days'))
+                VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, now() + interval '30 days'))
                 RETURNING public_id::text AS log_bundle_id
                 """,
                 uploadJobInternalId,
@@ -723,6 +724,7 @@ public class PcAgentAsService {
                 storagePath,
                 gzip.sha256(),
                 gzip.compressedBytes(),
+                gzip.originalBytes(),
                 timestampParameter(logUpload.get("delete_after"))
         );
         Map<String, Object> supportRouting = analysis.supportRouting();
@@ -960,9 +962,10 @@ public class PcAgentAsService {
                   storage_path,
                   sha256,
                   size_bytes,
+                  original_gzip_bytes,
                   delete_after
                 )
-                VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, now() + interval '30 days'))
+                VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, now() + interval '30 days'))
                 RETURNING public_id::text AS log_bundle_id
                 """,
                 uploadJobInternalId,
@@ -971,6 +974,7 @@ public class PcAgentAsService {
                 storagePath,
                 gzip.sha256(),
                 gzip.compressedBytes(),
+                gzip.originalBytes(),
                 timestampParameter(logUpload.get("delete_after"))
         );
 
@@ -1343,7 +1347,7 @@ public class PcAgentAsService {
         if (contentText.lines().noneMatch(line -> !line.isBlank())) {
             throw fileValidation("Agent log gzip content must contain at least one log line.");
         }
-        return new GzipValidation(compressed.length, uncompressedBytes, sha256Hex(compressed), contentText);
+        return new GzipValidation(compressed.length, uncompressedBytes, sha256Hex(compressed), contentText, compressed);
     }
 
     private static String toJson(Object value) {
@@ -1505,6 +1509,6 @@ public class PcAgentAsService {
     private record ActivationToken(Long activationTokenId, Long userInternalId) {
     }
 
-    private record GzipValidation(long compressedBytes, long uncompressedBytes, String sha256, String contentText) {
+    private record GzipValidation(long compressedBytes, long uncompressedBytes, String sha256, String contentText, byte[] originalBytes) {
     }
 }

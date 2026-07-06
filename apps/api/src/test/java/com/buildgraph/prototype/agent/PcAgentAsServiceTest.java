@@ -526,6 +526,7 @@ class PcAgentAsServiceTest {
     void uploadLogsCreatesUploadJobLogUploadAndTicketWithDiagnosisStatus() {
         String symptom = "게임 중 화면 드라이버 경고와 발열이 있습니다.";
         String multipartDecodedSymptom = iso88591Mojibake(symptom);
+        byte[] originalGzip = gzip(driverErrorLogs());
         when(jdbcTemplate.queryForObject(contains("FROM agent_consents"), eq(Integer.class), eq(10L)))
                 .thenReturn(1);
         when(jdbcTemplate.queryForMap(contains("INSERT INTO agent_upload_jobs"), eq(10L), eq("upload-key"), any(), any()))
@@ -564,6 +565,7 @@ class PcAgentAsServiceTest {
                 eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
                 any(String.class),
                 any(Long.class),
+                any(byte[].class),
                 eq(Timestamp.from(Instant.parse("2026-08-01T00:00:00Z")))
         )).thenReturn(MockData.map("log_bundle_id", "bundle-public-id"));
         when(jdbcTemplate.queryForMap(
@@ -595,7 +597,7 @@ class PcAgentAsServiceTest {
 
         Map<String, Object> response = service.uploadLogs(
                 AGENT,
-                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", gzip(driverErrorLogs())),
+                new MockMultipartFile("file", "agent-log.jsonl.gz", "application/gzip", originalGzip),
                 MockData.map("symptomType", "REMOTE_DRIVER_OS", "symptom", multipartDecodedSymptom),
                 "upload-key"
         );
@@ -628,6 +630,19 @@ class PcAgentAsServiceTest {
                 any(Timestamp.class),
                 any(Timestamp.class)
         );
+        ArgumentCaptor<byte[]> originalGzipCaptor = ArgumentCaptor.forClass(byte[].class);
+        verify(jdbcTemplate).queryForMap(
+                contains("INSERT INTO agent_log_bundles"),
+                eq(100L),
+                eq(200L),
+                eq(1),
+                eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
+                any(String.class),
+                any(Long.class),
+                originalGzipCaptor.capture(),
+                eq(Timestamp.from(Instant.parse("2026-08-01T00:00:00Z")))
+        );
+        assertThat(originalGzipCaptor.getValue()).isEqualTo(originalGzip);
         verify(jdbcTemplate).queryForMap(
                 contains("INSERT INTO as_tickets"),
                 any(String.class),
@@ -689,6 +704,7 @@ class PcAgentAsServiceTest {
                 eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
                 any(String.class),
                 any(Long.class),
+                any(byte[].class),
                 eq(Timestamp.from(Instant.parse("2026-08-01T00:00:00Z")))
         )).thenReturn(MockData.map("log_bundle_id", "bundle-public-id"));
 
@@ -755,6 +771,7 @@ class PcAgentAsServiceTest {
                 eq("agent-logs/device-public-id/agent-log.jsonl.gz"),
                 any(String.class),
                 any(Long.class),
+                any(byte[].class),
                 eq(Timestamp.from(Instant.parse("2026-08-01T00:00:00Z")))
         )).thenReturn(MockData.map("log_bundle_id", "bundle-public-id"));
         when(jdbcTemplate.queryForMap(

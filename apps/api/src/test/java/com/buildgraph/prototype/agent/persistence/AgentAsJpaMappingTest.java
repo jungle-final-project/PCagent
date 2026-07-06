@@ -55,6 +55,15 @@ class AgentAsJpaMappingTest {
     }
 
     @Test
+    void logBundleEntityMapsOriginalGzipByteaColumn() throws Exception {
+        var field = AgentLogBundleEntity.class.getDeclaredField("originalGzipBytes");
+
+        assertThat(field.getType()).isEqualTo(byte[].class);
+        assertThat(field.getAnnotation(Column.class).name()).isEqualTo("original_gzip_bytes");
+        assertThat(field.getAnnotation(Column.class).nullable()).isTrue();
+    }
+
+    @Test
     void enumsUseDbSchemaValues() {
         assertEnumValues(AgentDeviceStatus.class, "PENDING_REGISTERED", "ACTIVE", "UPDATE_REQUIRED", "BLOCKED", "REVOKED", "UNINSTALLED");
         assertEnumValues(AgentConsentType.class, "LOCAL_COLLECTION", "SERVER_UPLOAD", "QUALITY_IMPROVEMENT", "REMOTE_CONNECTION", "REMOTE_FULL_CONTROL", "HIGH_RISK_REMOTE_ACTION");
