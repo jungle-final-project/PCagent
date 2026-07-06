@@ -24,3 +24,4 @@ buildgraph-before-*.sql
 .devcontainer/devcontainer-lock.json
 *.tsbuildinfo
 .claude
+docs/hoseok/support-chat-risk-fix-checklist.md
