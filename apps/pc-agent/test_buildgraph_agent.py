@@ -1798,6 +1798,29 @@ class AgentGoal1112Test(unittest.TestCase):
 
         self.assertEqual(message, "먼저 PC 진단하기를 실행해 주세요.")
 
+    def test_support_request_gate_messages_for_local_states(self) -> None:
+        no_logs = {"statusKey": "no_logs", "issueDetected": False, "agentRegistered": True}
+        normal = {"statusKey": "normal", "issueDetected": False, "agentRegistered": True}
+        server_failed = {
+            "statusKey": "server_connection_failed",
+            "issueDetected": False,
+            "agentRegistered": True,
+            "serverMessage": "서버 연결을 확인할 수 없어 서버 추천을 받을 수 없습니다.",
+        }
+        unregistered = {
+            "statusKey": "warning",
+            "issueDetected": True,
+            "agentRegistered": False,
+            "registrationMessage": "PC Agent 재등록이 필요합니다. 웹 /support/new 에서 AS를 접수해 주세요.",
+        }
+        warning = {"statusKey": "warning", "issueDetected": True, "agentRegistered": True}
+
+        self.assertIn("로그", agent.home_support_request_block_message(no_logs))
+        self.assertIn("AS 접수 대상", agent.home_support_request_block_message(normal))
+        self.assertIn("서버 연결", agent.home_support_request_block_message(server_failed))
+        self.assertIn("재등록", agent.home_support_request_block_message(unregistered))
+        self.assertIsNone(agent.home_support_request_block_message(warning))
+
     def test_diagnosis_detail_model_empty_state_without_logs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agent-metrics.jsonl"

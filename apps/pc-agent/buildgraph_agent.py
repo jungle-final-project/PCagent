@@ -2962,8 +2962,10 @@ def home_support_request_block_message(diagnosis: Any) -> str | None:
         return "먼저 PC 진단하기를 실행해 주세요."
     if diagnosis.get("statusKey") == "no_logs":
         return "분석할 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요."
+    if diagnosis.get("statusKey") == "server_connection_failed":
+        return str(diagnosis.get("serverMessage") or "서버 연결을 확인할 수 없어 서버 추천을 받을 수 없습니다.")
     if not diagnosis.get("issueDetected"):
-        return "최근 로컬 진단은 정상입니다. AS 접수를 만들지 않습니다."
+        return "최근 로컬 진단은 정상입니다. AS 접수 대상이 아닙니다."
     if not diagnosis.get("agentRegistered"):
         return str(diagnosis.get("registrationMessage") or "PC Agent 재등록이 필요합니다. 재등록이 어렵다면 웹 /support/new 에서 AS를 접수해 주세요.")
     return None
@@ -4923,6 +4925,7 @@ def show_log_viewer(
     support_actions = tk.Frame(support_inner, background=colors["card_bg"])
     support_actions.pack(fill="x")
     log_filter_state = {"logTabOpened": False, "userTouched": False}
+    log_action_status = tk.StringVar(value="")
 
     def selected_date_text() -> str:
         return f"{year_value.get()}-{month_value.get()}-{day_value.get()}"
@@ -5136,6 +5139,29 @@ def show_log_viewer(
             return
         prepare_home_support_context()
         submit_support_request(home_support_status)
+
+    def current_support_request_block_message() -> str | None:
+        return home_support_request_block_message(home_last_diagnosis.get("model"))
+
+    def submit_gated_support_request(status_target: Any = None) -> None:
+        block_message = current_support_request_block_message()
+        if block_message:
+            support_status.set(block_message)
+            if status_target is not None:
+                status_target.set(block_message)
+            return
+        submit_support_request(status_target)
+
+    def open_support_page_after_gate(status_target: Any = None) -> None:
+        block_message = current_support_request_block_message()
+        if block_message:
+            if status_target is not None:
+                status_target.set(block_message)
+            return
+        open_support_page(config_path)
+        message = f"웹 {support_new_url(config)} 접수 페이지를 열었습니다."
+        if status_target is not None:
+            status_target.set(message)
 
     def summary_section_height(row_count: int) -> int:
         if row_count <= 0:
@@ -5352,11 +5378,19 @@ def show_log_viewer(
     rounded_button(
         buttons,
         "AS 페이지",
-        lambda: open_support_page(config_path),
+        lambda: open_support_page_after_gate(log_action_status),
         "secondary",
         width=104,
         height=32,
     ).pack(side="left", padx=(8, 0))
+    tk.Label(
+        buttons,
+        textvariable=log_action_status,
+        font=ui_font(FONT_SECONDARY_PX),
+        foreground=colors["muted"],
+        background=colors["app_bg"],
+        anchor="w",
+    ).pack(side="left", fill="x", expand=True, padx=(12, 0))
 
     rounded_button(
         support_actions,
@@ -5369,7 +5403,7 @@ def show_log_viewer(
     rounded_button(
         support_actions,
         "AS 접수 신청",
-        submit_support_request,
+        lambda: submit_gated_support_request(support_status),
         "primary",
         width=132,
         height=34,
