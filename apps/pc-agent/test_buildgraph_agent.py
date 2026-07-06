@@ -1892,6 +1892,44 @@ class AgentGoal1112Test(unittest.TestCase):
     def test_powershell_string_escapes_single_quotes(self) -> None:
         self.assertEqual(agent.powershell_string("C:\\Users\\O'Brien"), "'C:\\Users\\O''Brien'")
 
+    @unittest.skipUnless(agent.os.name == "nt", "Windows-only subprocess window flags")
+    def test_powershell_counter_runner_uses_hidden_window_flags(self) -> None:
+        calls: dict[str, object] = {}
+
+        def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+            calls["args"] = args
+            calls["kwargs"] = kwargs
+            return SimpleNamespace(returncode=0, stdout="42.5\n")
+
+        with patch("buildgraph_agent.subprocess.run", side_effect=fake_run):
+            value, reason = agent.read_windows_disk_busy_percent_powershell()
+
+        self.assertEqual(value, 42.5)
+        self.assertIsNone(reason)
+        self.assertEqual(calls["args"][0], "powershell.exe")
+        kwargs = calls["kwargs"]
+        self.assertIsInstance(kwargs, dict)
+        self.assertTrue(int(kwargs["creationflags"]) & int(agent.subprocess.CREATE_NO_WINDOW))
+        self.assertIn("startupinfo", kwargs)
+
+    @unittest.skipUnless(agent.os.name == "nt", "Windows-only subprocess window flags")
+    def test_powershell_fallback_popen_uses_hidden_window_flags(self) -> None:
+        calls: dict[str, object] = {}
+
+        def fake_popen(args: list[str], **kwargs: object) -> SimpleNamespace:
+            calls["args"] = args
+            calls["kwargs"] = kwargs
+            return SimpleNamespace()
+
+        with patch("buildgraph_agent.subprocess.Popen", side_effect=fake_popen):
+            agent.popen_hidden_subprocess(["powershell.exe", "-NoProfile"])
+
+        self.assertEqual(calls["args"][0], "powershell.exe")
+        kwargs = calls["kwargs"]
+        self.assertIsInstance(kwargs, dict)
+        self.assertTrue(int(kwargs["creationflags"]) & int(agent.subprocess.CREATE_NO_WINDOW))
+        self.assertIn("startupinfo", kwargs)
+
     def test_run_background_is_available_as_cli_command(self) -> None:
         with patch("buildgraph_agent.run_background", return_value=0) as run_background:
             exit_code = agent.main(["run-background", "--interval-seconds", "1", "--no-tray"])

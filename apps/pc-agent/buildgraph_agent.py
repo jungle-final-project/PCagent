@@ -552,13 +552,47 @@ def support_draft_url(config: AgentConfig, draft_id: str) -> str:
     return f"{support_new_url(config)}?draftId={quote(draft_id)}"
 
 
+def windows_hidden_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    kwargs: dict[str, Any] = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    startupinfo_type = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_type is not None:
+        startupinfo = startupinfo_type()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
+def with_hidden_subprocess_window(kwargs: dict[str, Any]) -> dict[str, Any]:
+    hidden_kwargs = windows_hidden_subprocess_kwargs()
+    merged = dict(kwargs)
+    if "creationflags" in hidden_kwargs:
+        merged["creationflags"] = int(merged.get("creationflags", 0)) | int(hidden_kwargs["creationflags"])
+    if "startupinfo" in hidden_kwargs and "startupinfo" not in merged:
+        merged["startupinfo"] = hidden_kwargs["startupinfo"]
+    return merged
+
+
+def run_hidden_subprocess(args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, **with_hidden_subprocess_window(kwargs))
+
+
+def popen_hidden_subprocess(args: Sequence[str], **kwargs: Any) -> subprocess.Popen[Any]:
+    return subprocess.Popen(args, **with_hidden_subprocess_window(kwargs))
+
+
 def restrict_file_to_current_user(path: Path) -> None:
     if os.name == "nt":
         user_sid = current_user_sid()
         if not user_sid:
             return
         try:
-            subprocess.run(
+            run_hidden_subprocess(
                 [
                     "icacls",
                     str(path),
@@ -585,7 +619,7 @@ def current_user_sid() -> str | None:
     if os.name != "nt":
         return None
     try:
-        result = subprocess.run(
+        result = run_hidden_subprocess(
             ["whoami", "/user", "/fo", "csv", "/nh"],
             check=False,
             capture_output=True,
@@ -982,7 +1016,7 @@ def disk_busy_percent_from_counters(
 
 
 def read_windows_disk_busy_percent_powershell(
-    runner: Any = subprocess.run,
+    runner: Any = run_hidden_subprocess,
 ) -> tuple[float | None, str | None]:
     if os.name != "nt":
         return None, "Windows disk performance counters unavailable on this OS"
@@ -1077,7 +1111,7 @@ def read_windows_gpu_usage_percent_win32pdh(win32pdh_module: Any = None) -> tupl
 
 
 def read_windows_gpu_usage_percent_powershell(
-    runner: Any = subprocess.run,
+    runner: Any = run_hidden_subprocess,
 ) -> tuple[float | None, str | None]:
     if os.name != "nt":
         return None, "PowerShell GPU counters unavailable on this OS"
@@ -1288,7 +1322,7 @@ class HardwareMetricCollector:
             payload["diskCollectorSource"] = disk_source or "psutil"
 
     def run_nvidia_smi(self) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        return run_hidden_subprocess(
             [
                 "nvidia-smi",
                 "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
@@ -3492,7 +3526,7 @@ $form.Add_FormClosed({{ $liveRefreshTimer.Stop(); $liveRefreshTimer.Dispose() }}
 """
     viewer_path.write_text(script.strip() + "\n", encoding="utf-8")
     try:
-        subprocess.Popen(
+        popen_hidden_subprocess(
             [
                 "powershell.exe",
                 "-NoProfile",
@@ -3500,8 +3534,7 @@ $form.Add_FormClosed({{ $liveRefreshTimer.Stop(); $liveRefreshTimer.Dispose() }}
                 "Bypass",
                 "-File",
                 str(viewer_path),
-            ],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ]
         )
     except Exception:
         open_log_folder(config_path)
@@ -5877,7 +5910,7 @@ $timer.Start()
     notification_path.parent.mkdir(parents=True, exist_ok=True)
     notification_path.write_text(script.strip() + "\n", encoding="utf-8")
     try:
-        subprocess.Popen(
+        popen_hidden_subprocess(
             [
                 "powershell.exe",
                 "-NoProfile",
@@ -5885,8 +5918,7 @@ $timer.Start()
                 "Bypass",
                 "-File",
                 str(notification_path),
-            ],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ]
         )
     except Exception:
         webbrowser.open(support_url_text)
