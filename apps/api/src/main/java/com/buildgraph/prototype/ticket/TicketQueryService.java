@@ -154,7 +154,8 @@ public class TicketQueryService {
                   ?::jsonb,
                   ?::jsonb
                 )
-                RETURNING public_id::text AS id
+                RETURNING id AS internal_id,
+                          public_id::text AS id
                 """,
                 ticketPublicId,
                 user.internalId(),
@@ -170,6 +171,14 @@ public class TicketQueryService {
                 toJson(draft.logSummary()),
                 toJson(draft.supportRouting()),
                 toJson(draft.aiDiagnosisRequest()));
+        ensureSupportChatSession(
+                user.internalId(),
+                longValue(row, "internal_id"),
+                DbValueMapper.string(row, "id"),
+                symptom,
+                draft.supportRouting(),
+                DbValueMapper.string(logUpload, "log_upload_id")
+        );
         return ticket(DbValueMapper.string(row, "id"), user);
     }
 
@@ -333,6 +342,176 @@ public class TicketQueryService {
                 .stream()
                 .findFirst()
                 .orElse(Map.of());
+    }
+
+    private void ensureSupportChatSession(
+            Long userInternalId,
+            Long ticketInternalId,
+            String ticketPublicId,
+            String symptom,
+            Map<String, Object> supportRouting,
+            String logUploadId
+    ) {
+        if (userInternalId == null || ticketInternalId == null) {
+            return;
+        }
+
+        List<Map<String, Object>> existingRows = jdbcTemplate.queryForList("""
+                        SELECT id
+                        FROM as_chat_sessions
+                        WHERE user_id = ?
+                          AND as_ticket_id = ?
+                          AND status IN ('ACTIVE', 'ADMIN_REVIEWING', 'TICKET_CREATED')
+                          AND deleted_at IS NULL
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                userInternalId,
+                ticketInternalId
+        );
+        if (existingRows != null && !existingRows.isEmpty()) {
+            return;
+        }
+
+        if (logUploadId != null) {
+            List<Map<String, Object>> draftRows = jdbcTemplate.queryForList("""
+                            SELECT id AS chat_session_internal_id
+                            FROM as_chat_sessions
+                            WHERE user_id = ?
+                              AND as_ticket_id IS NULL
+                              AND ticket_draft ->> 'logUploadId' = ?
+                              AND status IN ('ACTIVE', 'ADMIN_REVIEWING', 'TICKET_CREATED')
+                              AND deleted_at IS NULL
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                    userInternalId,
+                    logUploadId
+            );
+            if (draftRows != null && !draftRows.isEmpty()) {
+                jdbcTemplate.update("""
+                        UPDATE as_chat_sessions
+                        SET as_ticket_id = ?,
+                            status = 'ACTIVE',
+                            ticket_draft = ticket_draft || ?::jsonb,
+                            updated_at = now()
+                        WHERE id = ?
+                        """,
+                        ticketInternalId,
+                        toJson(ticketDraftPatch(ticketPublicId, supportRouting, logUploadId)),
+                        longValue(draftRows.get(0), "chat_session_internal_id")
+                );
+                return;
+            }
+        }
+
+        String message = "접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요.";
+        Map<String, Object> ticketDraft = ticketDraftPatch(ticketPublicId, supportRouting, logUploadId);
+        Map<String, Object> chatSession = jdbcTemplate.queryForMap("""
+                INSERT INTO as_chat_sessions (
+                  user_id,
+                  as_ticket_id,
+                  status,
+                  title,
+                  support_request_type,
+                  last_message_preview,
+                  last_message_at,
+                  admin_unread_count,
+                  user_unread_count,
+                  ticket_draft,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  ?,
+                  ?,
+                  'ACTIVE',
+                  ?,
+                  ?,
+                  ?,
+                  now(),
+                  1,
+                  0,
+                  ?::jsonb,
+                  now(),
+                  now()
+                )
+                RETURNING id AS chat_session_internal_id
+                """,
+                userInternalId,
+                ticketInternalId,
+                chatTitle(symptom),
+                supportRequestTypeFor(supportRouting),
+                message,
+                toJson(ticketDraft)
+        );
+        jdbcTemplate.update("""
+                INSERT INTO as_chat_messages (
+                  chat_session_id,
+                  role,
+                  content,
+                  structured_payload,
+                  created_at
+                )
+                VALUES (?, 'SYSTEM', ?, ?::jsonb, now())
+                """,
+                longValue(chatSession, "chat_session_internal_id"),
+                message,
+                toJson(MockData.map(
+                        "source", "WEB_AS_TICKET",
+                        "ticketId", ticketPublicId,
+                        "logUploadId", logUploadId
+                ))
+        );
+    }
+
+    private static Map<String, Object> ticketDraftPatch(
+            String ticketPublicId,
+            Map<String, Object> supportRouting,
+            String logUploadId
+    ) {
+        return MockData.map(
+                "source", "WEB_AS_TICKET",
+                "ticketId", ticketPublicId,
+                "logUploadId", logUploadId,
+                "supportDecision", supportRoutingValue(supportRouting, "recommendedDecision", "NEEDS_MORE_INFO"),
+                "recommendedService", supportRoutingValue(supportRouting, "recommendedService", "DIAGNOSIS_ONLY")
+        );
+    }
+
+    private static String supportRequestTypeFor(Map<String, Object> supportRouting) {
+        String recommendedService = supportRoutingValue(supportRouting, "recommendedService", "DIAGNOSIS_ONLY");
+        if ("REMOTE_SUPPORT".equals(recommendedService)) {
+            return "REMOTE";
+        }
+        if ("VISIT_SUPPORT".equals(recommendedService)) {
+            return "VISIT";
+        }
+        return "DIAGNOSIS_ONLY";
+    }
+
+    private static String supportRoutingValue(Map<String, Object> supportRouting, String key, String fallback) {
+        if (supportRouting == null) {
+            return fallback;
+        }
+        String value = stringOrNull(supportRouting.get(key));
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static String chatTitle(String symptom) {
+        if (symptom == null || symptom.isBlank()) {
+            return "PC Agent AS 접수";
+        }
+        String firstLine = symptom.lines()
+                .map(String::trim)
+                .filter(line -> !line.isBlank())
+                .findFirst()
+                .orElse("PC Agent AS 접수");
+        String cleaned = firstLine.replace("[증상 제목]", "").trim();
+        if (cleaned.isBlank()) {
+            cleaned = "PC Agent AS 접수";
+        }
+        return cleaned.length() > 80 ? cleaned.substring(0, 80) : cleaned;
     }
 
     private static TicketAnalysisDraft ticketAnalysisDraft(String ticketPublicId, String symptom, Map<String, Object> asRagAnalysis) {

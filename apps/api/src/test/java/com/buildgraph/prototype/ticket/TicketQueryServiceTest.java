@@ -3,6 +3,7 @@ package com.buildgraph.prototype.ticket;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
@@ -36,6 +37,136 @@ class TicketQueryServiceTest {
             "USER",
             null
     );
+
+    @Test
+    void createForUserCreatesSupportChatSessionForNewTicket() {
+        when(jdbcTemplate.queryForList(contains("FROM agent_log_uploads"), eq("log-upload-public-id"), eq(20L)))
+                .thenReturn(List.of(MockData.map(
+                        "id", 101L,
+                        "log_upload_id", "log-upload-public-id",
+                        "summary", "GPU temperature spike"
+                )));
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO as_tickets"),
+                anyString(),
+                eq(20L),
+                eq(101L),
+                eq("GPU temperature spike"),
+                eq("NOT_STARTED"),
+                eq("NOT_REQUIRED"),
+                isNull(),
+                isNull(),
+                eq("[]"),
+                eq("[]"),
+                isNull(),
+                isNull(),
+                isNull(),
+                isNull()
+        )).thenReturn(MockData.map("internal_id", 501L, "id", "ticket-public-id"));
+        when(jdbcTemplate.queryForList(contains("AND as_ticket_id = ?"), eq(20L), eq(501L)))
+                .thenReturn(List.of());
+        when(jdbcTemplate.queryForList(contains("ticket_draft ->> 'logUploadId'"), eq(20L), eq("log-upload-public-id")))
+                .thenReturn(List.of());
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO as_chat_sessions"),
+                eq(20L),
+                eq(501L),
+                eq("GPU temperature spike"),
+                eq("DIAGNOSIS_ONLY"),
+                eq("접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요."),
+                anyString()
+        )).thenReturn(MockData.map("chat_session_internal_id", 700L));
+        when(jdbcTemplate.queryForList(contains("SELECT t.public_id::text AS id"), eq("ticket-public-id"), eq(20L)))
+                .thenReturn(List.of(MockData.map(
+                        "id", "ticket-public-id",
+                        "status", "OPEN",
+                        "analysis_status", "NOT_STARTED",
+                        "review_status", "NOT_REQUIRED",
+                        "auto_response_allowed", false,
+                        "symptom", "GPU temperature spike",
+                        "log_upload_id", "log-upload-public-id",
+                        "cause_candidates", "[]",
+                        "upgrade_candidates", "[]"
+                )));
+
+        Map<String, Object> response = service.create(MockData.map(
+                "symptom", "GPU temperature spike",
+                "logUploadId", "log-upload-public-id"
+        ), user);
+
+        assertThat(response.get("id")).isEqualTo("ticket-public-id");
+        verify(jdbcTemplate).queryForMap(
+                contains("INSERT INTO as_chat_sessions"),
+                eq(20L),
+                eq(501L),
+                eq("GPU temperature spike"),
+                eq("DIAGNOSIS_ONLY"),
+                eq("접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요."),
+                anyString()
+        );
+        verify(jdbcTemplate).update(
+                contains("INSERT INTO as_chat_messages"),
+                eq(700L),
+                eq("접수되었습니다. 홈페이지에서 채팅 상담을 진행하세요."),
+                anyString()
+        );
+    }
+
+    @Test
+    void createForUserLinksExistingDraftSupportChatSession() {
+        when(jdbcTemplate.queryForList(contains("FROM agent_log_uploads"), eq("log-upload-public-id"), eq(20L)))
+                .thenReturn(List.of(MockData.map(
+                        "id", 101L,
+                        "log_upload_id", "log-upload-public-id",
+                        "summary", "GPU temperature spike"
+                )));
+        when(jdbcTemplate.queryForMap(
+                contains("INSERT INTO as_tickets"),
+                anyString(),
+                eq(20L),
+                eq(101L),
+                eq("GPU temperature spike"),
+                eq("NOT_STARTED"),
+                eq("NOT_REQUIRED"),
+                isNull(),
+                isNull(),
+                eq("[]"),
+                eq("[]"),
+                isNull(),
+                isNull(),
+                isNull(),
+                isNull()
+        )).thenReturn(MockData.map("internal_id", 501L, "id", "ticket-public-id"));
+        when(jdbcTemplate.queryForList(contains("AND as_ticket_id = ?"), eq(20L), eq(501L)))
+                .thenReturn(List.of());
+        when(jdbcTemplate.queryForList(contains("ticket_draft ->> 'logUploadId'"), eq(20L), eq("log-upload-public-id")))
+                .thenReturn(List.of(MockData.map("chat_session_internal_id", 700L)));
+        when(jdbcTemplate.queryForList(contains("SELECT t.public_id::text AS id"), eq("ticket-public-id"), eq(20L)))
+                .thenReturn(List.of(MockData.map(
+                        "id", "ticket-public-id",
+                        "status", "OPEN",
+                        "analysis_status", "NOT_STARTED",
+                        "review_status", "NOT_REQUIRED",
+                        "auto_response_allowed", false,
+                        "symptom", "GPU temperature spike",
+                        "log_upload_id", "log-upload-public-id",
+                        "cause_candidates", "[]",
+                        "upgrade_candidates", "[]"
+                )));
+
+        Map<String, Object> response = service.create(MockData.map(
+                "symptom", "GPU temperature spike",
+                "logUploadId", "log-upload-public-id"
+        ), user);
+
+        assertThat(response.get("id")).isEqualTo("ticket-public-id");
+        verify(jdbcTemplate).update(
+                contains("UPDATE as_chat_sessions"),
+                eq(501L),
+                anyString(),
+                eq(700L)
+        );
+    }
 
     @Test
     void userTicketLookupRestrictsTicketByOwner() {

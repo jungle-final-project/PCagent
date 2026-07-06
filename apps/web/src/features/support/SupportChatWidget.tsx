@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { MessageCircle, Minus, Send, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { LifeBuoy, MessageCircle, Minus, Send, X } from 'lucide-react';
 import { getCurrentSupportChat, getSupportChatMessages, postSupportChatMessage } from './supportApi';
 import { openSupportChatSocket, SupportChatSocket } from './supportChatSocket';
 import type { SupportChatMessage, SupportChatSessionDto } from './types';
@@ -26,7 +27,8 @@ export function SupportChatWidget() {
     refetchInterval: socketConnected ? false : 5000,
     retry: false
   });
-  const sessionId = currentQuery.data?.contact?.id ?? null;
+  const currentContact = currentQuery.data?.contact ?? null;
+  const sessionId = currentContact?.status === 'ARCHIVED' ? null : currentContact?.id ?? null;
   const messagesQuery = useQuery({
     queryKey: ['support-chat', sessionId, 'messages'],
     queryFn: () => getSupportChatMessages(sessionId as string),
@@ -36,6 +38,7 @@ export function SupportChatWidget() {
   });
   const session = messagesQuery.data ?? currentQuery.data;
   const contact = session?.contact ?? null;
+  const activeContact = contact?.status === 'ARCHIVED' ? null : contact;
   const messages = session?.messages ?? [];
 
   const sendMutation = useMutation({
@@ -78,13 +81,9 @@ export function SupportChatWidget() {
     messagesEndRef.current?.scrollIntoView({ block: 'end' });
   }, [open, messages.length]);
 
-  if (!contact || contact.status === 'ARCHIVED') {
-    return null;
-  }
-
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!sessionId || !message.trim() || sendMutation.isPending) return;
+    if (!activeContact || !sessionId || !message.trim() || sendMutation.isPending) return;
     if (socketRef.current?.sendMessage(message.trim())) {
       setMessage('');
       return;
@@ -107,31 +106,54 @@ export function SupportChatWidget() {
               </button>
             </div>
           </div>
-          <div className="max-h-[58vh] min-h-[320px] space-y-4 overflow-y-auto bg-white p-4">
-            {messages.map((item) => (
-              <SupportChatBubble key={item.id} message={item} />
-            ))}
-            {messages.length === 0 ? (
-              <div className="rounded-lg bg-slate-50 p-4 text-sm font-semibold text-slate-500">상담 메시지를 불러오는 중입니다.</div>
-            ) : null}
-            <div ref={messagesEndRef} />
-          </div>
-          <form onSubmit={submit} className="flex gap-2 border-t border-slate-200 bg-white p-4">
-            <input
-              value={message}
-              onChange={(event) => setMessage(event.target.value)}
-              placeholder="메시지를 입력하세요"
-              className="h-11 min-w-0 flex-1 rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-teal-600"
-            />
-            <button
-              type="submit"
-              disabled={!message.trim() || sendMutation.isPending}
-              className="flex h-11 items-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-bold text-white disabled:bg-slate-300"
-            >
-              <Send size={16} />
-              전송
-            </button>
-          </form>
+          {activeContact ? (
+            <>
+              <div className="max-h-[58vh] min-h-[320px] space-y-4 overflow-y-auto bg-white p-4">
+                {messages.map((item) => (
+                  <SupportChatBubble key={item.id} message={item} />
+                ))}
+                {messages.length === 0 ? (
+                  <div className="rounded-lg bg-slate-50 p-4 text-sm font-semibold text-slate-500">상담 메시지를 불러오는 중입니다.</div>
+                ) : null}
+                <div ref={messagesEndRef} />
+              </div>
+              <form onSubmit={submit} className="flex gap-2 border-t border-slate-200 bg-white p-4">
+                <input
+                  value={message}
+                  onChange={(event) => setMessage(event.target.value)}
+                  placeholder="메시지를 입력하세요"
+                  className="h-11 min-w-0 flex-1 rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-teal-600"
+                />
+                <button
+                  type="submit"
+                  disabled={!message.trim() || sendMutation.isPending}
+                  className="flex h-11 items-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-bold text-white disabled:bg-slate-300"
+                >
+                  <Send size={16} />
+                  전송
+                </button>
+              </form>
+            </>
+          ) : (
+            <div className="min-h-[260px] bg-white p-5">
+              <div className="grid h-12 w-12 place-items-center rounded-lg bg-teal-50 text-teal-700">
+                <LifeBuoy size={24} />
+              </div>
+              <h3 className="mt-5 text-lg font-black text-slate-900">AS 접수 후 상담이 시작됩니다.</h3>
+              <p className="mt-3 text-sm font-medium leading-6 text-slate-600">
+                PC Agent 로그와 증상을 접수하면 담당자가 확인할 상담방이 자동으로 생성됩니다.
+              </p>
+              {currentQuery.isError ? (
+                <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-700">
+                  상담 상태를 확인하지 못했습니다. AS 접수는 계속 진행할 수 있습니다.
+                </p>
+              ) : null}
+              <Link to="/support/new" className="mt-6 inline-flex h-11 items-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-bold text-white transition hover:bg-teal-800">
+                <LifeBuoy size={17} />
+                AS 접수로 이동
+              </Link>
+            </div>
+          )}
         </section>
       ) : null}
 
@@ -147,7 +169,15 @@ export function SupportChatWidget() {
         {!open ? (
           <div className="relative mb-2 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold leading-6 text-slate-700 shadow-xl">
             <span className="absolute -left-2 bottom-4 h-4 w-4 rotate-45 border-b border-l border-slate-200 bg-white" />
-            상담원과<br />약속시간을 협의하세요
+            {activeContact ? (
+              <>
+                상담원과<br />약속시간을 협의하세요
+              </>
+            ) : (
+              <>
+                AS 접수 후<br />상담을 시작하세요
+              </>
+            )}
           </div>
         ) : null}
       </div>
