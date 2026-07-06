@@ -209,7 +209,7 @@ test('renders eight admin shell navigation entries for ADMIN role', async ({ pag
   await page.goto('/admin');
 
   const navigation = page.getByRole('navigation', { name: '관리자 메뉴' });
-  await expect(navigation.getByRole('link')).toHaveCount(8);
+  await expect(navigation.getByRole('link')).toHaveCount(9);
   await expect(navigation.getByRole('link', { name: '대시보드' })).toHaveAttribute('href', '/admin');
   await expect(navigation.getByRole('link', { name: 'Agent 세션' })).toHaveAttribute('href', '/admin/agent-sessions/00000000-0000-4000-8000-000000003001');
   await expect(navigation.getByRole('link', { name: 'Tool 이력' })).toHaveAttribute('href', '/admin/tool-invocations/00000000-0000-4000-8000-000000005002');

@@ -12,6 +12,33 @@ const beforeDecisionTicket = {
   riskLevel: 'MEDIUM',
   symptom: 'GPU temperature spike during gaming',
   logUploadId: 'log-upload-before',
+  logSummaryText: 'GPU 온도 상승 신호가 있지만 방문/원격 판단에는 추가 확인이 필요합니다.',
+  logSummary: {
+    summaryText: 'GPU 온도 상승 신호가 있지만 방문/원격 판단에는 추가 확인이 필요합니다.',
+    dataQuality: { level: 'PARTIAL' },
+    incidentWindow: {
+      startedAt: '2026-07-02T06:00:00Z',
+      endedAt: '2026-07-02T06:30:00Z',
+      symptomType: 'REMOTE_DRIVER_OS'
+    },
+    correlations: [
+      { type: 'AS_RAG_MATCH', summary: 'GPU thermal throttling 신호가 감지됐습니다.' }
+    ],
+    rawSamples: [
+      { sampleId: 'sample-1', text: 'gpu temperature reached 95c' }
+    ]
+  },
+  supportRouting: {
+    recommendedDecision: 'NEEDS_MORE_INFO',
+    confidence: 'LOW',
+    reasonCodes: ['GPU_THERMAL_SPIKE'],
+    remoteActions: ['CHECK_GPU_DRIVER'],
+    visitReasons: [],
+    blockingFactors: ['INSUFFICIENT_LOG_RANGE'],
+    recommendedService: 'DIAGNOSIS_ONLY',
+    recommendedServiceLabel: '우선 진단만 받기',
+    requiresAdminApproval: true
+  },
   assignedAdminId: null,
   causeCandidates: [
     { label: 'GPU thermal throttling', confidence: 'HIGH', evidenceIds: ['gpu-temperature-95c'] }
@@ -40,12 +67,33 @@ const afterDecisionTicket = {
   remoteSupportStatus: 'LINK_SENT'
 };
 
+const visitRecommendedTicket = {
+  ...beforeDecisionTicket,
+  id: 'qa-ticket-visit',
+  supportDecision: 'VISIT_REQUIRED',
+  riskLevel: 'HIGH',
+  symptom: 'Kernel-Power 반복 종료와 WHEA 오류',
+  logSummaryText: 'Kernel-Power와 WHEA 오류가 반복되어 현장 점검 가능성이 높습니다.',
+  supportRouting: {
+    recommendedDecision: 'VISIT_REQUIRED',
+    confidence: 'HIGH',
+    reasonCodes: ['KERNEL_POWER_REPEAT', 'WHEA_ERROR_REPEAT'],
+    remoteActions: [],
+    visitReasons: ['POWER_OR_BOARD_CHECK_REQUIRED'],
+    blockingFactors: [],
+    recommendedService: 'VISIT_SUPPORT',
+    recommendedServiceLabel: '방문지원 신청',
+    requiresAdminApproval: true
+  }
+};
+
 test('captures Agent AS demo UI evidence and verifies admin decision reflection', async ({ page }) => {
   const consoleErrors: string[] = [];
   const apiCalls: string[] = [];
   const tickets = new Map<string, MockTicket>([
     [beforeDecisionTicket.id, beforeDecisionTicket],
-    [afterDecisionTicket.id, afterDecisionTicket]
+    [afterDecisionTicket.id, afterDecisionTicket],
+    [visitRecommendedTicket.id, visitRecommendedTicket]
   ]);
   let decisionPatchPayload: Record<string, unknown> | undefined;
   let remoteRequestPayload: Record<string, unknown> | undefined;
@@ -163,8 +211,16 @@ test('captures Agent AS demo UI evidence and verifies admin decision reflection'
   await page.evaluate(() => {
     localStorage.setItem('buildgraph.token', 'jwt-admin-token');
   });
+  await page.goto('/admin/as-tickets');
+  await expect(page.getByRole('main')).toContainText('추천 서비스');
+  await expect(page.getByRole('main')).toContainText('방문지원 신청');
   await page.goto('/admin/as-tickets/qa-ticket-before');
   await expect(page.getByRole('main')).toContainText('지원 결정 저장');
+  await expect(page.getByRole('main')).toContainText('추천 서비스');
+  await expect(page.getByRole('main')).toContainText('우선 진단만 받기');
+  await expect(page.getByRole('main')).toContainText('GPU 온도 상승 신호');
+  await expect(page.getByRole('main')).toContainText('GPU_THERMAL_SPIKE');
+  await expect(page.getByRole('main')).toContainText('CHECK_GPU_DRIVER');
   await page.getByLabel('검토 상태').selectOption('APPROVED');
   await page.getByLabel('지원 결정').selectOption('REMOTE_POSSIBLE');
   await page.getByLabel('위험도').selectOption('HIGH');

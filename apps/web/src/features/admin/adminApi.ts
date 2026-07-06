@@ -101,7 +101,11 @@ export type AdminAsTicket = {
   description?: string | null;
   detailDescription?: string | null;
   logUploadId?: string | null;
-  logSummary?: string | null;
+  incidentWindow?: Record<string, unknown> | null;
+  logSummary?: Record<string, unknown> | string | null;
+  logSummaryText?: string | null;
+  supportRouting?: Record<string, unknown> | null;
+  aiDiagnosisRequest?: Record<string, unknown> | null;
   userId?: string | null;
   userEmail?: string | null;
   userName?: string | null;
