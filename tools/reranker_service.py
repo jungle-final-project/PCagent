@@ -46,6 +46,13 @@ FEATURES = [
     "category_COOLER",
 ]
 
+TRAINING_REQUIRED_TABLES = [
+    "recommendation_training_jobs",
+    "recommendation_training_datasets",
+    "recommendation_training_dataset_items",
+    "recommendation_model_versions",
+]
+
 
 class Scorer:
     def __init__(self, model_path: str | None):
@@ -252,6 +259,22 @@ def db_connection():
     )
 
 
+def training_schema_ready() -> bool:
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT count(*) = %s AS ready
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name = ANY(%s)
+                """,
+                (len(TRAINING_REQUIRED_TABLES), TRAINING_REQUIRED_TABLES),
+            )
+            row = cur.fetchone()
+            return bool(row and row.get("ready"))
+
+
 def training_worker_loop(stop_event: threading.Event):
     if not truthy(os.getenv("RECOMMENDATION_TRAINING_WORKER_ENABLED", "true")):
         print("recommendation training worker disabled")
@@ -274,6 +297,8 @@ def training_worker_loop(stop_event: threading.Event):
 
 
 def process_one_training_job(worker_id: str, min_rows: int) -> bool:
+    if not training_schema_ready():
+        return False
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(

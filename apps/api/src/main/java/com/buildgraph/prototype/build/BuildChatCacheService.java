@@ -287,14 +287,7 @@ public class BuildChatCacheService {
             return cached;
         }
         try {
-            Map<String, Object> versions = jdbcTemplate.queryForMap("""
-                    SELECT
-                      coalesce((SELECT max(coalesce(updated_at, created_at))::text FROM parts WHERE deleted_at IS NULL), 'none') AS parts_version,
-                      coalesce((SELECT max(created_at)::text FROM benchmark_summaries WHERE deleted_at IS NULL), 'none') AS benchmark_version,
-                      coalesce((SELECT max(created_at)::text FROM game_fps_benchmarks WHERE deleted_at IS NULL), 'none') AS fps_version,
-                      coalesce((SELECT max(created_at)::text FROM rag_evidence WHERE agent_session_id IS NULL), 'none') AS rag_version,
-                      coalesce((SELECT max(coalesce(updated_at, created_at))::text FROM part_alias_rules WHERE deleted_at IS NULL), 'none') AS alias_version
-                    """);
+            Map<String, Object> versions = BuildChatDataVersionReader.read(jdbcTemplate);
             cachedDataVersions = versions;
             cachedDataVersionsAtNanos = now;
             return versions;

@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
@@ -72,7 +74,7 @@ class BuildChatCacheServiceTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         when(provider.getIfAvailable()).thenReturn(redis);
         when(redis.opsForValue()).thenReturn(operations);
-        when(jdbcTemplate.queryForMap(anyString())).thenReturn(versions("parts-v1"));
+        stubDataVersions(jdbcTemplate, new AtomicReference<>(versions("parts-v1")));
         when(operations.get(anyString())).thenThrow(new RuntimeException("redis down"));
         doThrow(new RuntimeException("redis down")).when(operations).set(anyString(), anyString(), any(Duration.class));
 
@@ -229,8 +231,28 @@ class BuildChatCacheServiceTest {
             redisStore.put(invocation.getArgument(0, String.class), invocation.getArgument(1, String.class));
             return null;
         }).when(operations).set(anyString(), anyString(), any(Duration.class));
-        when(jdbcTemplate.queryForMap(anyString())).thenAnswer(invocation -> versions.get());
+        stubDataVersions(jdbcTemplate, versions);
         return new TestCache(new BuildChatCacheService(provider, jdbcTemplate, profileConfig(), true, 600), versions);
+    }
+
+    private static void stubDataVersions(JdbcTemplate jdbcTemplate, AtomicReference<Map<String, Object>> versions) {
+        stubVersion(jdbcTemplate, versions, "parts", "parts_version");
+        stubVersion(jdbcTemplate, versions, "benchmark_summaries", "benchmark_version");
+        stubVersion(jdbcTemplate, versions, "game_fps_benchmarks", "fps_version");
+        stubVersion(jdbcTemplate, versions, "rag_evidence", "rag_version");
+        stubVersion(jdbcTemplate, versions, "part_alias_rules", "alias_version");
+    }
+
+    private static void stubVersion(
+            JdbcTemplate jdbcTemplate,
+            AtomicReference<Map<String, Object>> versions,
+            String tableName,
+            String versionKey
+    ) {
+        when(jdbcTemplate.queryForObject("SELECT to_regclass('public." + tableName + "') IS NOT NULL", Boolean.class))
+                .thenReturn(true);
+        when(jdbcTemplate.queryForObject(contains("FROM public." + tableName + " "), eq(String.class)))
+                .thenAnswer(invocation -> String.valueOf(versions.get().get(versionKey)));
     }
 
     private static AiProfileConfig profileConfig() {

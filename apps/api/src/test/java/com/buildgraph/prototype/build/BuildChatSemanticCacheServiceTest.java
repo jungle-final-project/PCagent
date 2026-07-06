@@ -3,6 +3,8 @@ package com.buildgraph.prototype.build;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -20,7 +22,7 @@ class BuildChatSemanticCacheServiceTest {
         OpenAiEmbeddingClient embeddingClient = mock(OpenAiEmbeddingClient.class);
         when(embeddingClient.isConfigured()).thenReturn(true);
         when(embeddingClient.embed(anyString())).thenReturn(List.of(0.1, 0.2, 0.3));
-        when(jdbcTemplate.queryForMap(anyString())).thenReturn(versions());
+        stubDataVersions(jdbcTemplate);
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of(
                 "id", 10L,
                 "similarity", 0.96,
@@ -44,7 +46,7 @@ class BuildChatSemanticCacheServiceTest {
         OpenAiEmbeddingClient embeddingClient = mock(OpenAiEmbeddingClient.class);
         when(embeddingClient.isConfigured()).thenReturn(true);
         when(embeddingClient.embed(anyString())).thenReturn(List.of(0.1, 0.2, 0.3));
-        when(jdbcTemplate.queryForMap(anyString())).thenReturn(versions());
+        stubDataVersions(jdbcTemplate);
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of(
                 "id", 10L,
                 "similarity", 0.91,
@@ -72,6 +74,27 @@ class BuildChatSemanticCacheServiceTest {
 
     private static BuildChatIntentDecision decision(BuildChatIntent intent, String signature) {
         return new BuildChatIntentDecision(intent, "HIGH", "NONE", null, null, "LLM_OR_DETERMINISTIC", "SEMANTIC_READ_ONLY", signature, List.of());
+    }
+
+    private static void stubDataVersions(JdbcTemplate jdbcTemplate) {
+        Map<String, Object> versions = versions();
+        stubVersion(jdbcTemplate, versions, "parts", "parts_version");
+        stubVersion(jdbcTemplate, versions, "benchmark_summaries", "benchmark_version");
+        stubVersion(jdbcTemplate, versions, "game_fps_benchmarks", "fps_version");
+        stubVersion(jdbcTemplate, versions, "rag_evidence", "rag_version");
+        stubVersion(jdbcTemplate, versions, "part_alias_rules", "alias_version");
+    }
+
+    private static void stubVersion(
+            JdbcTemplate jdbcTemplate,
+            Map<String, Object> versions,
+            String tableName,
+            String versionKey
+    ) {
+        when(jdbcTemplate.queryForObject("SELECT to_regclass('public." + tableName + "') IS NOT NULL", Boolean.class))
+                .thenReturn(true);
+        when(jdbcTemplate.queryForObject(contains("FROM public." + tableName + " "), eq(String.class)))
+                .thenReturn(String.valueOf(versions.get(versionKey)));
     }
 
     private static Map<String, Object> versions() {
