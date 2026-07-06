@@ -1565,6 +1565,33 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertFalse(diagnosis["issueDetected"])
             self.assertFalse(diagnosis["asReady"])
 
+    def test_local_diagnosis_model_reports_server_connection_failed_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            now = datetime.now(agent.KST)
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": now.isoformat(),
+                        "kind": "AGENT_HEALTH",
+                        "message": "heartbeat failed connection refused",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(directory)
+
+            diagnosis = agent.local_diagnosis_model(config, path)
+
+            self.assertEqual(diagnosis["statusKey"], "server_connection_failed")
+            self.assertEqual(diagnosis["statusLabel"], "서버 연결 실패")
+            self.assertEqual(diagnosis["serverStatusKey"], "server_connection_failed")
+            self.assertIn("서버 연결", diagnosis["summary"])
+            self.assertIn("서버 연결", diagnosis["serverMessage"])
+            self.assertFalse(diagnosis["issueDetected"])
+            self.assertFalse(diagnosis["asReady"])
+
     def test_local_diagnosis_model_reports_warning_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agent-metrics.jsonl"
@@ -1639,6 +1666,11 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertFalse(diagnosis["agentRegistered"])
             self.assertFalse(diagnosis["asReady"])
             self.assertIn("/support/new", diagnosis["registrationMessage"])
+
+    def test_as_rag_preview_failure_message_clarifies_local_states(self) -> None:
+        self.assertIn("서버 연결", agent.as_rag_preview_failure_message(agent.UploadError("connection refused")))
+        self.assertIn("재등록", agent.as_rag_preview_failure_message(agent.UploadError("agentToken is missing")))
+        self.assertIn("로그", agent.as_rag_preview_failure_message(agent.UploadError("no log rows selected")))
 
     def test_diagnosis_history_is_visible_and_prunes_rows_older_than_30_days(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -2783,6 +2783,16 @@ def latest_server_card(rows: Sequence[dict[str, Any]]) -> dict[str, str]:
     return {"value": "● 확인 전", "detail": "heartbeat 대기", "tone": "muted"}
 
 
+def local_server_status(rows: Sequence[dict[str, Any]]) -> tuple[str, str, str]:
+    card = latest_server_card(rows)
+    tone = card.get("tone")
+    if tone == "danger":
+        return "server_connection_failed", "서버 연결 실패", "서버 연결을 확인할 수 없어 서버 추천을 받을 수 없습니다."
+    if tone == "ok":
+        return "connected", "서버 연결됨", str(card.get("detail") or "서버 연결 기록이 있습니다.")
+    return "unchecked", "서버 확인 전", "서버 연결 기록이 아직 없습니다. 로컬 진단은 계속 사용할 수 있습니다."
+
+
 def startup_card_status() -> dict[str, str]:
     try:
         path = startup_dir() / f"{APP_NAME}.cmd"
@@ -2821,6 +2831,7 @@ def local_diagnosis_model(config: AgentConfig, path: Path) -> dict[str, Any]:
     tone = str(pc_card.get("tone", "muted"))
     detection = home_model.get("homeDetection")
     detail = sanitize_display_text(pc_card.get("detail"), 120)
+    server_status_key, server_status_label, server_message = local_server_status(rows)
 
     if not rows:
         status_key = "no_logs"
@@ -2828,6 +2839,12 @@ def local_diagnosis_model(config: AgentConfig, path: Path) -> dict[str, Any]:
         tone = "muted"
         issue_detected = False
         summary = "분석할 로컬 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요."
+    elif server_status_key == "server_connection_failed" and tone != "danger":
+        status_key = "server_connection_failed"
+        status_label = "서버 연결 실패"
+        tone = "warning"
+        issue_detected = False
+        summary = "로컬 PC 이상 신호는 없지만 서버 연결을 확인할 수 없습니다. 로컬 진단은 가능하며, 서버 추천은 연결 복구 후 다시 시도해 주세요."
     elif tone == "danger":
         status_key = "danger"
         status_label = "위험"
@@ -2865,6 +2882,9 @@ def local_diagnosis_model(config: AgentConfig, path: Path) -> dict[str, Any]:
         "agentRegistered": agent_registered,
         "registrationMessage": registration_message,
         "detectedTitle": detected_title,
+        "serverStatusKey": server_status_key,
+        "serverStatusLabel": server_status_label,
+        "serverMessage": server_message,
     }
 
 
@@ -2877,6 +2897,9 @@ def diagnosis_history_row(config: AgentConfig, diagnosis: dict[str, Any], observ
         "issueDetected": bool(diagnosis.get("issueDetected")),
         "asReady": bool(diagnosis.get("asReady")),
         "agentRegistered": bool(diagnosis.get("agentRegistered")),
+        "serverStatusKey": diagnosis.get("serverStatusKey"),
+        "serverStatusLabel": diagnosis.get("serverStatusLabel"),
+        "serverMessage": diagnosis.get("serverMessage"),
         "supportUrl": support_new_url(config),
     }
     return {
@@ -4713,7 +4736,7 @@ def show_log_viewer(
         anchor="w",
     ).pack(fill="x", pady=(0, 4))
     for label, variable in (
-        ("AI 요약", diagnosis_ai_summary),
+        ("진단 요약", diagnosis_ai_summary),
         ("의심 원인", diagnosis_ai_cause),
         ("권장 조치", diagnosis_ai_action),
         ("관리자 확인", diagnosis_ai_admin),
@@ -4863,7 +4886,7 @@ def show_log_viewer(
     preview_block.pack(fill="x", pady=(0, 10))
     tk.Label(
         preview_block,
-        text="AI 로그 요약",
+        text="서버 추천",
         font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["section_bg"],
@@ -5088,6 +5111,9 @@ def show_log_viewer(
 
         if diagnosis["statusKey"] == "no_logs":
             home_support_status.set("분석할 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요.")
+            return
+        if diagnosis["statusKey"] == "server_connection_failed":
+            home_support_status.set(str(diagnosis["serverMessage"]))
             return
         if not diagnosis["issueDetected"]:
             home_support_status.set("최근 로컬 진단은 정상입니다. AS 접수가 필요한 이상 신호는 없습니다.")
