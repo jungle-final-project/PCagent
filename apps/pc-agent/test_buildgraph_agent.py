@@ -1063,6 +1063,20 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertEqual(rows[1]["summaryText"], "첫 번째 진단")
             self.assertIn("최근 진단:", agent.compact_home_diagnosis_text(rows[0]))
 
+    def test_compact_home_diagnosis_text_explains_diagnosis_only_reason(self) -> None:
+        text = agent.compact_home_diagnosis_text(
+            {
+                "recommendedService": "DIAGNOSIS_ONLY",
+                "recommendedServiceLabel": "우선 진단만 받기",
+                "supportDecision": "NEEDS_MORE_INFO",
+                "confidence": "LOW",
+            }
+        )
+
+        self.assertIn("최근 진단: 우선 진단만 받기 / 신뢰도 LOW", text)
+        self.assertIn("뚜렷한 장애 신호가 없어", text)
+        self.assertIn("원격/방문 판단은 보류", text)
+
     def test_ensure_default_config_creates_background_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "agent-config.json"

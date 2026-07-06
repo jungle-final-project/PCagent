@@ -2008,10 +2008,24 @@ def format_diagnosis_history_time(value: Any) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M")
 
 
+def compact_home_diagnosis_reason(record: dict[str, Any]) -> str:
+    recommended_service = str(record.get("recommendedService") or "")
+    support_decision = str(record.get("supportDecision") or "")
+    if support_decision in {"VISIT_REQUIRED", "REPAIR_OR_REPLACE"} or recommended_service == "VISIT_SUPPORT":
+        return "방문 점검이 필요한 신호가 있어 관리자 검토를 권장합니다."
+    if support_decision == "REMOTE_POSSIBLE" or recommended_service == "REMOTE_SUPPORT":
+        return "원격으로 먼저 확인 가능한 신호가 있어 원격지원을 권장합니다."
+    if support_decision == "UNSUPPORTED":
+        return "PC Agent AS 지원 범위 밖 신호로 분류되어 관리자 확인이 필요합니다."
+    if support_decision == "MONITOR_ONLY":
+        return "즉시 조치보다 재발 여부를 더 지켜보는 것이 적절합니다."
+    return "최근 로그에서 뚜렷한 장애 신호가 없어 원격/방문 판단은 보류했습니다."
+
+
 def compact_home_diagnosis_text(record: dict[str, Any]) -> str:
     label = sanitize_display_text(record.get("recommendedServiceLabel"), 40)
-    summary = sanitize_display_text(record.get("summaryText") or record.get("recommendationMessage"), 130)
-    return f"최근 진단: {label}\n{summary}"
+    confidence = sanitize_display_text(record.get("confidence"), 20)
+    return f"최근 진단: {label} / 신뢰도 {confidence}\n{compact_home_diagnosis_reason(record)}"
 
 
 def diagnosis_history_detail_text(record: dict[str, Any]) -> str:

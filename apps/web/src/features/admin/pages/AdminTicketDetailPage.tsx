@@ -8,7 +8,16 @@ import type { AdminAsTicket, AdminAsTicketUpdateRequest, AsTicketStatus } from '
 
 const editableStatuses: AsTicketStatus[] = ['OPEN', 'ASSIGNED', 'IN_PROGRESS', 'RESOLVED', 'CLOSED', 'CANCELLED'];
 const reviewStatuses = ['', 'NOT_REQUIRED', 'REQUIRED', 'IN_REVIEW', 'APPROVED', 'REJECTED'];
-const supportDecisions = ['', 'SELF_SOLVABLE', 'REMOTE_POSSIBLE', 'VISIT_REQUIRED', 'NEEDS_MORE_INFO'];
+const supportDecisions = [
+  '',
+  'SELF_SOLVABLE',
+  'REMOTE_POSSIBLE',
+  'VISIT_REQUIRED',
+  'REPAIR_OR_REPLACE',
+  'NEEDS_MORE_INFO',
+  'MONITOR_ONLY',
+  'UNSUPPORTED'
+];
 const riskLevels = ['', 'LOW', 'MEDIUM', 'HIGH'];
 const diagnosticAccuracies = ['', 'ACCURATE', 'PARTIAL', 'MISSED', 'UNKNOWN'];
 const visitTimeSlots = ['', 'MORNING', 'AFTERNOON', 'EVENING'];
@@ -484,12 +493,19 @@ function ticketDetailRows(ticket: AdminAsTicket) {
     { 항목: '진단 상태', 내용: ticket.analysisStatus ? <StatusBadge status={ticket.analysisStatus} /> : '-' },
     { 항목: '검토 상태', 내용: ticket.reviewStatus ? <StatusBadge status={ticket.reviewStatus} /> : '-' },
     { 항목: '지원 결정', 내용: ticket.supportDecision ? <StatusBadge status={ticket.supportDecision} /> : '-' },
+    { 항목: '추천 서비스', 내용: recommendedSupportLabel(ticket) },
+    { 항목: '추천 신뢰도', 내용: routingConfidence(ticket) },
     { 항목: '위험도', 내용: ticket.riskLevel ? <StatusBadge status={ticket.riskLevel} /> : '-' },
     { 항목: '진단 적중 여부', 내용: ticket.diagnosticAccuracy ?? '-' },
     { 항목: '사용자 피드백', 내용: ticket.feedbackRating ? `${ticket.feedbackRating}/5 ${ticket.feedbackComment ?? ''}`.trim() : '-' },
     { 항목: '제목/증상', 내용: ticket.title ?? ticket.symptom },
     { 항목: '상세 설명', 내용: ticket.description ?? ticket.detailDescription ?? '상세 설명 응답 없음' },
+    { 항목: '문제 발생 구간', 내용: incidentWindowSummary(ticket) },
     { 항목: '로그 요약', 내용: logSummary(ticket) },
+    { 항목: '추천 근거 코드', 내용: routingListText(ticket, 'reasonCodes') },
+    { 항목: '원격 조치 후보', 내용: routingListText(ticket, 'remoteActions') },
+    { 항목: '방문 판단 근거', 내용: routingListText(ticket, 'visitReasons') },
+    { 항목: '차단 요인', 내용: routingListText(ticket, 'blockingFactors') },
     { 항목: '원인 후보', 내용: formatCandidates(ticket.causeCandidates) },
     { 항목: '업그레이드 후보', 내용: formatCandidates(ticket.upgradeCandidates) },
     { 항목: '원격지원', 내용: remoteSupport(ticket) },
@@ -503,10 +519,95 @@ function ticketDetailRows(ticket: AdminAsTicket) {
 }
 
 function logSummary(ticket: AdminAsTicket) {
+  if (ticket.logSummaryText) {
+    return ticket.logSummaryText;
+  }
   if (ticket.logSummary) {
-    return ticket.logSummary;
+    if (typeof ticket.logSummary === 'string') {
+      return ticket.logSummary;
+    }
+    const summaryText = textValue(ticket.logSummary.summaryText);
+    if (summaryText) {
+      return summaryText;
+    }
+    const correlations = ticket.logSummary.correlations;
+    if (Array.isArray(correlations)) {
+      const summaries = correlations
+        .map((item) => textValue(objectValue(item)?.summary))
+        .filter(Boolean);
+      if (summaries.length) {
+        return summaries.join(' / ');
+      }
+    }
   }
   return ticket.logUploadId ? `업로드된 로그 있음: ${shortId(ticket.logUploadId)}` : '연결된 로그 없음';
+}
+
+function recommendedSupportLabel(ticket: AdminAsTicket) {
+  const routing = objectValue(ticket.supportRouting);
+  const explicitLabel = textValue(routing?.recommendedServiceLabel);
+  if (explicitLabel) {
+    return explicitLabel;
+  }
+  const service = textValue(routing?.recommendedService);
+  if (service) {
+    return supportServiceLabel(service);
+  }
+  return serviceLabelForDecision(ticket.supportDecision);
+}
+
+function supportServiceLabel(service: string) {
+  switch (service) {
+    case 'REMOTE_SUPPORT':
+      return '원격지원 신청';
+    case 'VISIT_SUPPORT':
+      return '방문지원 신청';
+    case 'DIAGNOSIS_ONLY':
+      return '우선 진단만 받기';
+    default:
+      return service;
+  }
+}
+
+function serviceLabelForDecision(decision?: string | null) {
+  switch (decision) {
+    case 'REMOTE_POSSIBLE':
+      return '원격지원 신청';
+    case 'VISIT_REQUIRED':
+    case 'REPAIR_OR_REPLACE':
+      return '방문지원 신청';
+    case 'UNSUPPORTED':
+      return '지원 범위 밖';
+    default:
+      return '우선 진단만 받기';
+  }
+}
+
+function routingConfidence(ticket: AdminAsTicket) {
+  const confidence = textValue(objectValue(ticket.supportRouting)?.confidence);
+  return confidence ? <StatusBadge status={confidence} /> : '-';
+}
+
+function routingListText(ticket: AdminAsTicket, key: string) {
+  const value = objectValue(ticket.supportRouting)?.[key];
+  if (Array.isArray(value)) {
+    const items = value.map((item) => textValue(item)).filter(Boolean);
+    return items.length ? items.join(' / ') : '-';
+  }
+  return textValue(value) || '-';
+}
+
+function incidentWindowSummary(ticket: AdminAsTicket) {
+  const logSummaryValue = objectValue(ticket.logSummary);
+  const window = objectValue(ticket.incidentWindow) ?? objectValue(logSummaryValue?.incidentWindow);
+  if (!window) {
+    return '-';
+  }
+  const startedAt = textValue(window.startedAt) ?? textValue(window.rangeStartedAt);
+  const endedAt = textValue(window.endedAt) ?? textValue(window.rangeEndedAt);
+  const symptomType = textValue(window.symptomType);
+  const range = startedAt || endedAt ? `${formatDateTime(startedAt)} ~ ${formatDateTime(endedAt)}` : '-';
+  return symptomType ? `${range} / ${symptomType}` : range;
 }
 
 function visitSupport(ticket: AdminAsTicket) {
@@ -536,6 +637,23 @@ function formatCandidates(candidates: Record<string, unknown>[]) {
     const summary = candidate.summary ?? candidate.reason ?? candidate.name ?? candidate.title ?? candidate.label;
     return summary == null ? JSON.stringify(candidate) : String(summary);
   }).join(' / ');
+}
+
+function objectValue(value: unknown) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function textValue(value: unknown) {
+  if (typeof value === 'string') {
+    return value.trim() || null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
 }
 
 function shortId(id: string) {
