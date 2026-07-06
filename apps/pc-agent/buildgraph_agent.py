@@ -2256,6 +2256,13 @@ def format_log_timestamp(row: dict[str, Any]) -> str:
     return timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def format_log_date(row: dict[str, Any]) -> str:
+    timestamp = parse_log_timestamp(row)
+    if timestamp is None:
+        return "-"
+    return timestamp.strftime("%Y-%m-%d")
+
+
 def format_log_time(row: dict[str, Any]) -> str:
     timestamp = parse_log_timestamp(row)
     if timestamp is None:
@@ -2327,6 +2334,40 @@ def read_log_rows_for_filter(
     if user_touched_filter:
         return read_log_hour(path, date_text, hour, limit)
     return read_log_day_latest(path, date_text, limit)
+
+
+def read_diagnosis_history_rows(
+    path: Path,
+    now: datetime | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    observed_now = now or datetime.now(KST)
+    cutoff = observed_now - timedelta(days=DIAGNOSIS_HISTORY_RETENTION_DAYS)
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if not is_diagnosis_history_row(row):
+                continue
+            timestamp = parse_log_timestamp(row)
+            if timestamp is None:
+                continue
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=KST)
+            if timestamp < cutoff:
+                continue
+            rows.append(row)
+    rows.sort(key=lambda row: parse_log_timestamp(row) or datetime.min.replace(tzinfo=KST), reverse=True)
+    return rows[:limit]
 
 
 def format_percent(value: Any) -> str:
@@ -2424,6 +2465,26 @@ def display_log_table_values(row: dict[str, Any]) -> tuple[str, ...]:
         format_optional_sensor_temperature(row, "cpuTemp", "cpuTempCelsius", "cpuTemperatureCelsius"),
         format_optional_sensor_temperature(row, "gpuTemp", "gpuTempCelsius", "gpuTemperatureCelsius"),
         display_log_message(row),
+    )
+
+
+def display_diagnosis_history_support_label(row: dict[str, Any]) -> str:
+    if not bool(log_value(row, "agentRegistered")):
+        return "재등록 필요"
+    if bool(log_value(row, "asReady")):
+        return "AS 가능"
+    if bool(log_value(row, "issueDetected")):
+        return "검토 필요"
+    return "AS 대상 아님"
+
+
+def display_diagnosis_history_values(row: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        format_log_date(row),
+        format_log_time(row),
+        sanitize_display_text(log_value(row, "diagnosisStatus", "status"), 40),
+        sanitize_display_text(log_value(row, "summary", "message"), 120),
+        display_diagnosis_history_support_label(row),
     )
 
 
@@ -4269,6 +4330,54 @@ def show_log_viewer(
         background=colors["card_bg"],
     ).pack()
 
+    history_frame = tk.Frame(
+        log_view,
+        background=colors["section_bg"],
+        highlightthickness=1,
+        highlightbackground=colors["border"],
+    )
+    history_frame.pack(fill="x", pady=(0, 8))
+    history_frame.columnconfigure(0, weight=1)
+    tk.Label(
+        history_frame,
+        text="진단 이력",
+        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
+        foreground=colors["text"],
+        background=colors["section_bg"],
+        anchor="w",
+    ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(10, 6))
+    diagnosis_history_columns = ("date", "time", "status", "summary", "support")
+    diagnosis_history_tree = ttk.Treeview(
+        history_frame,
+        columns=diagnosis_history_columns,
+        show="headings",
+        height=4,
+        style="Agent.Treeview",
+    )
+    diagnosis_history_tree.heading("date", text="날짜")
+    diagnosis_history_tree.heading("time", text="시간")
+    diagnosis_history_tree.heading("status", text="상태")
+    diagnosis_history_tree.heading("summary", text="간단 문제 요약")
+    diagnosis_history_tree.heading("support", text="AS 가능 여부")
+    diagnosis_history_tree.column("date", width=96, minwidth=88, anchor="w", stretch=False)
+    diagnosis_history_tree.column("time", width=76, minwidth=70, anchor="w", stretch=False)
+    diagnosis_history_tree.column("status", width=72, minwidth=64, anchor="center", stretch=False)
+    diagnosis_history_tree.column("summary", width=440, minwidth=260, anchor="w")
+    diagnosis_history_tree.column("support", width=110, minwidth=96, anchor="center", stretch=False)
+    diagnosis_history_tree.tag_configure("odd", background=colors["row_alt"])
+    diagnosis_history_tree.tag_configure("even", background=colors["section_bg"])
+    diagnosis_history_scroll = ttk.Scrollbar(history_frame, orient="vertical", command=diagnosis_history_tree.yview)
+    diagnosis_history_tree.configure(yscrollcommand=diagnosis_history_scroll.set)
+    diagnosis_history_tree.grid(row=1, column=0, sticky="ew", padx=(12, 0), pady=(0, 12))
+    diagnosis_history_scroll.grid(row=1, column=1, sticky="ns", padx=(0, 12), pady=(0, 12))
+    diagnosis_history_empty = tk.Label(
+        history_frame,
+        text="최근 30일 진단 이력이 없습니다.",
+        font=ui_font(FONT_BODY_PX),
+        foreground=colors["subtle"],
+        background=colors["section_bg"],
+    )
+
     filters = tk.Frame(log_view, background=colors["app_bg"])
     filters.pack(fill="x", pady=(0, 8))
     tk.Label(
@@ -4358,7 +4467,7 @@ def show_log_viewer(
     table_frame.pack(fill="both", expand=True)
     tk.Label(
         table_frame,
-        text="전체 로그내용",
+        text="전체 원본 로그",
         font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
         foreground=colors["text"],
         background=colors["section_bg"],
@@ -4974,6 +5083,7 @@ def show_log_viewer(
         home_last_diagnosis["model"] = diagnosis
         append_diagnosis_history(config, path, diagnosis)
         home_ai_summary.set(str(diagnosis["summary"]))
+        refresh_diagnosis_history_table()
         refresh_log_summary()
 
         if diagnosis["statusKey"] == "no_logs":
@@ -5055,7 +5165,27 @@ def show_log_viewer(
         refresh_home_detection(model["homeDetection"])
         refresh_log_summary()
 
+    def refresh_diagnosis_history_table() -> None:
+        rows = read_diagnosis_history_rows(path)
+        diagnosis_history_tree.delete(*diagnosis_history_tree.get_children())
+        if rows:
+            diagnosis_history_empty.grid_forget()
+            diagnosis_history_tree.grid()
+            diagnosis_history_scroll.grid()
+            for index, row in enumerate(rows):
+                diagnosis_history_tree.insert(
+                    "",
+                    "end",
+                    values=display_diagnosis_history_values(row),
+                    tags=("odd" if index % 2 else "even",),
+                )
+            return
+        diagnosis_history_tree.grid_remove()
+        diagnosis_history_scroll.grid_remove()
+        diagnosis_history_empty.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(8, 18))
+
     def refresh_log() -> None:
+        refresh_diagnosis_history_table()
         if not log_filter_state["userTouched"]:
             current_date, current_hour = default_log_filter_values()
             set_date_filter(current_date)
@@ -5072,6 +5202,7 @@ def show_log_viewer(
             log_filter_state["userTouched"],
             LOG_TABLE_LIMIT,
         )
+        rows = [row for row in rows if not is_diagnosis_history_row(row)]
         tree.delete(*tree.get_children())
         for index, row in enumerate(rows):
             tree.insert("", "end", values=display_log_table_values(row), tags=("odd" if index % 2 else "even",))
@@ -5159,6 +5290,7 @@ def show_log_viewer(
         log_filter_state["logTabOpened"] = True
         if not range_badge.winfo_ismapped():
             range_badge.pack(side="right")
+        refresh_diagnosis_history_table()
         refresh_log()
         tree.focus_set()
 

@@ -1690,6 +1690,65 @@ class AgentGoal1112Test(unittest.TestCase):
             self.assertEqual(latest_rows[0]["kind"], agent.DIAGNOSIS_HISTORY_KIND)
             self.assertEqual(agent.display_log_event_summary(latest_rows[0]), "진단 이력")
 
+    def test_diagnosis_history_summary_rows_show_recent_display_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agent-metrics.jsonl"
+            config = self.make_config(directory)
+            now = datetime(2026, 7, 6, 10, 0, tzinfo=agent.KST)
+            recent_warning = agent.diagnosis_history_row(
+                config,
+                {
+                    "statusLabel": "주의",
+                    "tone": "warning",
+                    "summary": "메모리 사용률이 높습니다.",
+                    "issueDetected": True,
+                    "asReady": True,
+                    "agentRegistered": True,
+                },
+                now,
+            )
+            recent_normal = agent.diagnosis_history_row(
+                config,
+                {
+                    "statusLabel": "정상",
+                    "tone": "ok",
+                    "summary": "최근 로컬 로그 기준 정상입니다.",
+                    "issueDetected": False,
+                    "asReady": False,
+                    "agentRegistered": True,
+                },
+                now - timedelta(hours=1),
+            )
+            old_warning = agent.diagnosis_history_row(
+                config,
+                {
+                    "statusLabel": "위험",
+                    "tone": "danger",
+                    "summary": "오래된 위험 진단입니다.",
+                    "issueDetected": True,
+                    "asReady": True,
+                    "agentRegistered": True,
+                },
+                now - timedelta(days=31),
+            )
+            path.write_text(
+                "\n".join(
+                    json.dumps(row, ensure_ascii=False)
+                    for row in (old_warning, recent_normal, recent_warning)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            rows = agent.read_diagnosis_history_rows(path, now=now, limit=10)
+
+            self.assertEqual([row["summary"] for row in rows], ["메모리 사용률이 높습니다.", "최근 로컬 로그 기준 정상입니다."])
+            self.assertEqual(
+                agent.display_diagnosis_history_values(rows[0]),
+                ("2026-07-06", "10:00:00", "주의", "메모리 사용률이 높습니다.", "AS 가능"),
+            )
+            self.assertEqual(agent.display_diagnosis_history_values(rows[1])[-1], "AS 대상 아님")
+
     def test_diagnosis_history_rows_do_not_create_pc_status_signals(self) -> None:
         now = datetime.now(agent.KST)
         rows = [
