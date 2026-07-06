@@ -13,6 +13,21 @@ java {
     }
 }
 
+def isAsciiPath = { String value ->
+    value.every { character -> ((int) character) < 128 }
+}
+def useAsciiTestRuntimeClasspath = System.getProperty('os.name')
+        .toLowerCase(Locale.ROOT)
+        .contains('windows') && !isAsciiPath(projectDir.absolutePath)
+def asciiTestRuntimeRoot = new File(
+        System.getProperty('java.io.tmpdir'),
+        "buildgraph-api-test-runtime-${Integer.toHexString(projectDir.absolutePath.hashCode())}"
+)
+
+if (useAsciiTestRuntimeClasspath && !isAsciiPath(asciiTestRuntimeRoot.absolutePath)) {
+    throw new GradleException('Gradle test runtime needs an ASCII temp path on Windows when the project path is non-ASCII.')
+}
+
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-amqp'
@@ -31,6 +46,31 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 
+def syncTestRuntimeClasspathForWindowsArgfile = tasks.register('syncTestRuntimeClasspathForWindowsArgfile', Sync) {
+    onlyIf { useAsciiTestRuntimeClasspath }
+    dependsOn tasks.named('classes'), tasks.named('testClasses')
+    into asciiTestRuntimeRoot
+    from(sourceSets.main.output) {
+        into 'main'
+    }
+    from(sourceSets.test.output) {
+        into 'test'
+    }
+}
+
 tasks.named('test') {
     useJUnitPlatform()
+
+    if (useAsciiTestRuntimeClasspath) {
+        dependsOn syncTestRuntimeClasspathForWindowsArgfile
+
+        def copiedMainOutput = new File(asciiTestRuntimeRoot, 'main')
+        def copiedTestOutput = new File(asciiTestRuntimeRoot, 'test')
+        def sourceOutputFiles = files(sourceSets.main.output, sourceSets.test.output)
+
+        testClassesDirs = files(copiedTestOutput)
+        classpath = files(copiedTestOutput, copiedMainOutput) + configurations.testRuntimeClasspath.filter { file ->
+            !sourceOutputFiles.files.contains(file)
+        }
+    }
 }
