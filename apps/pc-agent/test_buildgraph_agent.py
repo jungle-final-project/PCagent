@@ -1781,6 +1781,47 @@ class AgentGoal1112Test(unittest.TestCase):
             )
             self.assertEqual(agent.display_diagnosis_history_values(rows[1])[-1], "AS 대상 아님")
 
+    def test_diagnosis_history_as_form_model_prefills_support_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.make_config(directory)
+            observed_at = datetime(2026, 7, 6, 15, 30, tzinfo=agent.KST)
+            row = agent.diagnosis_history_row(
+                config,
+                {
+                    "statusLabel": "주의",
+                    "tone": "warning",
+                    "summary": "메모리 사용률이 높습니다.",
+                    "issueDetected": True,
+                    "asReady": True,
+                    "agentRegistered": True,
+                    "serverMessage": "서버 연결됨",
+                },
+                observed_at,
+            )
+
+            model = agent.diagnosis_history_as_form_model(config, row)
+
+            self.assertEqual(model["title"], "[PC진단] 주의")
+            self.assertEqual(model["symptomType"], "REMOTE_AGENT")
+            self.assertEqual(model["symptomTime"], "2026-07-06 15:30:00")
+            self.assertEqual(model["supportMode"], "우선 진단만 받기")
+            self.assertEqual(model["supportLabel"], "AS 가능")
+            self.assertTrue(model["asReady"])
+            self.assertIn("메모리 사용률이 높습니다.", model["detail"])
+
+    def test_home_diagnosis_status_message_stays_local_until_support_request(self) -> None:
+        message = agent.home_diagnosis_status_message(
+            {
+                "statusKey": "warning",
+                "issueDetected": True,
+                "asReady": True,
+                "agentRegistered": True,
+            }
+        )
+
+        self.assertIn("AS 접수 신청", message)
+        self.assertNotIn("서버 추천", message)
+
     def test_diagnosis_history_rows_do_not_create_pc_status_signals(self) -> None:
         now = datetime.now(agent.KST)
         rows = [

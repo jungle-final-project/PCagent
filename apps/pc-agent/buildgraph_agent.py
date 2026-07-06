@@ -2488,6 +2488,47 @@ def display_diagnosis_history_values(row: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def diagnosis_history_as_form_model(config: AgentConfig, row: dict[str, Any]) -> dict[str, Any]:
+    status = sanitize_display_text(log_value(row, "diagnosisStatus", "status"), 40)
+    summary = sanitize_display_text(log_value(row, "summary", "message"), 240)
+    observed_at = format_log_timestamp(row)
+    issue_detected = bool(log_value(row, "issueDetected"))
+    as_ready = bool(log_value(row, "asReady"))
+    agent_registered = bool(log_value(row, "agentRegistered"))
+    support_label = display_diagnosis_history_support_label(row)
+    symptom_type = "REMOTE_AGENT"
+    support_mode = "우선 진단만 받기" if as_ready else "AS 접수 대상 아님"
+    if issue_detected and not agent_registered:
+        support_mode = "재등록 또는 웹 접수"
+    title_status = status if status != "-" else "진단 결과"
+    title = sanitize_display_text(f"[PC진단] {title_status}", 80)
+    detail_lines = [
+        "PC Agent 진단 이력 기준으로 자동 작성된 AS 접수 양식입니다.",
+        f"- 진단 시각: {observed_at}",
+        f"- 진단 상태: {status}",
+        f"- 요약: {summary}",
+        f"- AS 가능 여부: {support_label}",
+    ]
+    server_message = sanitize_display_text(log_value(row, "serverMessage"), 180)
+    if server_message != "-":
+        detail_lines.append(f"- 서버 상태: {server_message}")
+    if issue_detected and not agent_registered:
+        detail_lines.append(f"- 웹 접수 fallback: {support_new_url(config)}")
+    return {
+        "title": title,
+        "symptomType": symptom_type,
+        "symptomTime": observed_at,
+        "supportMode": support_mode,
+        "summary": summary,
+        "status": status,
+        "supportLabel": support_label,
+        "detail": "\n".join(detail_lines),
+        "asReady": as_ready,
+        "agentRegistered": agent_registered,
+        "supportUrl": support_new_url(config),
+    }
+
+
 def display_log_summary_values(row: dict[str, Any]) -> tuple[str, ...]:
     cpu, memory, disk, gpu = display_core_metric_values(row)
     return (
@@ -2969,6 +3010,18 @@ def home_support_request_block_message(diagnosis: Any) -> str | None:
     if not diagnosis.get("agentRegistered"):
         return str(diagnosis.get("registrationMessage") or "PC Agent 재등록이 필요합니다. 재등록이 어렵다면 웹 /support/new 에서 AS를 접수해 주세요.")
     return None
+
+
+def home_diagnosis_status_message(diagnosis: dict[str, Any]) -> str:
+    if diagnosis.get("statusKey") == "no_logs":
+        return "분석할 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요."
+    if diagnosis.get("statusKey") == "server_connection_failed":
+        return str(diagnosis.get("serverMessage") or "서버 연결을 확인할 수 없어 서버 추천을 받을 수 없습니다.")
+    if not diagnosis.get("issueDetected"):
+        return "최근 로컬 진단은 정상입니다. AS 접수가 필요한 이상 신호는 없습니다."
+    if not diagnosis.get("agentRegistered"):
+        return str(diagnosis.get("registrationMessage") or "PC Agent 재등록이 필요합니다. 재등록이 어렵다면 웹 /support/new 에서 AS를 접수해 주세요.")
+    return "이상 신호가 확인되었습니다. AS 접수 신청을 누르면 진단 로그 전송 후 접수할 수 있습니다."
 
 
 def diagnosis_tone_label(tone: str) -> str:
@@ -4289,14 +4342,6 @@ def show_log_viewer(
         widget.bind("<Button-1>", toggle_home_consent)
     paint_home_consent()
 
-    tk.Label(
-        action_row,
-        textvariable=home_support_status,
-        font=ui_font(FONT_SECONDARY_PX),
-        foreground="#16766b",
-        background=colors["card_bg"],
-        anchor="e",
-    ).grid(row=0, column=1, sticky="ew", padx=(8, 8))
     rounded_button(
         action_row,
         "AS 접수 신청",
@@ -4305,6 +4350,16 @@ def show_log_viewer(
         width=118,
         height=32,
     ).grid(row=0, column=2, sticky="e")
+    tk.Label(
+        action_row,
+        textvariable=home_support_status,
+        font=ui_font(FONT_SECONDARY_PX),
+        foreground="#16766b",
+        background=colors["card_bg"],
+        anchor="w",
+        justify="left",
+        wraplength=720,
+    ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
 
     summary_section, summary_inner = rounded_container(status_view, 150, padding=(14, 10), radius=16)
     summary_section.pack(fill="x", expand=False)
@@ -4361,8 +4416,9 @@ def show_log_viewer(
         highlightthickness=1,
         highlightbackground=colors["border"],
     )
-    history_frame.pack(fill="x", pady=(0, 8))
+    history_frame.pack(fill="both", expand=True, pady=(0, 8))
     history_frame.columnconfigure(0, weight=1)
+    history_frame.rowconfigure(1, weight=1)
     tk.Label(
         history_frame,
         text="진단 이력",
@@ -4376,7 +4432,7 @@ def show_log_viewer(
         history_frame,
         columns=diagnosis_history_columns,
         show="headings",
-        height=4,
+        height=12,
         style="Agent.Treeview",
     )
     diagnosis_history_tree.heading("date", text="날짜")
@@ -4393,7 +4449,7 @@ def show_log_viewer(
     diagnosis_history_tree.tag_configure("even", background=colors["section_bg"])
     diagnosis_history_scroll = ttk.Scrollbar(history_frame, orient="vertical", command=diagnosis_history_tree.yview)
     diagnosis_history_tree.configure(yscrollcommand=diagnosis_history_scroll.set)
-    diagnosis_history_tree.grid(row=1, column=0, sticky="ew", padx=(12, 0), pady=(0, 12))
+    diagnosis_history_tree.grid(row=1, column=0, sticky="nsew", padx=(12, 0), pady=(0, 12))
     diagnosis_history_scroll.grid(row=1, column=1, sticky="ns", padx=(0, 12), pady=(0, 12))
     diagnosis_history_empty = tk.Label(
         history_frame,
@@ -4404,7 +4460,6 @@ def show_log_viewer(
     )
 
     filters = tk.Frame(log_view, background=colors["app_bg"])
-    filters.pack(fill="x", pady=(0, 8))
     tk.Label(
         filters,
         text="날짜",
@@ -4481,62 +4536,6 @@ def show_log_viewer(
         style="Agent.TCombobox",
     )
     hour_select.pack(side="left", padx=(6, 14))
-
-    columns = ("time", "kind", "cpu", "memory", "disk", "gpu", "vram", "cpu_temp", "gpu_temp", "message")
-    table_frame = tk.Frame(
-        log_view,
-        background=colors["section_bg"],
-        highlightthickness=1,
-        highlightbackground=colors["border"],
-    )
-    table_frame.pack(fill="both", expand=True)
-    tk.Label(
-        table_frame,
-        text="전체 원본 로그",
-        font=ui_font(FONT_SECTION_TITLE_PX, "semibold"),
-        foreground=colors["text"],
-        background=colors["section_bg"],
-        anchor="w",
-    ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(10, 6))
-    tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=12, style="Agent.Treeview")
-    tree.heading("time", text="시간")
-    tree.heading("kind", text="이벤트")
-    tree.heading("cpu", text="CPU")
-    tree.heading("memory", text="메모리")
-    tree.heading("disk", text="디스크")
-    tree.heading("gpu", text="GPU")
-    tree.heading("vram", text="VRAM")
-    tree.heading("cpu_temp", text="CPU 온도")
-    tree.heading("gpu_temp", text="GPU 온도")
-    tree.heading("message", text="메시지")
-    tree.column("time", width=78, minwidth=70, anchor="w", stretch=False)
-    tree.column("kind", width=138, minwidth=120, anchor="w", stretch=False)
-    tree.column("cpu", width=62, minwidth=58, anchor="e", stretch=False)
-    tree.column("memory", width=74, minwidth=68, anchor="e", stretch=False)
-    tree.column("disk", width=70, minwidth=64, anchor="e", stretch=False)
-    tree.column("gpu", width=62, minwidth=58, anchor="e", stretch=False)
-    tree.column("vram", width=64, minwidth=60, anchor="e", stretch=False)
-    tree.column("cpu_temp", width=76, minwidth=70, anchor="e", stretch=False)
-    tree.column("gpu_temp", width=76, minwidth=70, anchor="e", stretch=False)
-    tree.column("message", width=280, minwidth=220, anchor="w")
-    tree.tag_configure("odd", background=colors["row_alt"])
-    tree.tag_configure("even", background=colors["section_bg"])
-
-    vertical = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-    horizontal = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
-    tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
-    tree.grid(row=1, column=0, sticky="nsew", padx=(12, 0), pady=(0, 0))
-    vertical.grid(row=1, column=1, sticky="ns", padx=(0, 12), pady=(0, 0))
-    horizontal.grid(row=2, column=0, sticky="ew", padx=(12, 0), pady=(0, 12))
-    table_frame.columnconfigure(0, weight=1)
-    table_frame.rowconfigure(1, weight=1)
-    log_empty_label = tk.Label(
-        table_frame,
-        text="표시할 로그가 없습니다",
-        font=ui_font(FONT_BODY_PX),
-        foreground=colors["subtle"],
-        background=colors["section_bg"],
-    )
 
     diagnosis_header = tk.Frame(support_view, background=colors["app_bg"])
     diagnosis_header.pack(fill="x", pady=(0, 8))
@@ -4926,6 +4925,7 @@ def show_log_viewer(
     support_actions.pack(fill="x")
     log_filter_state = {"logTabOpened": False, "userTouched": False}
     log_action_status = tk.StringVar(value="")
+    diagnosis_history_rows_by_iid: dict[str, dict[str, Any]] = {}
 
     def selected_date_text() -> str:
         return f"{year_value.get()}-{month_value.get()}-{day_value.get()}"
@@ -5109,25 +5109,14 @@ def show_log_viewer(
         home_last_diagnosis["model"] = diagnosis
         append_diagnosis_history(config, path, diagnosis)
         home_ai_summary.set(str(diagnosis["summary"]))
+        home_support_status.set(home_diagnosis_status_message(diagnosis))
         refresh_diagnosis_history_table()
         refresh_log_summary()
 
-        if diagnosis["statusKey"] == "no_logs":
-            home_support_status.set("분석할 로그가 아직 없습니다. PC Agent가 로그를 수집한 뒤 다시 시도해 주세요.")
-            return
-        if diagnosis["statusKey"] == "server_connection_failed":
-            home_support_status.set(str(diagnosis["serverMessage"]))
-            return
-        if not diagnosis["issueDetected"]:
-            home_support_status.set("최근 로컬 진단은 정상입니다. AS 접수가 필요한 이상 신호는 없습니다.")
-            return
-        if not diagnosis["agentRegistered"]:
-            home_support_status.set(str(diagnosis["registrationMessage"]))
+        if not diagnosis["asReady"]:
             return
 
         prepare_home_support_context()
-        home_support_status.set("이상 신호가 확인되었습니다. 서버 추천을 확인한 뒤 AS 접수를 신청할 수 있습니다.")
-        preview_support_recommendation(home_ai_summary)
 
     def submit_home_support_request() -> None:
         block_message = home_support_request_block_message(home_last_diagnosis.get("model"))
@@ -5162,6 +5151,150 @@ def show_log_viewer(
         message = f"웹 {support_new_url(config)} 접수 페이지를 열었습니다."
         if status_target is not None:
             status_target.set(message)
+
+    def fill_support_form_from_diagnosis_history(model: dict[str, Any], modal: tk.Toplevel | None = None) -> None:
+        if not bool(model.get("asReady")):
+            return
+        symptom_title.set(str(model["title"]))
+        symptom_type.set(str(model["symptomType"]))
+        symptom_time.set(str(model["symptomTime"]))
+        support_mode.set(str(model["supportMode"]))
+        set_support_detail(str(model["detail"]))
+        support_status.set("진단 이력 기준 AS 접수 양식을 채웠습니다. 내용을 확인한 뒤 접수해 주세요.")
+        if modal is not None:
+            modal.destroy()
+        show_support_tab()
+
+    def show_diagnosis_history_as_form_modal(row: dict[str, Any]) -> None:
+        model = diagnosis_history_as_form_model(config, row)
+        modal = tk.Toplevel(root)
+        modal.title("AS 접수 양식 미리보기")
+        modal.geometry("620x520")
+        modal.minsize(560, 460)
+        modal.configure(background=colors["app_bg"])
+        modal.transient(root)
+        modal.grab_set()
+
+        body = tk.Frame(modal, background=colors["app_bg"], padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+        tk.Label(
+            body,
+            text="AS 접수 양식 미리보기",
+            font=ui_font(FONT_PAGE_TITLE_PX, "semibold"),
+            foreground=colors["text"],
+            background=colors["app_bg"],
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            body,
+            text="진단 이력에서 자동으로 채운 값입니다.",
+            font=ui_font(FONT_SECONDARY_PX),
+            foreground=colors["muted"],
+            background=colors["app_bg"],
+            anchor="w",
+        ).pack(fill="x", pady=(4, 12))
+
+        form = tk.Frame(
+            body,
+            background=colors["section_bg"],
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+            padx=12,
+            pady=10,
+        )
+        form.pack(fill="both", expand=True)
+        form.columnconfigure(1, weight=1)
+
+        def add_preview_row(index: int, label: str, value: Any) -> None:
+            tk.Label(
+                form,
+                text=label,
+                font=ui_font(FONT_SECONDARY_PX, "semibold"),
+                foreground=colors["muted"],
+                background=colors["section_bg"],
+                anchor="w",
+                width=14,
+            ).grid(row=index, column=0, sticky="nw", pady=(0, 8), padx=(0, 8))
+            tk.Label(
+                form,
+                text=sanitize_display_text(value, 180),
+                font=ui_font(FONT_SECONDARY_PX),
+                foreground=colors["text"],
+                background=colors["section_bg"],
+                anchor="w",
+                justify="left",
+                wraplength=420,
+            ).grid(row=index, column=1, sticky="ew", pady=(0, 8))
+
+        add_preview_row(0, "증상 제목", model["title"])
+        add_preview_row(1, "증상 유형", model["symptomType"])
+        add_preview_row(2, "증상 시각", model["symptomTime"])
+        add_preview_row(3, "지원 방식", model["supportMode"])
+        add_preview_row(4, "AS 여부", model["supportLabel"])
+
+        tk.Label(
+            form,
+            text="증상 상세",
+            font=ui_font(FONT_SECONDARY_PX, "semibold"),
+            foreground=colors["muted"],
+            background=colors["section_bg"],
+            anchor="w",
+            width=14,
+        ).grid(row=5, column=0, sticky="nw", pady=(2, 0), padx=(0, 8))
+        detail_box = tk.Text(
+            form,
+            height=9,
+            wrap="word",
+            relief="flat",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+            font=ui_font(FONT_SECONDARY_PX),
+        )
+        detail_box.grid(row=5, column=1, sticky="nsew", pady=(2, 0))
+        detail_box.insert("1.0", str(model["detail"]))
+        detail_box.configure(state="disabled")
+        form.rowconfigure(5, weight=1)
+
+        actions = tk.Frame(body, background=colors["app_bg"], pady=12)
+        actions.pack(fill="x")
+        fill_button = tk.Button(
+            actions,
+            text="진단 탭에 채우기",
+            command=lambda: fill_support_form_from_diagnosis_history(model, modal),
+            font=ui_font(FONT_BUTTON_PX, "semibold"),
+            relief="flat",
+            padx=14,
+            pady=7,
+            foreground="#ffffff",
+            background=colors["sidebar_active_bar"],
+            activeforeground="#ffffff",
+            activebackground="#176b58",
+        )
+        fill_button.pack(side="right")
+        if not bool(model.get("asReady")):
+            fill_button.configure(state="disabled")
+        tk.Button(
+            actions,
+            text="닫기",
+            command=modal.destroy,
+            font=ui_font(FONT_BUTTON_PX),
+            relief="flat",
+            padx=14,
+            pady=7,
+            foreground=colors["text"],
+            background="#eef3f4",
+            activebackground="#dde9eb",
+        ).pack(side="right", padx=(0, 8))
+
+    def open_diagnosis_history_from_click(event: Any) -> None:
+        row_id = diagnosis_history_tree.identify_row(event.y)
+        if not row_id:
+            return
+        diagnosis_history_tree.selection_set(row_id)
+        row = diagnosis_history_rows_by_iid.get(row_id)
+        if row is not None:
+            show_diagnosis_history_as_form_modal(row)
 
     def summary_section_height(row_count: int) -> int:
         if row_count <= 0:
@@ -5219,18 +5352,20 @@ def show_log_viewer(
 
     def refresh_diagnosis_history_table() -> None:
         rows = read_diagnosis_history_rows(path)
+        diagnosis_history_rows_by_iid.clear()
         diagnosis_history_tree.delete(*diagnosis_history_tree.get_children())
         if rows:
             diagnosis_history_empty.grid_forget()
             diagnosis_history_tree.grid()
             diagnosis_history_scroll.grid()
             for index, row in enumerate(rows):
-                diagnosis_history_tree.insert(
+                row_id = diagnosis_history_tree.insert(
                     "",
                     "end",
                     values=display_diagnosis_history_values(row),
                     tags=("odd" if index % 2 else "even",),
                 )
+                diagnosis_history_rows_by_iid[row_id] = row
             return
         diagnosis_history_tree.grid_remove()
         diagnosis_history_scroll.grid_remove()
@@ -5238,37 +5373,7 @@ def show_log_viewer(
 
     def refresh_log() -> None:
         refresh_diagnosis_history_table()
-        if not log_filter_state["userTouched"]:
-            current_date, current_hour = default_log_filter_values()
-            set_date_filter(current_date)
-            hour_value.set(f"{current_hour:02d}:00")
-        try:
-            selected_hour = int(hour_value.get().split(":", 1)[0])
-        except ValueError:
-            selected_hour = datetime.now(KST).hour
-        selected_date = selected_date_text()
-        rows = read_log_rows_for_filter(
-            path,
-            selected_date,
-            selected_hour,
-            log_filter_state["userTouched"],
-            LOG_TABLE_LIMIT,
-        )
-        rows = [row for row in rows if not is_diagnosis_history_row(row)]
-        tree.delete(*tree.get_children())
-        for index, row in enumerate(rows):
-            tree.insert("", "end", values=display_log_table_values(row), tags=("odd" if index % 2 else "even",))
-        if rows:
-            log_empty_label.place_forget()
-        else:
-            log_empty_label.place(relx=0.5, rely=0.52, anchor="center")
-            log_empty_label.lift()
-        range_label = (
-            f"{selected_date} {selected_hour:02d}:00"
-            if log_filter_state["userTouched"]
-            else f"{selected_date} 최신"
-        )
-        range_status.set(f"범위 {range_label} | 표시 {len(rows)}개")
+        range_status.set("")
 
     def refresh_diagnosis_detail() -> None:
         model = diagnosis_detail_model(config, path)
@@ -5335,16 +5440,12 @@ def show_log_viewer(
         status_view.pack_forget()
         support_view.pack_forget()
         log_view.pack(fill="both", expand=True)
-        if should_initialize_log_filter(log_filter_state["logTabOpened"], log_filter_state["userTouched"]):
-            current_date, current_hour = default_log_filter_values()
-            set_date_filter(current_date)
-            hour_value.set(f"{current_hour:02d}:00")
         log_filter_state["logTabOpened"] = True
-        if not range_badge.winfo_ismapped():
-            range_badge.pack(side="right")
+        range_badge.pack_forget()
+        range_status.set("")
         refresh_diagnosis_history_table()
         refresh_log()
-        tree.focus_set()
+        diagnosis_history_tree.focus_set()
 
     def show_support_tab(signal: dict[str, Any] | None = None) -> None:
         selected_nav.set("진단")
@@ -5369,6 +5470,7 @@ def show_log_viewer(
     month_select.bind("<<ComboboxSelected>>", refresh_log_from_filter_change)
     day_select.bind("<<ComboboxSelected>>", refresh_log_from_filter_change)
     hour_select.bind("<<ComboboxSelected>>", refresh_log_from_filter_change)
+    diagnosis_history_tree.bind("<ButtonRelease-1>", open_diagnosis_history_from_click)
 
     buttons = tk.Frame(log_view, background=colors["app_bg"], pady=8)
     buttons.pack(fill="x")
