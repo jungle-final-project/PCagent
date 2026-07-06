@@ -987,7 +987,10 @@ paths:
   /api/agent/log-uploads:
     post:
       summary: PC Agent gzip log upload
-      description: Agent-token based upload used by apps/pc-agent. This is separate from the legacy web JWT /api/agent-logs/upload endpoint.
+      description: >
+        Agent-token based upload used by apps/pc-agent. This is separate from the legacy web JWT /api/agent-logs/upload endpoint.
+        Current PC Agent diagnosis and AS ticket routing are rule-based and do not require OPENAI_API_KEY.
+        Normal/no-issue uploads succeed without creating an AS ticket.
       security:
         - agentBearerAuth: []
       parameters:
@@ -1000,7 +1003,7 @@ paths:
               $ref: "#/components/schemas/PcAgentLogUploadRequest"
       responses:
         "201":
-          description: Created upload job, log upload, and AS ticket
+          description: Created upload job and log upload. Non-normal diagnosis also creates an AS ticket.
           content:
             application/json:
               schema:
@@ -1544,6 +1547,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AsTicketDto"
+  /api/admin/as-tickets/{ticketId}/log-bundle:
+    get:
+      summary: 관리자 PC Agent 원본 gzip 로그 번들 다운로드
+      description: >
+        Requires ADMIN. Returns the exact gzip bytes stored in agent_log_bundles.original_gzip_bytes.
+        The server does not regenerate gzip from parsed logs. Missing original bytes return 404.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TicketId"
+      responses:
+        "200":
+          description: Stored original gzip log bundle
+          headers:
+            Content-Disposition:
+              description: attachment filename for the gzip log bundle
+              schema:
+                type: string
+                example: attachment; filename=agent-log.jsonl.gz
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: Login required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Original gzip log bundle was not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     bearerAuth:
@@ -1558,6 +1603,13 @@ components:
     PublicId:
       in: path
       name: id
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TicketId:
+      in: path
+      name: ticketId
       required: true
       schema:
         type: string
@@ -3355,6 +3407,10 @@ components:
           format: uuid
         status:
           $ref: "#/components/schemas/AsTicketStatus"
+        title:
+          type: string
+          nullable: true
+          description: Display title. PC Agent auto-created tickets use "[PC진단] 문제유형".
         analysisStatus:
           type: string
           enum: [RULE_READY]
@@ -3848,12 +3904,27 @@ components:
         ticketId:
           type: string
           format: uuid
+          nullable: true
+        ticketTitle:
+          type: string
+          nullable: true
+          description: AS ticket title when a ticket is created, e.g. "[PC진단] 디스플레이 드라이버".
+        ticketCreated:
+          type: boolean
+          description: Whether /api/agent/log-uploads created an AS ticket.
+        ticketCreationSkipped:
+          type: boolean
+          description: True when upload succeeded but no AS ticket was created.
+        ticketSkipReason:
+          type: string
+          nullable: true
+          example: NO_ISSUE_DETECTED
         analysisStatus:
           type: string
           enum: [RULE_READY]
         reviewStatus:
           type: string
-          enum: [REQUIRED, APPROVED]
+          enum: [NOT_REQUIRED, REQUIRED, APPROVED]
         supportDecision:
           $ref: "#/components/schemas/SupportDecision"
         riskLevel:

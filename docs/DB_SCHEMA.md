@@ -1015,7 +1015,7 @@ MVP 로그 업로드 보안 정책:
 | 보관 기간 | `delete_after = created_at + 30 days`다. |
 | 삭제 배치 책임 | 4번 owner가 삭제 대상 선정 query를 관리하고, 5번 owner가 scheduler/infra 실행을 승인한다. |
 | 관리자 접근 기록 | 관리자가 업로드 상세 또는 연결 AS ticket 상세에서 로그 요약/원문 위치를 조회하면 `admin_audit_logs`에 `AGENT_LOG_VIEWED` action을 기록한다. |
-| 원문 노출 범위 | public API는 원문 로그 전체를 반환하지 않는다. `LogSummary.rawSamples`는 `evidenceRefs`와 연결된 로그만 최대 20개까지 저장/노출할 수 있으며, LLM 요청에도 원본 gzip/전체 JSONL/전체 프로세스 목록/전체 파일 경로를 넣지 않는다. admin API도 V1에서는 원문 다운로드 API를 만들지 않는다. |
+| 원문 노출 범위 | public API는 원문 로그 전체를 반환하지 않는다. `LogSummary.rawSamples`는 `evidenceRefs`와 연결된 로그만 최대 20개까지 저장/노출할 수 있으며, LLM 요청에도 원본 gzip/전체 JSONL/전체 프로세스 목록/전체 파일 경로를 넣지 않는다. `agent_log_bundles.original_gzip_bytes`는 프로토타입/관리자 제한/다운로드 전용 예외이며 티켓 조회 응답에 원본 전문을 펼쳐 노출하지 않는다. 운영 전환 전에는 S3/object storage로 이동해야 한다. |
 
 PC Agent 서버 업로드 IncidentWindow 정책:
 
@@ -1024,6 +1024,40 @@ PC Agent 서버 업로드 IncidentWindow 정책:
 | 원격 6종 | 발생 전 15분, 후 5분 |
 | BSOD/디스크/전원/thermal/방문 5종 | 발생 전 30분, 후 10분 |
 | 부팅 불가/원격 불가 | 마지막 정상 부팅 이후 critical event 요약. `lastNormalBootAt`이 없으면 서버 감지 시각 기준 최근 24시간 fallback |
+
+### agent_log_bundles
+
+목적: PC Agent 로그 업로드 job에 연결된 로그 번들 메타데이터와 프로토타입 관리자 다운로드용 원본 gzip bytes를 저장한다.
+
+Owner: 4번
+
+| 컬럼명 | 타입 | nullable | FK | 설명 |
+|---|---|---:|---|---|
+| `id` | `BIGINT` | no | - | 내부 PK |
+| `public_id` | `UUID` | no | - | 외부 ID |
+| `upload_job_id` | `BIGINT` | no | `agent_upload_jobs.id` | Agent 업로드 job |
+| `log_upload_id` | `BIGINT` | yes | `agent_log_uploads.id` | 연결 로그 업로드 |
+| `schema_version` | `INTEGER` | no | - | RawLog schema version |
+| `storage_path` | `TEXT` | no | - | 저장 위치 식별자 |
+| `sha256` | `VARCHAR(128)` | no | - | Agent가 보낸 gzip 원본 bytes의 SHA-256 |
+| `size_bytes` | `BIGINT` | no | - | gzip 원본 bytes 크기 |
+| `original_gzip_bytes` | `BYTEA` | yes | - | 프로토타입 예외: Agent 요청으로 들어온 gzip 원본 bytes. 관리자 다운로드 전용이며 티켓 조회 응답에는 노출하지 않는다. |
+| `delete_after` | `TIMESTAMPTZ` | no | - | 보관 만료 시각 |
+| `created_at` | `TIMESTAMPTZ` | no | - | 생성 시각 |
+
+Index:
+
+- unique: `agent_log_bundles.public_id`
+- unique: `agent_log_bundles.sha256`
+- index: `agent_log_bundles.upload_job_id`
+- index: `agent_log_bundles.log_upload_id`
+- index: `agent_log_bundles.delete_after`
+
+티켓-로그번들 연결 구조:
+
+- `as_tickets.log_upload_id -> agent_log_uploads.id -> agent_log_bundles.log_upload_id`
+- 관리자 다운로드 API는 이 연결을 사용해 `original_gzip_bytes`를 조회한다.
+- 원본 gzip DB 저장은 프로토타입 예외다. 민감 로그 원문 DB 저장 금지 원칙과 충돌하지 않도록 관리자 제한/다운로드 전용으로만 사용하고, 운영 전환 전 S3/object storage로 이동한다.
 
 ### agent_consents
 
@@ -1118,6 +1152,7 @@ Owner: 4번
 | `user_id` | `BIGINT` | no | `users.id` | 사용자 |
 | `log_upload_id` | `BIGINT` | yes | `agent_log_uploads.id` | 연결 로그 |
 | `assigned_admin_id` | `BIGINT` | yes | `users.id` | 담당 관리자 |
+| `title` | `VARCHAR(255)` | yes | - | 관리자/목록 표시용 티켓 제목. PC Agent 자동 생성 티켓은 `[PC진단] 문제유형` 형식 |
 | `symptom` | `TEXT` | no | - | 증상 |
 | `status` | `VARCHAR(30)` | no | - | AS ticket status |
 | `analysis_status` | `VARCHAR(30)` | no | - | `NOT_STARTED`, `QUEUED`, `ANALYZING`, `RULE_READY`, `LLM_READY`, `FAILED` |

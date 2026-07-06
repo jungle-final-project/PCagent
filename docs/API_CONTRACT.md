@@ -414,7 +414,7 @@ PC Agent token lifecycle API:
 | `POST` | `/api/agent/devices/register` | none, activation token only | 4번 | `{ "activationToken": "demo-agent-activation-token", "deviceFingerprintHash": "fingerprint-hash", "registrationIdempotencyKey": "agent-register-key", "osVersion": "Windows 11", "agentVersion": "0.1.0", "policyVersion": "policy-v1" }` | `{ "deviceId": "00000000-0000-4000-8000-000000009001", "status": "ACTIVE", "agentToken": "raw-token-returned-once", "tokenType": "Bearer" }` | `agent_devices` |
 | `POST` | `/api/agent/consents` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `{ "consentType": "SERVER_UPLOAD", "policyVersion": "policy-v1", "accepted": true }` | `{ "id": "00000000-0000-4000-8000-000000009101", "consentType": "SERVER_UPLOAD", "accepted": true, "policyVersion": "policy-v1" }` | `agent_consents`, `agent_idempotency_records` |
 | `POST` | `/api/agent/heartbeat` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `{ "agentVersion": "0.1.0", "serviceStatus": "RUNNING", "policyVersion": "policy-v1" }` | `{ "deviceId": "00000000-0000-4000-8000-000000009001", "status": "ACTIVE", "lastSeenAt": "2026-07-02T10:00:00Z" }` | `agent_devices`, `agent_heartbeats`, `agent_idempotency_records` |
-| `POST` | `/api/agent/log-uploads` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `multipart/form-data`: gzip `file`, `symptomType`, `detectedAt`, optional `incidentStartedAt`, `incidentEndedAt`, `lastNormalBootAt`, `symptom` | `{ "uploadJobId": "00000000-0000-4000-8000-000000009201", "logUploadId": "00000000-0000-4000-8000-000000009301", "ticketId": "00000000-0000-4000-8000-000000009401", "analysisStatus": "RULE_READY", "reviewStatus": "REQUIRED", "supportDecision": "REMOTE_POSSIBLE", "rangeMinutes": 20, "rawSamplesCount": 2 }` | `agent_upload_jobs`, `agent_log_uploads`, `as_tickets` |
+| `POST` | `/api/agent/log-uploads` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `multipart/form-data`: gzip `file`, `symptomType`, `detectedAt`, optional `incidentStartedAt`, `incidentEndedAt`, `lastNormalBootAt`, `symptom` | `{ "uploadJobId": "00000000-0000-4000-8000-000000009201", "logUploadId": "00000000-0000-4000-8000-000000009301", "ticketId": "00000000-0000-4000-8000-000000009401", "ticketTitle": "[PC진단] 디스플레이 드라이버", "ticketCreated": true, "ticketCreationSkipped": false, "ticketSkipReason": null, "analysisStatus": "RULE_READY", "reviewStatus": "REQUIRED", "supportDecision": "REMOTE_POSSIBLE", "riskLevel": "MEDIUM", "rangeMinutes": 20, "rawSamplesCount": 2 }` | `agent_upload_jobs`, `agent_log_uploads`, `agent_log_bundles`, `as_tickets` |
 | `POST` | `/api/agent/log-uploads/as-rag-preview` | AGENT_TOKEN + `Idempotency-Key` | 4번 | `multipart/form-data`: gzip `file`, `symptomType`, `detectedAt`, optional incident window fields | `{ "previewSource": "PC_AGENT_LOG_UPLOAD", "recommendedService": "REMOTE_SUPPORT", "recommendedServiceLabel": "원격지원 신청", "supportDecision": "REMOTE_POSSIBLE", "rangeMinutes": 20, "rawSamplesCount": 2 }` | `as_rag_evidence` |
 
 Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버는 raw `agentToken`을 저장하지 않고 hash만 저장한다. `/api/agent-logs/upload`는 웹 사용자가 JWT로 업로드하는 legacy/manual 경로이고, `/api/agent/log-uploads`는 PC Agent가 Agent token으로 업로드하는 경로다.
@@ -430,8 +430,9 @@ Register는 bootstrap 단계라 Authorization header를 받지 않는다. 서버
 | `GET` | `/api/as-tickets/{id}` | USER | 4번 | - | `{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "status": "OPEN", "symptom": "화면이 멈춤", "logUploadId": "1b363bcb-42be-4428-b625-54a6b267d66f", "causeCandidates": [], "upgradeCandidates": [], "adminNote": null, "createdAt": "2026-06-29T10:42:00Z" }` | `as_tickets` |
 | `POST` | `/api/as-tickets/{id}/remote-support-requests` | USER | 4번 | `{ "reason": "화면 공유로 확인이 필요합니다.", "contactPhone": "010-0000-0000" }` | `{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "reviewStatus": "REQUIRED", "remoteSupportStatus": "REQUESTED" }` | `as_tickets`, `remote_support_sessions` |
 | `POST` | `/api/as-tickets/{id}/feedback` | USER | 4번 | `{ "rating": 5, "comment": "원격지원 후 해결됐습니다." }` | `{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "feedbackRating": 5, "feedbackComment": "원격지원 후 해결됐습니다." }` | `as_tickets` |
-| `GET` | `/api/admin/as-tickets` | ADMIN | 4번 | `?page=0&size=20` | `{ "items": [{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "status": "OPEN", "symptom": "화면이 멈춤", "userId": "c6d75f0c-0f57-4d1c-a8b2-a4079dcd40fd", "assignedAdminId": null, "createdAt": "2026-06-29T10:42:00Z" }], "page": 0, "size": 20, "total": 1 }` | `as_tickets` |
-| `GET` | `/api/admin/as-tickets/{id}` | ADMIN | 4번 | - | `{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "status": "OPEN", "symptom": "화면이 멈춤", "logUploadId": "1b363bcb-42be-4428-b625-54a6b267d66f", "assignedAdminId": null, "causeCandidates": [], "upgradeCandidates": [], "adminNote": null }` | `as_tickets`, `agent_log_uploads` |
+| `GET` | `/api/admin/as-tickets` | ADMIN | 4번 | `?page=0&size=20` | `{ "items": [{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "title": "[PC진단] 디스플레이 드라이버", "status": "OPEN", "symptom": "화면이 멈춤", "supportDecision": "REMOTE_POSSIBLE", "riskLevel": "MEDIUM", "assignedAdminId": null, "createdAt": "2026-06-29T10:42:00Z" }], "page": 0, "size": 20, "total": 1 }` | `as_tickets` |
+| `GET` | `/api/admin/as-tickets/{id}` | ADMIN | 4번 | - | `{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "title": "[PC진단] 디스플레이 드라이버", "status": "OPEN", "symptom": "화면이 멈춤", "logUploadId": "1b363bcb-42be-4428-b625-54a6b267d66f", "assignedAdminId": null, "supportDecision": "REMOTE_POSSIBLE", "riskLevel": "MEDIUM", "logSummary": { "summaryVersion": "1" }, "supportRouting": { "recommendedDecision": "REMOTE_POSSIBLE" }, "causeCandidates": [], "upgradeCandidates": [], "adminNote": null }` | `as_tickets`, `agent_log_uploads` |
+| `GET` | `/api/admin/as-tickets/{ticketId}/log-bundle` | ADMIN | 4번 | - | `application/gzip` attachment. Body는 DB에 저장된 gzip 원본 bytes | `as_tickets`, `agent_log_uploads`, `agent_log_bundles` |
 | `PATCH` | `/api/admin/as-tickets/{id}` | ADMIN | 4번 | `{ "status": "IN_PROGRESS", "assignedAdminId": "c6d75f0c-0f57-4d1c-a8b2-a4079dcd40fd", "adminNote": "확인 중" }` | `{ "id": "4aef8ef7-1dc7-45d1-bfc2-bb0cfdaf7f8a", "status": "IN_PROGRESS", "assignedAdminId": "c6d75f0c-0f57-4d1c-a8b2-a4079dcd40fd", "adminNote": "확인 중", "resolvedAt": null, "updatedAt": "2026-06-29T10:45:00Z" }` | `as_tickets`, `users`, `admin_audit_logs` |
 
 `POST /api/agent-logs/upload` multipart fields:
@@ -463,6 +464,8 @@ AS 접수 페이지 RAG 분석:
 
 `POST /api/agent/log-uploads`는 PC Agent 서버 업로드 경로다. 서버는 `rangeMinutes=30` 고정값을 사용하지 않고 `symptomType`과 incident metadata로 `incidentWindow`를 계산한다.
 
+PC Agent 진단/AS 접수 자동 입력은 현재 룰 기반이다. 이 경로는 OpenAI API key를 필수 조건으로 요구하지 않으며, OpenAI key가 없다는 이유로 로컬 진단 또는 AS 티켓 자동 입력이 막히지 않는다. 기존 AS 접수 전용 RAG는 수동/web 로그 업로드와 preview 흐름에서 사용할 수 있지만, `/api/agent/log-uploads`의 현재 AS 티켓 자동 생성은 업로드된 RawLog JSONL을 룰로 분석해 `supportDecision`, `riskLevel`, `logSummary`, `supportRouting`을 채운다. 향후 RAG 확장은 가능하지만, 구현되지 않은 RAG/LLM 판단을 현재 동작으로 문서화하지 않는다.
+
 | field | type | required | 설명 |
 |---|---|---:|---|
 | `file` | gzip file | yes | RawLog JSONL gzip. 각 line은 `schemaVersion`, `collectedAt`, `agentId`, `sequence`, `kind`, `payload`, `privacyFlags`를 포함해야 한다. |
@@ -478,6 +481,18 @@ AS 접수 페이지 RAG 분석:
 - `privacyFlags.containsRawPath=true`인데 마스킹되지 않은 로그는 거절한다. 마스킹된 로그도 event message의 경로, email, token/password류 문자열은 서버 요약 전에 재마스킹한다.
 - `LogSummary`는 `incidentWindow` 안의 로그만 사용해 `timeline`, `anomalies`, `correlations`, `ruleSignals`, `dataQuality`, `evidenceRefs`, `rawSamples`를 만든다.
 - `rawSamples`는 `evidenceRefs`와 연결된 로그만 최대 20개까지 포함한다. `AiDiagnosisRequest`에는 원본 gzip, 전체 JSONL, 전체 프로세스 목록, 전체 파일 경로를 넣지 않는다.
+- 정상/이상 없음 진단은 로그 업로드와 `agent_log_bundles` 저장까지 성공 처리하지만 AS 티켓은 생성하지 않는다. 이때 응답은 `ticketId=null`, `ticketCreated=false`, `ticketCreationSkipped=true`, `ticketSkipReason="NO_ISSUE_DETECTED"`, `supportDecision="MONITOR_ONLY"`, `reviewStatus="NOT_REQUIRED"`를 additive 필드로 포함할 수 있다.
+- 상담성 결과는 AS 티켓을 생성하고 `supportDecision="NEEDS_MORE_INFO"`, `reviewStatus="REQUIRED"`로 저장해 관리자 검토 대상으로 둔다.
+- `agent_log_bundles.original_gzip_bytes`는 프로토타입 예외다. 요청으로 들어온 gzip 원본 bytes를 그대로 저장하지만, 티켓 조회 응답이나 관리자 티켓 화면에서 원본 전문을 펼쳐 노출하지 않는다. 원본은 관리자 다운로드 API로만 제공한다. 운영 전환 전에는 민감 로그 원문 DB 저장 금지 원칙에 맞춰 S3/object storage 같은 별도 object storage로 이동해야 한다.
+
+`GET /api/admin/as-tickets/{ticketId}/log-bundle`:
+
+- ADMIN 권한이 필요하다. 비로그인 요청은 `401`, 일반 사용자 권한은 `403`이다.
+- 응답 `Content-Type`은 `application/gzip`이다.
+- 응답 `Content-Disposition`은 `attachment; filename=...` 형식으로 파일명을 포함한다.
+- body는 `agent_log_bundles.original_gzip_bytes`에 저장된 gzip 원본 bytes 그대로다. 서버가 JSONL을 다시 gzip으로 재생성하지 않는다.
+- 연결 구조는 `as_tickets.log_upload_id -> agent_log_uploads.id -> agent_log_bundles.log_upload_id`를 사용한다.
+- 원본 gzip bytes가 없는 티켓은 기존 예외 처리 방식에 맞춰 `404 NOT_FOUND`를 반환한다.
 
 `PATCH /api/admin/as-tickets/{id}` 허용 상태 전이:
 
@@ -538,7 +553,7 @@ AS 접수 페이지 RAG 분석:
 }
 ```
 
-사용자 `GET /api/as-tickets/{id}`와 관리자 `GET /api/admin/as-tickets/{id}` 응답은 `analysisStatus`, `reviewStatus`, `supportDecision`, `riskLevel`, `autoResponseAllowed`, `incidentWindow`, `logSummary`, `logSummaryText`, `supportRouting`, `safetyAdviceLevel`, `safetyNotices`, `feedbackRating`, `feedbackComment`, `feedbackCreatedAt`, `diagnosticAccuracy`, `aiDiagnosisRequest`, 예외 승인 필드, `adminNote`, `remoteSupportLink`, `remoteSupportStatus`, `visitSupportRequired`, `visitSupportStatus`, `visitPreferredDate`, `visitTimeSlot`을 포함할 수 있다.
+사용자 `GET /api/as-tickets/{id}`와 관리자 `GET /api/admin/as-tickets/{id}` 응답은 `title`, `analysisStatus`, `reviewStatus`, `supportDecision`, `riskLevel`, `autoResponseAllowed`, `incidentWindow`, `logSummary`, `logSummaryText`, `supportRouting`, `safetyAdviceLevel`, `safetyNotices`, `feedbackRating`, `feedbackComment`, `feedbackCreatedAt`, `diagnosticAccuracy`, `aiDiagnosisRequest`, 예외 승인 필드, `adminNote`, `remoteSupportLink`, `remoteSupportStatus`, `visitSupportRequired`, `visitSupportStatus`, `visitPreferredDate`, `visitTimeSlot`을 포함할 수 있다.
 
 #### Agent AS 최종 지원 계약
 
